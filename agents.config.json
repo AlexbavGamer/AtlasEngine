@@ -1,0 +1,14 @@
+{
+  "nanocoder": {
+    "providers": [
+      {
+        "name": "llama-cpp",
+        "models": [
+          "mistralai/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M",
+          "unsloth/Qwen3-4B-GGUF:UD-Q4_K_XL"
+        ],
+        "baseUrl": "http://localhost:8080/v1"
+      }
+    ]
+  }
+}

@@ -1,0 +1,3 @@
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\VulkanEngineV2.dir/objects.a
+C:\msys64\ucrt64\bin\ar.exe qc CMakeFiles\VulkanEngineV2.dir/objects.a @CMakeFiles\VulkanEngineV2.dir\objects1.rsp
+C:\msys64\ucrt64\bin\c++.exe -g -Wl,--whole-archive CMakeFiles\VulkanEngineV2.dir/objects.a -Wl,--no-whole-archive -o VulkanEngineV2.exe -Wl,--out-implib,libVulkanEngineV2.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\VulkanEngineV2.dir\linkLibs.rsp

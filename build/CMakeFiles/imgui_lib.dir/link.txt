@@ -1,0 +1,2 @@
+C:\msys64\ucrt64\bin\ar.exe qc libimgui_lib.a CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui.cpp.obj CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_draw.cpp.obj CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_tables.cpp.obj CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_widgets.cpp.obj CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_demo.cpp.obj CMakeFiles/imgui_lib.dir/deps/src/imgui/backends/imgui_impl_glfw.cpp.obj CMakeFiles/imgui_lib.dir/deps/src/imgui/backends/imgui_impl_vulkan.cpp.obj
+C:\msys64\ucrt64\bin\ranlib.exe libimgui_lib.a

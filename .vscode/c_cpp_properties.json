@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/deps/src/imgui",
+                "${workspaceFolder}/deps/src/imgui/backends",
+                "${workspaceFolder}/deps/src/glm",
+                "${workspaceFolder}/deps/src/glfw/include",
+                "${workspaceFolder}/deps/src/stb"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "C:/msys64/ucrt64/bin/g++.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-gcc-x64"
+        }
+    ],
+    "version": 4
+}

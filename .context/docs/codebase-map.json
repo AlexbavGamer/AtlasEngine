@@ -1,0 +1,336 @@
+{
+  "version": "1.0.0",
+  "generated": "2026-03-16T21:06:33.438Z",
+  "stack": {
+    "primaryLanguage": "python",
+    "languages": [
+      "cpp",
+      "c",
+      "python"
+    ],
+    "frameworks": [],
+    "buildTools": [],
+    "testFrameworks": [],
+    "packageManager": null,
+    "isMonorepo": false,
+    "hasDocker": false,
+    "hasCI": false
+  },
+  "structure": {
+    "totalFiles": 2623,
+    "rootPath": ".",
+    "topDirectories": [
+      {
+        "name": "assets",
+        "fileCount": 0,
+        "description": "Static assets (images, fonts)"
+      },
+      {
+        "name": "deps",
+        "fileCount": 2592,
+        "description": "Dep definitions"
+      },
+      {
+        "name": "shaders",
+        "fileCount": 4,
+        "description": "Shader definitions"
+      },
+      {
+        "name": "src",
+        "fileCount": 24,
+        "description": "Source code root"
+      }
+    ],
+    "languageDistribution": [
+      {
+        "extension": ".html",
+        "count": 829
+      },
+      {
+        "extension": ".png",
+        "count": 347
+      },
+      {
+        "extension": ".hpp",
+        "count": 278
+      },
+      {
+        "extension": ".cpp",
+        "count": 276
+      },
+      {
+        "extension": ".inl",
+        "count": 138
+      },
+      {
+        "extension": ".h",
+        "count": 126
+      },
+      {
+        "extension": ".c",
+        "count": 122
+      },
+      {
+        "extension": ".js",
+        "count": 98
+      },
+      {
+        "extension": ".md",
+        "count": 47
+      },
+      {
+        "extension": ".txt",
+        "count": 39
+      }
+    ]
+  },
+  "architecture": {
+    "layers": [
+      {
+        "name": "Controllers",
+        "description": "Request handling and routing",
+        "directories": [
+          "deps\\src\\glm\\doc\\api",
+          "deps\\src\\glm\\doc\\api\\search"
+        ],
+        "symbolCount": 16,
+        "dependsOn": []
+      }
+    ],
+    "patterns": [],
+    "entryPoints": [],
+    "mainEntryPoints": [],
+    "moduleExports": []
+  },
+  "symbols": {
+    "classes": [
+      {
+        "name": "ArraySynthBase",
+        "kind": "class",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 18,
+        "exported": true
+      },
+      {
+        "name": "ImGuiWindowSummary",
+        "kind": "class",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 114,
+        "exported": true
+      },
+      {
+        "name": "ImRectSummary",
+        "kind": "class",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 75,
+        "exported": true
+      },
+      {
+        "name": "ImSpanSynth",
+        "kind": "class",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 60,
+        "exported": true
+      },
+      {
+        "name": "ImVectorSynth",
+        "kind": "class",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 48,
+        "exported": true
+      }
+    ],
+    "interfaces": [],
+    "functions": [
+      {
+        "name": "get_active_enum_flags",
+        "kind": "function",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 94,
+        "exported": true
+      },
+      {
+        "name": "__lldb_init_module",
+        "kind": "function",
+        "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+        "line": 138,
+        "exported": false
+      },
+      {
+        "name": "convertToId",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 25,
+        "exported": false
+      },
+      {
+        "name": "createResults",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 745,
+        "exported": false
+      },
+      {
+        "name": "getXPos",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 48,
+        "exported": false
+      },
+      {
+        "name": "getYPos",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 62,
+        "exported": false
+      },
+      {
+        "name": "init_search",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 800,
+        "exported": false
+      },
+      {
+        "name": "initMenu",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\menu.js",
+        "line": 25,
+        "exported": false
+      },
+      {
+        "name": "makeTree",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\menu.js",
+        "line": 26,
+        "exported": false
+      },
+      {
+        "name": "SearchBox",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 83,
+        "exported": false
+      },
+      {
+        "name": "SearchResults",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 427,
+        "exported": false
+      },
+      {
+        "name": "setClassAttr",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 739,
+        "exported": false
+      },
+      {
+        "name": "setKeyActions",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\search\\search.js",
+        "line": 732,
+        "exported": false
+      },
+      {
+        "name": "toggleFolder",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\dynsections.js",
+        "line": 73,
+        "exported": false
+      },
+      {
+        "name": "toggleInherit",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\dynsections.js",
+        "line": 108,
+        "exported": false
+      },
+      {
+        "name": "toggleLevel",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\dynsections.js",
+        "line": 52,
+        "exported": false
+      },
+      {
+        "name": "toggleVisibility",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\dynsections.js",
+        "line": 25,
+        "exported": false
+      },
+      {
+        "name": "updateStripes",
+        "kind": "function",
+        "file": "deps\\src\\glm\\doc\\api\\dynsections.js",
+        "line": 46,
+        "exported": false
+      }
+    ],
+    "types": [],
+    "enums": []
+  },
+  "publicAPI": [
+    {
+      "name": "ArraySynthBase",
+      "kind": "class",
+      "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+      "line": 18,
+      "exported": true
+    },
+    {
+      "name": "get_active_enum_flags",
+      "kind": "function",
+      "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+      "line": 94,
+      "exported": true
+    },
+    {
+      "name": "ImGuiWindowSummary",
+      "kind": "class",
+      "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+      "line": 114,
+      "exported": true
+    },
+    {
+      "name": "ImRectSummary",
+      "kind": "class",
+      "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+      "line": 75,
+      "exported": true
+    },
+    {
+      "name": "ImSpanSynth",
+      "kind": "class",
+      "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+      "line": 60,
+      "exported": true
+    },
+    {
+      "name": "ImVectorSynth",
+      "kind": "class",
+      "file": "deps\\src\\imgui\\misc\\debuggers\\imgui_lldb.py",
+      "line": 48,
+      "exported": true
+    }
+  ],
+  "dependencies": {
+    "mostImported": []
+  },
+  "stats": {
+    "totalSymbols": 23,
+    "exportedSymbols": 6,
+    "analysisTimeMs": 1141
+  },
+  "keyFiles": [],
+  "navigation": {
+    "tests": "src/**/*.test.ts",
+    "config": [],
+    "types": [],
+    "mainLogic": [
+      "src"
+    ]
+  }
+}

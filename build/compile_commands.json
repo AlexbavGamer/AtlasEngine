@@ -1,0 +1,242 @@
+[
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\imgui.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\imgui.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/imgui.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\imgui_draw.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\imgui_draw.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/imgui_draw.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_draw.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\imgui_tables.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\imgui_tables.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/imgui_tables.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_tables.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\imgui_widgets.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\imgui_widgets.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/imgui_widgets.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_widgets.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\imgui_demo.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\imgui_demo.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/imgui_demo.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/imgui_demo.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\backends\\imgui_impl_glfw.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\backends\\imgui_impl_glfw.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/backends/imgui_impl_glfw.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/backends/imgui_impl_glfw.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/imgui_lib.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\imgui_lib.dir\\deps\\src\\imgui\\backends\\imgui_impl_vulkan.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\imgui\\backends\\imgui_impl_vulkan.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/imgui/backends/imgui_impl_vulkan.cpp",
+  "output": "CMakeFiles/imgui_lib.dir/deps/src/imgui/backends/imgui_impl_vulkan.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\main.cpp.obj -c F:\\VulkanEngineV2\\src\\main.cpp",
+  "file": "F:/VulkanEngineV2/src/main.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/main.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\vulkan\\instance.cpp.obj -c F:\\VulkanEngineV2\\src\\vulkan\\instance.cpp",
+  "file": "F:/VulkanEngineV2/src/vulkan/instance.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/vulkan/instance.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\vulkan\\device.cpp.obj -c F:\\VulkanEngineV2\\src\\vulkan\\device.cpp",
+  "file": "F:/VulkanEngineV2/src/vulkan/device.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/vulkan/device.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\vulkan\\swapchain.cpp.obj -c F:\\VulkanEngineV2\\src\\vulkan\\swapchain.cpp",
+  "file": "F:/VulkanEngineV2/src/vulkan/swapchain.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/vulkan/swapchain.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\vulkan\\render_pass.cpp.obj -c F:\\VulkanEngineV2\\src\\vulkan\\render_pass.cpp",
+  "file": "F:/VulkanEngineV2/src/vulkan/render_pass.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/vulkan/render_pass.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\vulkan\\framebuffer.cpp.obj -c F:\\VulkanEngineV2\\src\\vulkan\\framebuffer.cpp",
+  "file": "F:/VulkanEngineV2/src/vulkan/framebuffer.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/vulkan/framebuffer.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\vulkan\\command_buffers.cpp.obj -c F:\\VulkanEngineV2\\src\\vulkan\\command_buffers.cpp",
+  "file": "F:/VulkanEngineV2/src/vulkan/command_buffers.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/vulkan/command_buffers.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\imgui\\imgui_manager.cpp.obj -c F:\\VulkanEngineV2\\src\\imgui\\imgui_manager.cpp",
+  "file": "F:/VulkanEngineV2/src/imgui/imgui_manager.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/imgui/imgui_manager.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\scene\\scene.cpp.obj -c F:\\VulkanEngineV2\\src\\scene\\scene.cpp",
+  "file": "F:/VulkanEngineV2/src/scene/scene.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/scene/scene.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\ui\\ui_manager.cpp.obj -c F:\\VulkanEngineV2\\src\\ui\\ui_manager.cpp",
+  "file": "F:/VulkanEngineV2/src/ui/ui_manager.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/ui/ui_manager.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/build",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/VulkanEngineV2.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\VulkanEngineV2.dir\\src\\ecs\\systems.cpp.obj -c F:\\VulkanEngineV2\\src\\ecs\\systems.cpp",
+  "file": "F:/VulkanEngineV2/src/ecs/systems.cpp",
+  "output": "CMakeFiles/VulkanEngineV2.dir/src/ecs/systems.cpp.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\context.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\context.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/context.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/context.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\init.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\init.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/init.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/init.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\input.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\input.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/input.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/input.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\monitor.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\monitor.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/monitor.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/monitor.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\platform.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\platform.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/platform.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/platform.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\vulkan.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\vulkan.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/vulkan.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/vulkan.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\window.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\window.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/window.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/window.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\egl_context.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\egl_context.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/egl_context.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/egl_context.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\osmesa_context.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\osmesa_context.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/osmesa_context.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/osmesa_context.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\null_init.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\null_init.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/null_init.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/null_init.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\null_monitor.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\null_monitor.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/null_monitor.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/null_monitor.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\null_window.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\null_window.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/null_window.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/null_window.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\null_joystick.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\null_joystick.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/null_joystick.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/null_joystick.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_module.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_module.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_module.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_module.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_time.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_time.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_time.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_time.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_thread.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_thread.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_thread.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_thread.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_init.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_init.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_init.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_init.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_joystick.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_joystick.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_joystick.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_joystick.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_monitor.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_monitor.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_monitor.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_monitor.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\win32_window.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\win32_window.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/win32_window.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/win32_window.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glfw/src",
+  "command": "C:\\msys64\\ucrt64\\bin\\cc.exe -DUNICODE -DWINVER=0x0501 -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -g -std=c99 -Wall -o CMakeFiles\\glfw.dir\\wgl_context.c.obj -c F:\\VulkanEngineV2\\deps\\src\\glfw\\src\\wgl_context.c",
+  "file": "F:/VulkanEngineV2/deps/src/glfw/src/wgl_context.c",
+  "output": "F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/glfw.dir/wgl_context.c.obj"
+},
+{
+  "directory": "F:/VulkanEngineV2/deps/build/glm/glm",
+  "command": "C:\\msys64\\ucrt64\\bin\\c++.exe  @CMakeFiles/glm.dir/includes_CXX.rsp -g -std=c++17 -o CMakeFiles\\glm.dir\\detail\\glm.cpp.obj -c F:\\VulkanEngineV2\\deps\\src\\glm\\glm\\detail\\glm.cpp",
+  "file": "F:/VulkanEngineV2/deps/src/glm/glm/detail/glm.cpp",
+  "output": "F:/VulkanEngineV2/deps/build/glm/glm/CMakeFiles/glm.dir/detail/glm.cpp.obj"
+}
+]

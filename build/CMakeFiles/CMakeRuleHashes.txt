@@ -1,0 +1,5 @@
+# Hashes of file build rules.
+1a9d873a223b4b882cfdbec134cea41e CMakeFiles/shaders
+00fb6bb60ed1827140482574568f224d F:/VulkanEngineV2/deps/build/glfw/src/CMakeFiles/update_mappings
+9df26a4d2d14469bfd2d87404ac9c60c shaders/frag.spv
+12789325d2021123b3efe9a8c9c062e9 shaders/vert.spv

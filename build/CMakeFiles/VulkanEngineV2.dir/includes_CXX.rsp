@@ -1,0 +1,1 @@
+-IF:/VulkanEngineV2/deps/src/glm -IF:/VulkanEngineV2/deps/src/stb -IF:/VulkanEngineV2/deps/src/glfw/include -IF:/VulkanEngineV2/deps/src/imgui -IF:/VulkanEngineV2/deps/src/imgui/backends -isystem C:/VulkanSDK/1.4.341.1/Include

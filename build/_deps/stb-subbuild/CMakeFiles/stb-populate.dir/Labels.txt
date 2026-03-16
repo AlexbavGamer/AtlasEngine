@@ -1,0 +1,14 @@
+# Target labels
+ stb-populate
+# Source files and their labels
+F:/VulkanEngineV2/build/_deps/stb-subbuild/CMakeFiles/stb-populate
+F:/VulkanEngineV2/build/_deps/stb-subbuild/CMakeFiles/stb-populate.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/CMakeFiles/stb-populate-complete.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-build.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-configure.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-download.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-install.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-mkdir.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-patch_disconnected.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-test.rule
+F:/VulkanEngineV2/build/_deps/stb-subbuild/stb-populate-prefix/src/stb-populate-stamp/stb-populate-update_disconnected.rule

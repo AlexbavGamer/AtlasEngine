@@ -1,0 +1,1 @@
+-IF:/VulkanEngineV2/deps/src/glfw/include -IF:/VulkanEngineV2/deps/src/glfw/src -IF:/VulkanEngineV2/deps/build/glfw/src
