@@ -15,10 +15,14 @@
 #include "imgui/imgui_manager.h"
 #include "scene/scene.h"
 #include "ui/ui_manager.h"
+#include "project/project_manager.h"
+#include "utils/camera_controller.h"
 #include "ecs/ecs.h"
 #include "ecs/components.h"
 #include "ecs/systems.h"
+#include "ecs/vertex.h"
 #include <imgui_impl_vulkan.h>
+#include "scene/scene.h"
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -98,10 +102,13 @@ private:
     ImGuiManager imGuiManager;
     std::unique_ptr<Scene> scene;
     std::unique_ptr<UIManager> uiManager;
+    std::unique_ptr<ProjectManager> projectManager;
+    std::unique_ptr<CameraController> cameraController;
     ImTextureID viewportTexture;
 
-    std::shared_ptr<World> ecsWorld;
-    std::shared_ptr<RenderSystem> renderSystem;
+    World ecsWorld;
+    Entity cameraEntity;
+    std::vector<std::function<void(World&, float)>> systems;
 
     uint32_t WIDTH;
     uint32_t HEIGHT;
@@ -162,30 +169,66 @@ private:
 
         createOffscreenResources();
 
-        // Initialize ECS
-        ecsWorld = std::make_shared<World>();
-        renderSystem = std::make_shared<RenderSystem>(this);
-        ecsWorld->addSystem(renderSystem);
-
-        // Create sample entities
-        auto entity1 = ecsWorld->createEntity();
-        ecsWorld->getEntity(entity1)->addComponent(std::make_unique<Transform>(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f)));
-        ecsWorld->getEntity(entity1)->addComponent(std::make_unique<RenderableComponent>(true));
-
-        auto entity2 = ecsWorld->createEntity();
-        ecsWorld->getEntity(entity2)->addComponent(std::make_unique<Transform>(glm::vec3(1.0f, 1.0f, 0.0f), glm::vec3(45.0f, 0.0f, 0.0f), glm::vec3(0.5f)));
-        ecsWorld->getEntity(entity2)->addComponent(std::make_unique<RenderableComponent>(true));
-
-        scene = std::make_unique<Scene>(ecsWorld);
+        scene = std::make_unique<Scene>(&ecsWorld);
+        scene->init(device, physicalDevice);
 
         imGuiManager.init(instance, physicalDevice, device, graphicsQueue, findQueueFamilies(physicalDevice).graphicsFamily.value(), renderPass, window, static_cast<uint32_t>(swapChainImages.size()));
 
         viewportTexture = (ImTextureID)ImGui_ImplVulkan_AddTexture(offscreenSampler, offscreenImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        uiManager = std::make_unique<UIManager>(ecsWorld);
+        uiManager = std::make_unique<UIManager>(&ecsWorld);
+        uiManager->setWindow(window);
+        projectManager = std::make_unique<ProjectManager>();
+        uiManager->setProjectManager(projectManager.get());
+        
+        projectManager->openProject(".");
+        
+        cameraEntity = ecsWorld.create();
+        auto& camera = ecsWorld.emplace<Camera>(cameraEntity);
+        camera.position = glm::vec3(0.0f, 2.0f, 5.0f);
+        camera.target = glm::vec3(0.0f, 0.0f, 0.0f);
+        
+        cameraController = std::make_unique<CameraController>(window, camera.position, camera.target, camera.up);
+        
+        uiManager->setOnAssetDropped([this](const std::string& assetPath) {
+            std::string fullPath = projectManager->getAssetFullPath(assetPath);
+            std::filesystem::path fsPath(fullPath);
+            std::string ext = fsPath.extension().string();
+            
+            if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") {
+                auto entity = ecsWorld.create();
+                ecsWorld.emplace<Transform>(entity);
+                ecsWorld.emplace<Renderable>(entity);
+                ecsWorld.emplace<Mesh>(entity);
+                
+                auto& mesh = ecsWorld.get<Mesh>(entity);
+                mesh.meshPath = fullPath;
+                
+                MeshData meshData = ModelLoader::loadModel(fullPath, device, physicalDevice, [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) {
+                    for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++) {
+                        if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
+                            return i;
+                        }
+                    }
+                    return uint32_t(~0);
+                });
+                
+                mesh.vertexBuffer = meshData.vertexBuffer;
+                mesh.indexBuffer = meshData.indexBuffer;
+                mesh.vertexMemory = meshData.vertexMemory;
+                mesh.indexMemory = meshData.indexMemory;
+                mesh.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
+                mesh.indexCount = meshData.indexCount;
+                
+                std::cout << "Created entity from asset: " << fullPath << std::endl;
+            }
+        });
     }
 
     void mainLoop() {
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             drawFrame();
@@ -534,10 +577,35 @@ private:
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(struct Vertex);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions;
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(struct Vertex, pos);
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(struct Vertex, color);
+        attributeDescriptions[2].binding = 0;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(struct Vertex, texCoord);
+        attributeDescriptions[3].binding = 0;
+        attributeDescriptions[3].location = 3;
+        attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[3].offset = offsetof(struct Vertex, normal);
+
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 0;
-        vertexInputInfo.vertexAttributeDescriptionCount = 0;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = 4;
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -593,10 +661,16 @@ private:
         colorBlending.blendConstants[2] = 0.0f;
         colorBlending.blendConstants[3] = 0.0f;
 
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(glm::mat4);
+
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
@@ -800,7 +874,15 @@ private:
         float currentTime = static_cast<float>(glfwGetTime());
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
-        ecsWorld->update(deltaTime);
+        
+        // Update all systems
+        for (auto& system : systems) {
+            system(ecsWorld, deltaTime);
+        }
+
+        if (cameraController) {
+            cameraController->update(deltaTime);
+        }
 
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
@@ -910,7 +992,8 @@ private:
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-        scene->render(commandBuffer);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+        scene->render(commandBuffer, pipelineLayout, device);
 
         vkCmdEndRenderPass(commandBuffer);
 

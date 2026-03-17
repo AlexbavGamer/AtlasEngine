@@ -1,93 +1,134 @@
 #include "ui_manager.h"
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
+#include "../ecs/ecs.h"
 #include "../ecs/components.h"
 #include <glm/glm.hpp>
+#include <filesystem>
 
-UIManager::UIManager(std::shared_ptr<World> world) : ecsWorld(world) {}
+UIManager::UIManager(entt::registry* world) : ecsWorld(world) {}
 
 void UIManager::render(ImTextureID viewportTexture) {
-    // Unity-style dock layout
-    // Main viewport area
-    ImGui::Begin("Viewport", &ImGui::GetContentRegionAvail());
+    renderNewProjectDialog();
+    renderOpenProjectDialog();
+    renderMenuBar();
+    
+    static bool dockspaceInitialized = false;
+    static ImGuiID dockspaceID = 0;
+
+    if (!dockspaceInitialized) {
+        
+        
+        dockspaceID = ImGui::GetID("MyDockspace");
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        
+        if (ImGui::DockBuilderGetNode(dockspaceID) == nullptr) {
+            ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dockspaceID, viewport->Size);
+            
+            ImGuiID dockMain = dockspaceID;
+            ImGuiID dockLeft = 0;
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.2f, &dockLeft, &dockMain);
+            
+            ImGuiID dockLeftTop = 0;
+            ImGuiID dockLeftBottom = 0;
+            ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.5f, &dockLeftTop, &dockLeftBottom);
+            
+            ImGui::DockBuilderDockWindow("Viewport", dockMain);
+            ImGui::DockBuilderDockWindow("Hierarchy", dockLeftBottom);
+            ImGui::DockBuilderDockWindow("Properties", dockLeftTop);
+            ImGui::DockBuilderDockWindow("Transform", dockLeftTop);
+            ImGui::DockBuilderDockWindow("Content Explorer", dockLeftBottom);
+            ImGui::DockBuilderFinish(dockspaceID);
+        }
+        
+        dockspaceInitialized = true;
+    }
+
+    ImGui::DockSpaceOverViewport(dockspaceID, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+
     renderViewport(viewportTexture);
-    ImGui::End();
-
-    // Dock layout panels
-    ImGui::DockNode("Viewport", 1);  // Top panel - Viewport
-    ImGui::DockNode("Hierarchy", 1, ImGuiDockNodeFlags::AutoResize);  // Right panel - Hierarchy
-    ImGui::DockNode("Properties", 1, ImGuiDockNodeFlags::AutoResize);  // Left panel - Properties
-    ImGui::DockNode("Content Explorer", 1, ImGuiDockNodeFlags::AutoResize);  // Bottom panel - Content Explorer
-    ImGui::DockNode("Transform", 1, ImGuiDockNodeFlags::AutoResize);  // Top-left panel - Transform
-
-    // Render panels
     renderTransformPanel();
     renderHierarchy();
     renderProperties();
     renderContentExplorer();
 }
 
-void UIManager::setSelectedEntity(EntityID entity) {
+void UIManager::setSelectedEntity(Entity entity) {
     selectedEntity = entity;
 }
 
-EntityID UIManager::getSelectedEntity() const {
+Entity UIManager::getSelectedEntity() const {
     return selectedEntity;
 }
 
+void UIManager::setOnAssetDropped(std::function<void(const std::string&)> callback) {
+    onAssetDropped = callback;
+}
+
+void UIManager::setProjectManager(ProjectManager* projManager) {
+    projectManager = projManager;
+}
+
+void UIManager::openProject(const std::string& path) {
+    if (projectManager) {
+        projectManager->openProject(path);
+    }
+}
+
+void UIManager::setWindow(GLFWwindow* win) {
+    window = win;
+}
+
 void UIManager::renderViewport(ImTextureID viewportTexture) {
-    ImGui::Begin("Viewport");
+    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar);
     ImVec2 size = ImGui::GetContentRegionAvail();
     ImGui::Image(viewportTexture, size);
+    
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_DROP");
+        if (payload != nullptr && onAssetDropped) {
+            const char* assetPath = static_cast<const char*>(payload->Data);
+            onAssetDropped(std::string(assetPath));
+        }
+        ImGui::EndDragDropTarget();
+    }
+    
     ImGui::End();
 }
 
 void UIManager::renderTransformPanel() {
-    // Transform panel at viewport top
-    ImGui::Begin("Transform Options");
+    ImGui::Begin("Transform", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    
+    if (selectedEntity != entt::null && ecsWorld && ecsWorld->valid(selectedEntity)) {
+        if (ecsWorld->all_of<Transform>(selectedEntity)) {
+            auto& transform = ecsWorld->get<Transform>(selectedEntity);
+            
+            ImGui::Text("Position:");
+            ImGui::DragFloat3("##pos", &transform.position.x, 0.1f);
 
-    if (ImGui::CollapsingHeader("Transform Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (selectedEntity != 0 && ecsWorld) {
-            auto entity = ecsWorld->getEntity(selectedEntity);
-            if (entity) {
-                auto transform = entity->getComponent<Transform>();
-                if (transform) {
-                    ImGui::Text("Position:");
-                    ImGui::DragFloat3("X", &transform->position.x, 0.1f);
-                    ImGui::DragFloat3("Y", &transform->position.y, 0.1f);
-                    ImGui::DragFloat3("Z", &transform->position.z, 0.1f);
+            ImGui::Text("Rotation:");
+            ImGui::DragFloat3("##rot", &transform.rotation.x, 1.0f);
 
-                    ImGui::Text("Rotation:");
-                    ImGui::DragFloat3("X", &transform->rotation.x, 1.0f);
-                    ImGui::DragFloat3("Y", &transform->rotation.y, 1.0f);
-                    ImGui::DragFloat3("Z", &transform->rotation.z, 1.0f);
-
-                    ImGui::Text("Scale:");
-                    ImGui::DragFloat3("X", &transform->scale.x, 0.1f);
-                    ImGui::DragFloat3("Y", &transform->scale.y, 0.1f);
-                    ImGui::DragFloat3("Z", &transform->scale.z, 0.1f);
-                }
-            }
+            ImGui::Text("Scale:");
+            ImGui::DragFloat3("##scale", &transform.scale.x, 0.1f);
         }
-
-        ImGui::End();
     }
+    
+    ImGui::End();
 }
 
 void UIManager::renderHierarchy() {
-    ImGui::Begin("Hierarchy");
+    ImGui::Begin("Hierarchy", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
     if (ecsWorld) {
-        for (const auto& pair : ecsWorld->getEntities()) {
-            EntityID entityId = pair.first;
-            auto entity = pair.second;
+        for (auto entity : ecsWorld->view<Transform>()) {
+            std::string entityName = "Entity " + std::to_string(static_cast<uint32_t>(entity));
 
-            // Simple entity name - in a real engine you'd have a Name component
-            std::string entityName = "Entity " + std::to_string(entityId);
-
-            bool isSelected = (selectedEntity == entityId);
+            bool isSelected = (selectedEntity == entity);
             if (ImGui::Selectable(entityName.c_str(), isSelected)) {
-                setSelectedEntity(entityId);
+                setSelectedEntity(entity);
             }
         }
     }
@@ -96,38 +137,31 @@ void UIManager::renderHierarchy() {
 }
 
 void UIManager::renderProperties() {
-    ImGui::Begin("Properties");
+    ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-    if (selectedEntity != 0 && ecsWorld) {
-        auto entity = ecsWorld->getEntity(selectedEntity);
-        if (entity) {
-            ImGui::Text("Entity ID: %u", selectedEntity);
+    if (selectedEntity != entt::null && ecsWorld && ecsWorld->valid(selectedEntity)) {
+        ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
 
-            // Transform component
-            auto transform = entity->getComponent<Transform>();
-            if (transform) {
-                if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::DragFloat3("Position", &transform->position.x, 0.1f);
-                    ImGui::DragFloat3("Rotation", &transform->rotation.x, 1.0f);
-                    ImGui::DragFloat3("Scale", &transform->scale.x, 0.1f);
-                }
+        auto renderComponent = [this](auto&& component, const char* name) {
+            if (ImGui::CollapsingHeader(name, ImGuiTreeNodeFlags_DefaultOpen)) {
+                ecs::renderComponentProperties(component);
             }
+        };
 
-            // Renderable component
-            auto renderable = entity->getComponent<RenderableComponent>();
-            if (renderable) {
-                if (ImGui::CollapsingHeader("Renderable")) {
-                    ImGui::Checkbox("Visible", &renderable->visible);
-                }
-            }
+        if (ecsWorld->all_of<Transform>(selectedEntity)) {
+            renderComponent(ecsWorld->get<Transform>(selectedEntity), "Transform");
+        }
 
-            // Mesh component
-            auto mesh = entity->getComponent<Mesh>();
-            if (mesh) {
-                if (ImGui::CollapsingHeader("Mesh")) {
-                    ImGui::Text("Path: %s", mesh->meshPath.c_str());
-                }
-            }
+        if (ecsWorld->all_of<Renderable>(selectedEntity)) {
+            renderComponent(ecsWorld->get<Renderable>(selectedEntity), "Renderable");
+        }
+
+        if (ecsWorld->all_of<Mesh>(selectedEntity)) {
+            renderComponent(ecsWorld->get<Mesh>(selectedEntity), "Mesh");
+        }
+
+        if (ecsWorld->all_of<Camera>(selectedEntity)) {
+            renderComponent(ecsWorld->get<Camera>(selectedEntity), "Camera");
         }
     } else {
         ImGui::Text("No entity selected");
@@ -137,30 +171,140 @@ void UIManager::renderProperties() {
 }
 
 void UIManager::renderContentExplorer() {
-    ImGui::Begin("Content Explorer");
-    ImGui::BeginChild("EntityList", ImVec2(0, 0), true);
-    for (const auto& pair : ecsWorld->getEntities()) {
-        EntityID entityId = pair.first;
-        auto entity = pair.second;
+    ImGui::Begin("Content Explorer", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-        std::string entityName = "Entity " + std::to_string(entityId);
-        ImGui::Selectable(entityName.c_str());
-    }
-    ImGui::EndChild();
-    ImGui::BeginChild("EntityDetails", ImVec2(0, 0), true);
-    if (selectedEntity != 0 && ecsWorld) {
-        auto entity = ecsWorld->getEntity(selectedEntity);
-        if (entity) {
-            auto transform = entity->getComponent<Transform>();
-            if (transform) {
-                ImGui::Text("Position: (%f, %f, %f)", transform->position.x,
-                           transform->position.y, transform->position.z);
-                ImGui::Text("Rotation: (%f, %f, %f)", transform->rotation.x,
-                           transform->rotation.y, transform->rotation.z);
-                ImGui::Text("Scale: (%f, %f, %f)", transform->scale.x,
-                           transform->scale.y, transform->scale.z);
+    if (projectManager && projectManager->hasProject()) {
+        std::vector<std::string> models = projectManager->getModelFiles();
+        
+        ImGui::Text("Models:");
+        for (const auto& modelPath : models) {
+            std::string filename = std::filesystem::path(modelPath).filename().string();
+            
+            ImGui::Selectable(("📦 " + filename).c_str(), false, ImGuiSelectableFlags_AllowOverlap);
+            
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                ImGui::SetDragDropPayload("ASSET_DROP", modelPath.c_str(), modelPath.length() + 1);
+                ImGui::Text("Drop: %s", filename.c_str());
+                ImGui::EndDragDropSource();
             }
         }
+
+        std::vector<std::string> textures = projectManager->getTextureFiles();
+        
+        ImGui::Separator();
+        ImGui::Text("Textures:");
+        for (const auto& texPath : textures) {
+            std::string filename = std::filesystem::path(texPath).filename().string();
+            
+            ImGui::Selectable(("🖼️ " + filename).c_str(), false, ImGuiSelectableFlags_AllowOverlap);
+            
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                ImGui::SetDragDropPayload("ASSET_DROP", texPath.c_str(), texPath.length() + 1);
+                ImGui::Text("Drop: %s", filename.c_str());
+                ImGui::EndDragDropSource();
+            }
+        }
+    } else {
+        ImGui::Text("No project open.\nOpen a project to see assets.");
     }
+
     ImGui::End();
+}
+
+void UIManager::renderMenuBar() {
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("Project")) {
+            if (ImGui::MenuItem("New Project", "Ctrl+N")) {
+                showNewProjectDialog = true;
+            }
+            if (ImGui::MenuItem("Open Project", "Ctrl+O")) {
+                showOpenProjectDialog = true;
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
+                if (onSaveProject) onSaveProject();
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Exit", "Alt+F4")) {
+                if (onExit) onExit();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Import Model...", "Ctrl+I")) {
+            }
+            if (ImGui::MenuItem("Import Texture...", "Ctrl+T")) {
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Viewport", NULL, true);
+            ImGui::MenuItem("Hierarchy", NULL, true);
+            ImGui::MenuItem("Properties", NULL, true);
+            ImGui::MenuItem("Content Explorer", NULL, true);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Help")) {
+            if (ImGui::MenuItem("About")) {
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+}
+
+void UIManager::renderNewProjectDialog() {
+    if (!showNewProjectDialog) return;
+    
+    ImGui::OpenPopup("New Project");
+    if (ImGui::BeginPopupModal("New Project", &showNewProjectDialog, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Project Name:");
+        ImGui::InputText("##name", newProjectName, IM_ARRAYSIZE(newProjectName));
+        
+        ImGui::Text("Location:");
+        ImGui::InputText("##path", newProjectPath, IM_ARRAYSIZE(newProjectPath));
+        
+        ImGui::Separator();
+        
+        if (ImGui::Button("Create")) {
+            if (projectManager && strlen(newProjectName) > 0 && strlen(newProjectPath) > 0) {
+                std::string fullPath = std::string(newProjectPath) + "/" + newProjectName;
+                projectManager->createNewProject(newProjectName, fullPath);
+                if (onNewProject) onNewProject();
+            }
+            showNewProjectDialog = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            showNewProjectDialog = false;
+        }
+        
+        ImGui::EndPopup();
+    }
+}
+
+void UIManager::renderOpenProjectDialog() {
+    if (!showOpenProjectDialog) return;
+    
+    ImGui::OpenPopup("Open Project");
+    if (ImGui::BeginPopupModal("Open Project", &showOpenProjectDialog, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Select Project Folder:");
+        ImGui::InputText("##openpath", projectPathBuffer, IM_ARRAYSIZE(projectPathBuffer));
+        
+        ImGui::Separator();
+        
+        if (ImGui::Button("Open")) {
+            if (projectManager && strlen(projectPathBuffer) > 0) {
+                projectManager->openProject(projectPathBuffer);
+                if (onOpenProject) onOpenProject();
+            }
+            showOpenProjectDialog = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            showOpenProjectDialog = false;
+        }
+        
+        ImGui::EndPopup();
+    }
 }

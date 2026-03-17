@@ -1,16 +1,9 @@
 #pragma once
 #include "ecs.h"
-#include "components.h"
+#include <vulkan/vulkan.h>
+#include <functional>
 
-// Forward declaration
 class VulkanEngine;
 
-// RenderSystem - handles rendering of entities with Renderable and Transform components
-class RenderSystem : public System {
-public:
-    VulkanEngine* engine;
-
-    RenderSystem(VulkanEngine* eng) : engine(eng) {}
-
-    void update(float deltaTime) override;
-};
+using RenderSystemFunc = std::function<void(VulkanEngine*, World&, float)>;
+using CameraSystemFunc = std::function<void(World&, float)>;

@@ -1,90 +1,102 @@
 #pragma once
 
-#include <cstdint>
-#include <unordered_map>
+#include <entt/entt.hpp>
+#include <vulkan/vulkan_core.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <string>
 #include <memory>
-#include <typeindex>
-#include <vector>
-#include <algorithm>
+#include <cstdint>
+#include <imgui.h>
+#include <tuple>
+#include <type_traits>
 
-class Component {
-public:
-    virtual ~Component() = default;
-};
+using Registry = entt::registry;
+using Entity = entt::entity;
 
-using EntityID = uint32_t;
+struct Transform {
+    glm::vec3 position{0.0f, 0.0f, 0.0f};
+    glm::vec3 rotation{0.0f, 0.0f, 0.0f};
+    glm::vec3 scale{1.0f, 1.0f, 1.0f};
 
-class Entity {
-public:
-    EntityID id;
-    std::unordered_map<std::type_index, std::unique_ptr<Component>> components;
+    Transform() = default;
+    Transform(const glm::vec3& pos, const glm::vec3& rot, const glm::vec3& sc)
+        : position(pos), rotation(rot), scale(sc) {}
 
-    template<typename T>
-    void addComponent(std::unique_ptr<T> comp) {
-        components[typeid(T)] = std::move(comp);
-    }
-
-    template<typename T>
-    T* getComponent() {
-        auto it = components.find(typeid(T));
-        return it != components.end() ? static_cast<T*>(it->second.get()) : nullptr;
-    }
-
-    template<typename T>
-    void removeComponent() {
-        this->components.erase(typeid(T));
-    }
-
-    template<typename T>
-    bool hasComponent() const {
-        return this->components.find(typeid(T)) != this->components.end();
+    glm::mat4 getModelMatrix() const {
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, position);
+        model = glm::rotate(model, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, scale);
+        return model;
     }
 };
 
-class System {
-public:
-    virtual ~System() = default;
-    virtual void update(float dt) = 0;
+struct Mesh {
+    std::string meshPath;
+    uint32_t vertexCount = 0;
+    uint32_t indexCount = 0;
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkBuffer indexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+    VkDeviceMemory indexMemory = VK_NULL_HANDLE;
 };
 
-class World {
-public:
-    EntityID createEntity() {
-        EntityID id = nextID++;
-        entities[id] = std::make_shared<Entity>();
-        entities[id]->id = id;
-        return id;
-    }
-
-    std::shared_ptr<Entity> getEntity(EntityID id) {
-        auto it = entities.find(id);
-        return it != entities.end() ? it->second : nullptr;
-    }
-
-    void destroyEntity(EntityID id) {
-        entities.erase(id);
-    }
-
-    void addSystem(std::shared_ptr<System> system) {
-        systems.push_back(system);
-    }
-
-    void removeSystem(std::shared_ptr<System> system) {
-        systems.erase(std::remove(systems.begin(), systems.end(), system), systems.end());
-    }
-
-    void update(float dt) {
-        for (auto& sys : systems) {
-            sys->update(dt);
-        }
-    }
-
-    const std::unordered_map<EntityID, std::shared_ptr<Entity>>& getEntities() const {
-        return entities;
-    }
-
-private:
-    std::unordered_map<EntityID, std::shared_ptr<Entity>> entities;
-    std::vector<std::shared_ptr<System>> systems;
-    EntityID nextID = 0;
+struct Renderable {
+    bool visible = true;
+    uint32_t materialID = 0;
 };
+
+struct Camera {
+    glm::vec3 position{0.0f, 0.0f, 5.0f};
+    glm::vec3 target{0.0f, 0.0f, 0.0f};
+    glm::vec3 up{0.0f, 1.0f, 0.0f};
+    float fov = 45.0f;
+    float aspectRatio = 16.0f / 9.0f;
+    float nearPlane = 0.1f;
+    float farPlane = 100.0f;
+
+    glm::mat4 getViewMatrix() const {
+        return glm::lookAt(position, target, up);
+    }
+
+    glm::mat4 getProjectionMatrix() const {
+        return glm::perspective(glm::radians(fov), aspectRatio, nearPlane, farPlane);
+    }
+};
+
+using World = entt::registry;
+
+#define COMPONENT_FIELDS(TYPE, ...) \
+    static constexpr auto getFields() { \
+        return std::make_tuple(__VA_ARGS__); \
+    } \
+    static constexpr const char* getName() { return #TYPE; }
+
+namespace ecs {
+
+template<typename T>
+void renderComponentProperties(T& component) {
+    if constexpr (std::is_same_v<T, Transform>) {
+        ImGui::DragFloat3("Position", &component.position.x, 0.1f);
+        ImGui::DragFloat3("Rotation", &component.rotation.x, 1.0f);
+        ImGui::DragFloat3("Scale", &component.scale.x, 0.1f);
+    } else if constexpr (std::is_same_v<T, Renderable>) {
+        ImGui::Checkbox("Visible", &component.visible);
+        ImGui::DragScalar("Material ID", ImGuiDataType_U32, &component.materialID);
+    } else if constexpr (std::is_same_v<T, Mesh>) {
+        ImGui::Text("Mesh Path: %s", component.meshPath.c_str());
+        ImGui::Text("Vertices: %u", component.vertexCount);
+        ImGui::Text("Indices: %u", component.indexCount);
+    } else if constexpr (std::is_same_v<T, Camera>) {
+        ImGui::DragFloat3("Position", &component.position.x, 0.1f);
+        ImGui::DragFloat3("Target", &component.target.x, 0.1f);
+        ImGui::DragFloat("FOV", &component.fov, 1.0f, 1.0f, 180.0f);
+        ImGui::DragFloat("Near", &component.nearPlane, 0.1f);
+        ImGui::DragFloat("Far", &component.farPlane, 1.0f);
+    }
+}
+
+}
