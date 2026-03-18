@@ -55,6 +55,15 @@ atlas_fetch(stb https://github.com/nothings/stb.git master)
 # ImGui
 atlas_fetch(imgui https://github.com/ocornut/imgui.git docking)
 
+# ImGuiFileDialog - just declare, don't build
+FetchContent_Declare(
+    imguifiledialog
+    GIT_REPOSITORY https://github.com/aiekick/ImGuiFileDialog.git
+    GIT_TAG v0.6.8
+    SOURCE_DIR "${DEPS_SRC_DIR}/imguifiledialog"
+)
+FetchContent_Populate(imguifiledialog)
+
 # EnTT
 atlas_fetch(entt https://github.com/skypjack/entt.git v3.12.1)
 
@@ -187,14 +196,23 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+    ${imguifiledialog_SOURCE_DIR}/ImGuiFileDialog.cpp
 )
 
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${imguifiledialog_SOURCE_DIR}
 )
 
-target_link_libraries(imgui_lib PUBLIC glfw Vulkan::Vulkan)
+add_library(imguifiledialog INTERFACE)
+target_include_directories(imguifiledialog INTERFACE
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+    ${imguifiledialog_SOURCE_DIR}
+)
+
+target_link_libraries(imgui_lib PUBLIC glfw Vulkan::Vulkan imguifiledialog)
 
 # ============================================================================
 # Main executable: AtlasEngine

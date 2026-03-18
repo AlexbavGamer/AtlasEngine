@@ -15,6 +15,7 @@
                 "${workspaceFolder}/deps/src/tinygltf",
                 "${workspaceFolder}/deps/src/assimp/include",
                 "${workspaceFolder}/deps/src/imguizmo",
+                "${workspaceFolder}/deps/src/imguifiledialog",
                 "C:/VulkanSDK/1.4.341.1/Include"
             ],
             "defines": [
@@ -22,6 +23,8 @@
                 "UNICODE",
                 "_UNICODE"
             ],
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "configurationProvider": "ms-vscode.cmake-tools",
             "compilerPath": "C:/msys64/ucrt64/bin/g++.exe",
             "cStandard": "c17",
             "cppStandard": "c++17",

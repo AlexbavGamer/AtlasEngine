@@ -5,7 +5,7 @@ deps/src/
 out/
 
 # IDE
-.vscode/
+# .vscode/
 .vs/
 .idea/
 *.suo
@@ -16,9 +16,6 @@ out/
 # Cache
 .cache/
 .clangd/
-
-# Dependencies (fetched by CMake)
-deps/src/
 
 # Compiled
 *.o
