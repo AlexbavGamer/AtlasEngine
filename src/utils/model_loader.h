@@ -22,6 +22,72 @@ struct MeshData {
 
 class ModelLoader {
 public:
+    static MeshData createCube(float size = 1.0f, VkDevice device = VK_NULL_HANDLE, VkPhysicalDevice physicalDevice = VK_NULL_HANDLE, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*) = nullptr) {
+        MeshData meshData;
+        float h = size / 2.0f;
+        
+        meshData.vertices = {
+            // Front face (+Z) - CCW from outside
+            Vertex{{-h, -h,  h}, {1,1,1}, {0,0}, {0,0,1}},
+            Vertex{{ h, -h,  h}, {1,1,1}, {1,0}, {0,0,1}},
+            Vertex{{ h,  h,  h}, {1,1,1}, {1,1}, {0,0,1}},
+            Vertex{{-h,  h,  h}, {1,1,1}, {0,1}, {0,0,1}},
+            
+            // Back face (-Z) - CCW from outside
+            Vertex{{ h, -h, -h}, {1,0,0}, {0,0}, {0,0,-1}},
+            Vertex{{-h, -h, -h}, {1,0,0}, {1,0}, {0,0,-1}},
+            Vertex{{-h,  h, -h}, {1,0,0}, {1,1}, {0,0,-1}},
+            Vertex{{ h,  h, -h}, {1,0,0}, {0,1}, {0,0,-1}},
+            
+            // Right face (+X) - CCW from outside
+            Vertex{{ h, -h,  h}, {0,1,0}, {0,0}, {1,0,0}},
+            Vertex{{ h, -h, -h}, {0,1,0}, {1,0}, {1,0,0}},
+            Vertex{{ h,  h, -h}, {0,1,0}, {1,1}, {1,0,0}},
+            Vertex{{ h,  h,  h}, {0,1,0}, {0,1}, {1,0,0}},
+            
+            // Left face (-X) - CCW from outside
+            Vertex{{-h, -h, -h}, {0,0,1}, {0,0}, {-1,0,0}},
+            Vertex{{-h, -h,  h}, {0,0,1}, {1,0}, {-1,0,0}},
+            Vertex{{-h,  h,  h}, {0,0,1}, {1,1}, {-1,0,0}},
+            Vertex{{-h,  h, -h}, {0,0,1}, {0,1}, {-1,0,0}},
+            
+            // Top face (+Y) - CCW from outside
+            Vertex{{-h,  h,  h}, {1,1,0}, {0,0}, {0,1,0}},
+            Vertex{{ h,  h,  h}, {1,1,0}, {1,0}, {0,1,0}},
+            Vertex{{ h,  h, -h}, {1,1,0}, {1,1}, {0,1,0}},
+            Vertex{{-h,  h, -h}, {1,1,0}, {0,1}, {0,1,0}},
+            
+            // Bottom face (-Y) - CCW from outside
+            Vertex{{-h, -h, -h}, {0,1,1}, {0,0}, {0,-1,0}},
+            Vertex{{ h, -h, -h}, {0,1,1}, {1,0}, {0,-1,0}},
+            Vertex{{ h, -h,  h}, {0,1,1}, {1,1}, {0,-1,0}},
+            Vertex{{-h, -h,  h}, {0,1,1}, {0,1}, {0,-1,0}},
+        };
+        
+        meshData.indices = {
+            // Front
+            0, 1, 2, 2, 3, 0,
+            // Back
+            4, 5, 6, 6, 7, 4,
+            // Right
+            8, 9, 10, 10, 11, 8,
+            // Left
+            12, 13, 14, 14, 15, 12,
+            // Top
+            16, 17, 18, 18, 19, 16,
+            // Bottom
+            20, 21, 22, 22, 23, 20
+        };
+        
+        meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
+        
+        if (device != VK_NULL_HANDLE && physicalDevice != VK_NULL_HANDLE && findMemoryType != nullptr) {
+            createBuffers(meshData, device, physicalDevice, findMemoryType);
+        }
+        
+        return meshData;
+    }
+    
     static MeshData loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*)) {
         Assimp::Importer importer;
         

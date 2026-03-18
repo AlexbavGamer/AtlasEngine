@@ -68,12 +68,12 @@ namespace Atlas
             camera.position = glm::vec3(0.0f, 2.0f, 5.0f);
             camera.target = glm::vec3(0.0f, 0.0f, 0.0f);
 
-            // Create a cube
+            // Create a cube (procedural - correct winding order for Vulkan)
             auto cubeEntity = m_Scene->createEntity("Cube");
             m_Scene->getRegistry().emplace<Mesh>(cubeEntity);
             auto &mesh = m_Scene->getRegistry().get<Mesh>(cubeEntity);
-            mesh.meshPath = "F:\\AtlasEngine\\build\\MyTempProject\\assets\\models\\Cubo.fbx";
-            MeshData meshData = ModelLoader::loadModel(mesh.meshPath,
+            mesh.meshPath = "[procedural]";
+            MeshData meshData = ModelLoader::createCube(1.0f,
                                                        m_Renderer->getDevice(),
                                                        m_Renderer->getPhysicalDevice(),
                                                        [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties *memProperties) -> uint32_t
