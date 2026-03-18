@@ -88,29 +88,43 @@ public:
         return meshData;
     }
     
-    static void fixWindingOrderAndNormals(MeshData& meshData) {
-        for (size_t i = 0; i < meshData.indices.size(); i += 3) {
-            std::swap(meshData.indices[i], meshData.indices[i + 2]);
-        }
+    static glm::mat4 convertAssimpMatrix(aiMatrix4x4 matrix) {
+        glm::mat4 result;
+        result[0][0] = matrix.a1; result[0][1] = matrix.b1; result[0][2] = matrix.c1; result[0][3] = matrix.d1;
+        result[1][0] = matrix.a2; result[1][1] = matrix.b2; result[1][2] = matrix.c2; result[1][3] = matrix.d2;
+        result[2][0] = matrix.a3; result[2][1] = matrix.b3; result[2][2] = matrix.c3; result[2][3] = matrix.d3;
+        result[3][0] = matrix.a4; result[3][1] = matrix.b4; result[3][2] = matrix.c4; result[3][3] = matrix.d4;
+        return result;
+    }
+    
+    static void applyCoordinateCorrection(std::vector<Vertex>& vertices) {
+        glm::mat4 correction = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
         
-        for (auto& vertex : meshData.vertices) {
-            vertex.normal.x = -vertex.normal.x;
-            vertex.normal.y = -vertex.normal.y;
-            vertex.normal.z = -vertex.normal.z;
+        for (auto& vertex : vertices) {
+            glm::vec4 pos(vertex.pos, 1.0f);
+            pos = correction * pos;
+            vertex.pos = glm::vec3(pos);
+            
+            glm::vec4 normal(vertex.normal, 0.0f);
+            normal = correction * normal;
+            vertex.normal = glm::vec3(normal);
         }
     }
     
-    static MeshData loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*), bool fixForVulkan = true) {
+    static MeshData loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*)) {
         Assimp::Importer importer;
         
-        const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_GenNormals);
+        const aiScene* scene = importer.ReadFile(path, 
+            aiProcess_Triangulate | 
+            aiProcess_GenNormals | 
+            aiProcess_CalcTangentSpace | 
+            aiProcess_JoinIdenticalVertices);
         
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
             throw std::runtime_error("Failed to load model: " + std::string(importer.GetErrorString()));
         }
 
         MeshData meshData;
-
         uint32_t vertexOffset = 0;
 
         for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
@@ -123,13 +137,11 @@ public:
                 vertex.pos.y = aiMesh->mVertices[j].y;
                 vertex.pos.z = aiMesh->mVertices[j].z;
 
-                vertex.color.r = 1.0f;
-                vertex.color.g = 1.0f;
-                vertex.color.b = 1.0f;
+                vertex.color = {1.0f, 1.0f, 1.0f};
 
                 if (aiMesh->mTextureCoords[0]) {
                     vertex.texCoord.x = aiMesh->mTextureCoords[0][j].x;
-                    vertex.texCoord.y = 1.0f - aiMesh->mTextureCoords[0][j].y;
+                    vertex.texCoord.y = aiMesh->mTextureCoords[0][j].y;
                 } else {
                     vertex.texCoord = {0.0f, 0.0f};
                 }
@@ -156,10 +168,8 @@ public:
         }
 
         meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
-
-        if (fixForVulkan) {
-            fixWindingOrderAndNormals(meshData);
-        }
+        
+        applyCoordinateCorrection(meshData.vertices);
 
         createBuffers(meshData, device, physicalDevice, findMemoryType);
 
