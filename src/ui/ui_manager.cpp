@@ -100,6 +100,10 @@ void UIManager::setWindow(GLFWwindow* win) {
     window = win;
 }
 
+void UIManager::setRenderer(Renderer* r) {
+    renderer = r;
+}
+
 void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar);
     ImVec2 size = ImGui::GetContentRegionAvail();
@@ -311,6 +315,13 @@ void UIManager::renderMenuBar() {
             ImGui::MenuItem("Hierarchy", NULL, true);
             ImGui::MenuItem("Properties", NULL, true);
             ImGui::MenuItem("Content Explorer", NULL, true);
+            ImGui::Separator();
+            if (renderer) {
+                glm::vec4 color = renderer->getClearColor();
+                if (ImGui::ColorEdit3("Background", &color.x, ImGuiColorEditFlags_Float)) {
+                    renderer->setClearColor(color);
+                }
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Help")) {

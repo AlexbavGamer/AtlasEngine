@@ -8,6 +8,7 @@
 #include "../ecs/ecs.h"
 #include "../scene/scene.h"
 #include "../project/project_manager.h"
+#include "../renderer/renderer.h"
 #include <ImGuiFileDialog.h>
 
 using namespace Atlas;
@@ -22,6 +23,7 @@ public:
     
     void setProjectManager(ProjectManager* projManager);
     void setOnAssetDropped(std::function<void(const std::string&)> callback);
+    void setRenderer(Renderer* renderer);
     void openProject(const std::string& path);
     void setWindow(GLFWwindow* win);
 
@@ -29,6 +31,7 @@ private:
     Atlas::Scene* m_Scene = nullptr;
     Entity selectedEntity = entt::null;
     ProjectManager* projectManager = nullptr;
+    Renderer* renderer = nullptr;
     std::function<void(const std::string&)> onAssetDropped;
 
     void renderViewport(ImTextureID viewportTexture);

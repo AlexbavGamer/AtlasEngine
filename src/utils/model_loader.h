@@ -111,6 +111,12 @@ public:
         }
     }
     
+    static void flipTriangles(std::vector<uint32_t>& indices) {
+        for (size_t i = 0; i < indices.size(); i += 3) {
+            std::swap(indices[i], indices[i + 2]);
+        }
+    }
+    
     static MeshData loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*)) {
         Assimp::Importer importer;
         
@@ -169,7 +175,8 @@ public:
 
         meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
         
-        applyCoordinateCorrection(meshData.vertices);
+        // flipTriangles(meshData.indices); // Disabled for testing
+        // applyCoordinateCorrection(meshData.vertices);
 
         createBuffers(meshData, device, physicalDevice, findMemoryType);
 

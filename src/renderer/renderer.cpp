@@ -502,11 +502,11 @@ void Renderer::createDepthResources() {
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_DepthImageMemory) != VK_SUCCESS) {
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_DepthMemory) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate depth image memory!");
     }
 
-    vkBindImageMemory(m_Device, m_DepthImage, m_DepthImageMemory, 0);
+    vkBindImageMemory(m_Device, m_DepthImage, m_DepthMemory, 0);
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -940,7 +940,7 @@ void Renderer::cleanupSwapChain() {
 
     vkDestroyImageView(m_Device, m_DepthImageView, nullptr);
     vkDestroyImage(m_Device, m_DepthImage, nullptr);
-    vkFreeMemory(m_Device, m_DepthImageMemory, nullptr);
+    vkFreeMemory(m_Device, m_DepthMemory, nullptr);
 
     vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 }
@@ -1002,7 +1002,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     renderPassInfo.renderArea.extent = m_SwapChainExtent;
 
     VkClearValue offscreenClearValues[2];
-    offscreenClearValues[0].color = {{0.2f, 0.2f, 0.2f, 1.0f}};
+    offscreenClearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
     offscreenClearValues[1].depthStencil = {1.0f, 0};
     renderPassInfo.clearValueCount = 2;
     renderPassInfo.pClearValues = offscreenClearValues;
@@ -1081,7 +1081,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     renderPassInfo.renderPass = m_RenderPass;
     renderPassInfo.framebuffer = m_SwapChainFramebuffers[imageIndex];
     VkClearValue clearValues[2];
-    clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
+    clearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
     clearValues[1].depthStencil = {1.0f, 0};
     renderPassInfo.clearValueCount = 2;
     renderPassInfo.pClearValues = clearValues;

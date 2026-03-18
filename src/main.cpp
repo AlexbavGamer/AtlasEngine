@@ -53,6 +53,7 @@ namespace Atlas
 
             m_UIManager = std::make_unique<UIManager>(m_Scene.get());
             m_UIManager->setWindow(m_Window->getGLFWWindow());
+            m_UIManager->setRenderer(m_Renderer.get());
 
             m_ProjectManager = std::make_unique<ProjectManager>();
             m_UIManager->setProjectManager(m_ProjectManager.get());
@@ -68,32 +69,32 @@ namespace Atlas
             camera.position = glm::vec3(0.0f, 2.0f, 5.0f);
             camera.target = glm::vec3(0.0f, 0.0f, 0.0f);
 
-            // Create a cube (procedural - correct winding order for Vulkan)
-            auto cubeEntity = m_Scene->createEntity("Cube");
-            m_Scene->getRegistry().emplace<Mesh>(cubeEntity);
-            auto &mesh = m_Scene->getRegistry().get<Mesh>(cubeEntity);
-            mesh.meshPath = "[procedural]";
-            MeshData meshData = ModelLoader::createCube(1.0f,
-                                                       m_Renderer->getDevice(),
-                                                       m_Renderer->getPhysicalDevice(),
-                                                       [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties *memProperties) -> uint32_t
-                                                       {
-                                                           for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++)
-                                                           {
-                                                               if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties)
-                                                               {
-                                                                   return i;
-                                                               }
-                                                           }
-                                                           return uint32_t(~0);
-                                                       });
+            // Procedural cube disabled - use FBX import instead
+            // auto cubeEntity = m_Scene->createEntity("Cube");
+            // m_Scene->getRegistry().emplace<Mesh>(cubeEntity);
+            // auto &mesh = m_Scene->getRegistry().get<Mesh>(cubeEntity);
+            // mesh.meshPath = "[procedural]";
+            // MeshData meshData = ModelLoader::createCube(1.0f,
+            //                                            m_Renderer->getDevice(),
+            //                                            m_Renderer->getPhysicalDevice(),
+            //                                            [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties *memProperties) -> uint32_t
+            //                                            {
+            //                                                for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++)
+            //                                                {
+            //                                                    if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties)
+            //                                                    {
+            //                                                        return i;
+            //                                                    }
+            //                                                }
+            //                                                return uint32_t(~0);
+            //                                            });
 
-            mesh.vertexBuffer = meshData.vertexBuffer;
-            mesh.indexBuffer = meshData.indexBuffer;
-            mesh.vertexMemory = meshData.vertexMemory;
-            mesh.indexMemory = meshData.indexMemory;
-            mesh.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
-            mesh.indexCount = meshData.indexCount;
+            // mesh.vertexBuffer = meshData.vertexBuffer;
+            // mesh.indexBuffer = meshData.indexBuffer;
+            // mesh.vertexMemory = meshData.vertexMemory;
+            // mesh.indexMemory = meshData.indexMemory;
+            // mesh.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
+            // mesh.indexCount = meshData.indexCount;
 
             m_CameraController = std::make_unique<CameraController>(
                 m_Window->getGLFWWindow(),

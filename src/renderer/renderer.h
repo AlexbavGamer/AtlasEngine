@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 #include <memory>
 #include <vector>
 #include <functional>
@@ -55,6 +56,10 @@ public:
     
     using RenderCallback = std::function<void(VkCommandBuffer commandBuffer)>;
     void setRenderCallback(RenderCallback callback) { m_RenderCallback = std::move(callback); }
+
+    // Clear color
+    glm::vec4 getClearColor() const { return m_ClearColor; }
+    void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
 
 private:
     void createInstance();
@@ -122,8 +127,11 @@ private:
 
     // Depth
     VkImage m_DepthImage = VK_NULL_HANDLE;
-    VkDeviceMemory m_DepthImageMemory = VK_NULL_HANDLE;
+    VkDeviceMemory m_DepthMemory = VK_NULL_HANDLE;
     VkImageView m_DepthImageView = VK_NULL_HANDLE;
+
+    // Clear color
+    glm::vec4 m_ClearColor = glm::vec4(0.5f, 0.7f, 0.9f, 1.0f);
 
     // Pipeline
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
