@@ -39,6 +39,7 @@ void Renderer::init() {
     createSwapChain();
     createImageViews();
     createRenderPass();
+    createOffscreenRenderPass();
     createGraphicsPipeline();
     createFramebuffers();
     createCommandPool();
@@ -54,6 +55,7 @@ void Renderer::shutdown() {
     vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr);
     vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
     vkDestroyRenderPass(m_Device, m_RenderPass, nullptr);
+    vkDestroyRenderPass(m_Device, m_OffscreenRenderPass, nullptr);
 
     for (size_t i = 0; i < m_ImageAvailableSemaphores.size(); i++) {
         vkDestroySemaphore(m_Device, m_RenderFinishedSemaphores[i], nullptr);
@@ -162,10 +164,12 @@ void Renderer::recreateSwapChain() {
     }
 
     vkDeviceWaitIdle(m_Device);
+    cleanupOffscreenResources();
     cleanupSwapChain();
     createSwapChain();
     createImageViews();
     createFramebuffers();
+    createOffscreenResources();
 }
 
 uint32_t Renderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -277,7 +281,8 @@ void Renderer::pickPhysicalDevice() {
 }
 
 void Renderer::createLogicalDevice() {
-    QueueFamilyIndices indices = findQueueFamilies(m_PhysicalDevice);
+    m_QueueFamilyIndices = findQueueFamilies(m_PhysicalDevice);
+    QueueFamilyIndices indices = m_QueueFamilyIndices;
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
@@ -431,6 +436,48 @@ void Renderer::createRenderPass() {
 
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_RenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
+    }
+}
+
+void Renderer::createOffscreenRenderPass() {
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = m_SwapChainImageFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0;
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_OffscreenRenderPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create offscreen render pass!");
     }
 }
 
@@ -710,7 +757,7 @@ void Renderer::createOffscreenResources() {
 
     VkFramebufferCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = m_RenderPass;
+    framebufferInfo.renderPass = m_OffscreenRenderPass;
     framebufferInfo.attachmentCount = 1;
     framebufferInfo.pAttachments = &m_OffscreenImageView;
     framebufferInfo.width = m_SwapChainExtent.width;
@@ -734,6 +781,20 @@ void Renderer::cleanupSwapChain() {
     vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 }
 
+void Renderer::cleanupOffscreenResources() {
+    vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
+    vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
+    vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
+    vkDestroyImage(m_Device, m_OffscreenImage, nullptr);
+    vkFreeMemory(m_Device, m_OffscreenImageMemory, nullptr);
+
+    m_OffscreenFramebuffer = VK_NULL_HANDLE;
+    m_OffscreenSampler = VK_NULL_HANDLE;
+    m_OffscreenImageView = VK_NULL_HANDLE;
+    m_OffscreenImage = VK_NULL_HANDLE;
+    m_OffscreenImageMemory = VK_NULL_HANDLE;
+}
+
 void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Scene* scene) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -745,7 +806,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     // Render scene to offscreen
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = m_RenderPass;
+    renderPassInfo.renderPass = m_OffscreenRenderPass;
     renderPassInfo.framebuffer = m_OffscreenFramebuffer;
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = m_SwapChainExtent;
@@ -765,6 +826,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     vkCmdEndRenderPass(commandBuffer);
 
     // Render UI to swapchain
+    renderPassInfo.renderPass = m_RenderPass;
     renderPassInfo.framebuffer = m_SwapChainFramebuffers[imageIndex];
     VkClearValue clearColorUI = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
     renderPassInfo.pClearValues = &clearColorUI;

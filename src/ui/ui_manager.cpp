@@ -301,7 +301,7 @@ void UIManager::renderNewProjectDialog() {
         if (ImGui::Button("Browse...")) {
             IGFD::FileDialogConfig config;
             config.path = ".";
-            config.flags = ImGuiFileDialogFlags_SelectDirectory;
+            config.flags = ImGuiFileDialogFlags_NoDialog;
             ImGuiFileDialog::Instance()->OpenDialog("SelectNewProjectFolder", "Select Project Folder", nullptr, config);
         }
         

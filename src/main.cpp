@@ -37,7 +37,7 @@ public:
             m_Renderer->getPhysicalDevice(),
             m_Renderer->getDevice(),
             m_Renderer->getGraphicsQueue(),
-            0,
+            m_Renderer->getGraphicsQueueFamily(),
             m_Renderer->getRenderPass(),
             m_Window->getGLFWWindow(),
             m_Renderer->getSwapChainImageCount()

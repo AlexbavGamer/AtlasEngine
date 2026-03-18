@@ -37,6 +37,8 @@ public:
     VkQueue getPresentQueue() const { return m_PresentQueue; }
     VkCommandPool getCommandPool() const { return m_CommandPool; }
     VkRenderPass getRenderPass() const { return m_RenderPass; }
+    VkRenderPass getOffscreenRenderPass() const { return m_OffscreenRenderPass; }
+    uint32_t getGraphicsQueueFamily() const { return m_QueueFamilyIndices.graphicsFamily.value(); }
     VkPipelineLayout getPipelineLayout() const { return m_PipelineLayout; }
     VkPipeline getGraphicsPipeline() const { return m_GraphicsPipeline; }
     VkExtent2D getSwapChainExtent() const { return m_SwapChainExtent; }
@@ -69,8 +71,10 @@ private:
     void createCommandBuffers();
     void createSyncObjects();
     void createOffscreenResources();
+    void createOffscreenRenderPass();
 
     void cleanupSwapChain();
+    void cleanupOffscreenResources();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Scene* scene);
 
     bool checkValidationLayerSupport();
@@ -104,6 +108,7 @@ private:
     VkDevice m_Device = VK_NULL_HANDLE;
     VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
     VkQueue m_PresentQueue = VK_NULL_HANDLE;
+    QueueFamilyIndices m_QueueFamilyIndices{};
 
     // Swapchain
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
@@ -115,6 +120,7 @@ private:
 
     // Pipeline
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
+    VkRenderPass m_OffscreenRenderPass = VK_NULL_HANDLE;
     VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
 

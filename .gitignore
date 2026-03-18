@@ -4,6 +4,8 @@ deps/build/
 deps/src/
 out/
 
+imgui.ini
+
 # IDE
 # .vscode/
 .vs/
