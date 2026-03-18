@@ -56,7 +56,6 @@ void UIManager::render(ImTextureID viewportTexture) {
     if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
         if (ImGuiFileDialog::Instance()->IsOk()) {
             std::string folderPath = ImGuiFileDialog::Instance()->GetCurrentPath();
-            std::cout << "[OpenProject] Selected path: " << folderPath << std::endl;
             ImGuiFileDialog::Instance()->Close();
             if (projectManager && !folderPath.empty()) {
                 projectManager->openProject(folderPath);
@@ -263,9 +262,9 @@ void UIManager::renderContentExplorer() {
         
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_DROP")) {
-                if (payload->DataSize > 0) {
+                if (payload->DataSize > 0 && onAssetDropped) {
                     const char* droppedPath = static_cast<const char*>(payload->Data);
-                    std::cout << "File dropped: " << droppedPath << std::endl;
+                    onAssetDropped(droppedPath);
                 }
             }
             ImGui::EndDragDropTarget();

@@ -94,10 +94,6 @@ namespace Atlas
             mesh.indexMemory = meshData.indexMemory;
             mesh.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
             mesh.indexCount = meshData.indexCount;
-            
-            std::cout << "Cube loaded: " << meshData.vertices.size() << " vertices, " << meshData.indexCount << " indices" << std::endl;
-            std::cout << "  vertexBuffer=" << (void*)meshData.vertexBuffer << std::endl;
-            std::cout << "  indexBuffer=" << (void*)meshData.indexBuffer << std::endl;
 
             m_CameraController = std::make_unique<CameraController>(
                 m_Window->getGLFWWindow(),

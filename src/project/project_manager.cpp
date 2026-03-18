@@ -6,7 +6,6 @@ void ProjectManager::createNewProject(const std::string& name, const std::string
     currentProject = Project(name, path);
     hasCurrentProject = true;
     ensureDirectories();
-    std::cout << "Created new project: " << name << " at " << path << std::endl;
 }
 
 void ProjectManager::openProject(const std::string& projectPath) {
@@ -15,23 +14,13 @@ void ProjectManager::openProject(const std::string& projectPath) {
     currentProject.name = fs::path(projectPath).filename().string();
     hasCurrentProject = true;
     
-    std::cout << "[openProject] projectPath: " << projectPath << std::endl;
-    std::cout << "[openProject] assetsPath: " << currentProject.assetsPath << std::endl;
-    
     if (!fs::exists(currentProject.assetsPath)) {
-        std::cout << "[openProject] Assets path does not exist, creating..." << std::endl;
         ensureDirectories();
-    } else {
-        std::cout << "[openProject] Assets path exists" << std::endl;
     }
-    
-    std::cout << "Opened project: " << currentProject.name << std::endl;
 }
 
 void ProjectManager::saveProject() {
     if (!hasCurrentProject) return;
-    // Save project metadata
-    std::cout << "Project saved: " << currentProject.name << std::endl;
 }
 
 void ProjectManager::closeProject() {

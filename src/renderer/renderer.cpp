@@ -664,7 +664,7 @@ void Renderer::createGraphicsPipeline() {
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_NONE; // Desabilitado temporariamente
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -1035,16 +1035,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 view = camera.getViewMatrix();
             }
             
-            static int debugFrames = 0;
             for (auto entity : meshView) {
                 auto& mesh = registry.get<Mesh>(entity);
-                
-                if (debugFrames < 3) {
-                    debugFrames++;
-                    std::cout << "Mesh: vb=" << (void*)mesh.vertexBuffer 
-                              << " ib=" << (void*)mesh.indexBuffer 
-                              << " indices=" << mesh.indexCount << std::endl;
-                }
                 
                 if (mesh.vertexBuffer != VK_NULL_HANDLE && mesh.indexBuffer != VK_NULL_HANDLE && mesh.indexCount > 0) {
                     if (registry.all_of<Renderable>(entity)) {
