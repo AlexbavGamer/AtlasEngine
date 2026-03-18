@@ -31,8 +31,8 @@ void CameraController::update(float deltaTime) {
         float deltaX = static_cast<float>(mouseX) - lastMouseX;
         float deltaY = static_cast<float>(mouseY) - lastMouseY;
 
-        float yaw = glm::radians(deltaX * sensitivity);
-        float pitch = glm::radians(-deltaY * sensitivity);
+        float yaw = glm::radians(-deltaX * sensitivity); // Invertido para corrigir direção
+        float pitch = glm::radians(deltaY * sensitivity);
 
         glm::vec3 forward = getCameraForward();
         glm::vec3 right = getCameraRight();

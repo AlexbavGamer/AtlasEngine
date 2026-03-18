@@ -8,6 +8,7 @@
 #include "../ecs/components.h"
 #include <glm/glm.hpp>
 #include <filesystem>
+#include <iostream>
 
 UIManager::UIManager(Scene* scene) : m_Scene(scene) {}
 
@@ -34,7 +35,6 @@ void UIManager::render(ImTextureID viewportTexture) {
             ImGui::DockBuilderDockWindow("Viewport", dockMain);
             ImGui::DockBuilderDockWindow("Hierarchy", dockLeftBottom);
             ImGui::DockBuilderDockWindow("Properties", dockLeftTop);
-            ImGui::DockBuilderDockWindow("Transform", dockLeftTop);
             ImGui::DockBuilderDockWindow("Content Explorer", dockLeftBottom);
             ImGui::DockBuilderFinish(dockspaceID);
         }
@@ -45,34 +45,22 @@ void UIManager::render(ImTextureID viewportTexture) {
     ImGui::DockSpaceOverViewport(dockspaceID, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
     renderViewport(viewportTexture);
-    renderTransformPanel();
     renderHierarchy();
     renderProperties();
     renderContentExplorer();
     
-    renderMenuBar();
     renderNewProjectDialog();
     renderOpenProjectDialog();
+    renderMenuBar();
     
     if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
         if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+            std::string folderPath = ImGuiFileDialog::Instance()->GetCurrentPath();
+            std::cout << "[OpenProject] Selected path: " << folderPath << std::endl;
             ImGuiFileDialog::Instance()->Close();
-            if (projectManager) {
-                std::filesystem::path p(filePath);
-                std::string projPath = p.parent_path().string();
-                projectManager->openProject(projPath);
+            if (projectManager && !folderPath.empty()) {
+                projectManager->openProject(folderPath);
             }
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    
-    if (ImGuiFileDialog::Instance()->Display("SelectNewProjectFolder")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string folderPath = ImGuiFileDialog::Instance()->GetFilePathName();
-            ImGuiFileDialog::Instance()->Close();
-            showNewProjectDialog = true;
-            strncpy(newProjectPath, folderPath.c_str(), sizeof(newProjectPath) - 1);
         }
         ImGuiFileDialog::Instance()->Close();
     }
@@ -130,27 +118,6 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::End();
 }
 
-void UIManager::renderTransformPanel() {
-    ImGui::Begin("Transform", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    
-    if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
-        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
-            auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
-            
-            ImGui::Text("Position:");
-            ImGui::DragFloat3("##pos", &transform.position.x, 0.1f);
-
-            ImGui::Text("Rotation:");
-            ImGui::DragFloat3("##rot", &transform.rotation.x, 1.0f);
-
-            ImGui::Text("Scale:");
-            ImGui::DragFloat3("##scale", &transform.scale.x, 0.1f);
-        }
-    }
-    
-    ImGui::End();
-}
-
 void UIManager::renderHierarchy() {
     ImGui::Begin("Hierarchy", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
@@ -176,7 +143,7 @@ void UIManager::renderProperties() {
 
         auto renderComponent = [this](auto&& component, const char* name) {
             if (ImGui::CollapsingHeader(name, ImGuiTreeNodeFlags_DefaultOpen)) {
-                ecs::renderComponentProperties(component);
+                ecs::renderComponentProperties(component, static_cast<uint32_t>(selectedEntity));
             }
         };
 
@@ -202,39 +169,106 @@ void UIManager::renderProperties() {
     ImGui::End();
 }
 
+static std::vector<std::string> folderStack;
+
+std::string getFileIcon(const std::string& filename, bool isFolder) {
+    if (isFolder) return "[D]";
+    std::string ext = fs::path(filename).extension().string();
+    if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") return "[M]";
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" || ext == ".hdr") return "[T]";
+    if (ext == ".mat" || ext == ".material") return "[*]";
+    if (ext == ".scene" || ext == ".json") return "[S]";
+    return "[F]";
+}
+
+ProjectManager::FileEntry getFolderAtPath(ProjectManager* pm, const std::vector<std::string>& path) {
+    auto tree = pm->getAssetTree();
+    
+    if (path.empty()) return tree;
+    
+    ProjectManager::FileEntry* current = &tree;
+    
+    for (const auto& folderName : path) {
+        bool found = false;
+        for (auto& child : current->children) {
+            if (child.name == folderName && child.isFolder) {
+                current = &child;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return tree;
+    }
+    return *current;
+}
+
 void UIManager::renderContentExplorer() {
     ImGui::Begin("Content Explorer", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
     if (projectManager && projectManager->hasProject()) {
-        std::vector<std::string> models = projectManager->getModelFiles();
+        if (ImGui::Button("Home")) {
+            folderStack.clear();
+        }
         
-        ImGui::Text("Models:");
-        for (const auto& modelPath : models) {
-            std::string filename = std::filesystem::path(modelPath).filename().string();
-            
-            ImGui::Selectable(("📦 " + filename).c_str(), false, ImGuiSelectableFlags_AllowOverlap);
-            
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-                ImGui::SetDragDropPayload("ASSET_DROP", modelPath.c_str(), modelPath.length() + 1);
-                ImGui::Text("Drop: %s", filename.c_str());
-                ImGui::EndDragDropSource();
+        if (!folderStack.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("..")) {
+                folderStack.pop_back();
             }
         }
-
-        std::vector<std::string> textures = projectManager->getTextureFiles();
         
+        std::string pathDisplay = "assets/";
+        for (const auto& f : folderStack) {
+            pathDisplay += f + "/";
+        }
+        ImGui::Text("%s", pathDisplay.c_str());
         ImGui::Separator();
-        ImGui::Text("Textures:");
-        for (const auto& texPath : textures) {
-            std::string filename = std::filesystem::path(texPath).filename().string();
+        
+        auto currentFolder = getFolderAtPath(projectManager, folderStack);
+        
+        // std::cout << "[UI] Current folder children: " << currentFolder.children.size() << std::endl;
+        
+        bool hasItems = false;
+        for (const auto& child : currentFolder.children) {
+            hasItems = true;
+            // std::cout << "  Rendering: " << child.name << " (isFolder=" << child.isFolder << ")" << std::endl;
             
-            ImGui::Selectable(("🖼️ " + filename).c_str(), false, ImGuiSelectableFlags_AllowOverlap);
-            
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-                ImGui::SetDragDropPayload("ASSET_DROP", texPath.c_str(), texPath.length() + 1);
-                ImGui::Text("Drop: %s", filename.c_str());
-                ImGui::EndDragDropSource();
+            if (child.isFolder) {
+                std::string icon = getFileIcon(child.name, true);
+                std::string label = icon + " " + child.name;
+                
+                ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+                
+                if (ImGui::IsItemClicked()) {
+                    folderStack.push_back(child.name);
+                }
+            } else {
+                std::string icon = getFileIcon(child.name, false);
+                std::string label = icon + " " + child.name;
+                
+                if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
+                }
+                
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                    ImGui::SetDragDropPayload("ASSET_DROP", child.relativePath.c_str(), child.relativePath.length() + 1);
+                    ImGui::Text("%s", label.c_str());
+                    ImGui::EndDragDropSource();
+                }
             }
+        }
+        
+        if (!hasItems) {
+            ImGui::Text("Empty folder");
+        }
+        
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("FILE_DROP")) {
+                if (payload->DataSize > 0) {
+                    const char* droppedPath = static_cast<const char*>(payload->Data);
+                    std::cout << "File dropped: " << droppedPath << std::endl;
+                }
+            }
+            ImGui::EndDragDropTarget();
         }
     } else {
         ImGui::Text("No project open.\nOpen a project to see assets.");
@@ -252,11 +286,13 @@ void UIManager::renderMenuBar() {
             if (ImGui::MenuItem("Open Project", "Ctrl+O")) {
                 IGFD::FileDialogConfig config;
                 config.path = ".";
-                ImGuiFileDialog::Instance()->OpenDialog("OpenProject", "Open Project", ".json,.atlas", config);
+                ImGuiFileDialog::Instance()->OpenDialog("OpenProject", "Open Project Folder", nullptr, config);
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                ImGuiFileDialog::Instance()->OpenDialog("SaveProject", "Save Project", ".json,.atlas", IGFD::FileDialogConfig{.path = "."});
+                IGFD::FileDialogConfig saveConfig;
+                saveConfig.path = ".";
+                ImGuiFileDialog::Instance()->OpenDialog("SaveProject", "Save Project", nullptr, saveConfig);
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -288,10 +324,21 @@ void UIManager::renderMenuBar() {
 }
 
 void UIManager::renderNewProjectDialog() {
+    if (ImGuiFileDialog::Instance()->Display("SelectNewProjectFolder")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string folderPath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            strncpy(newProjectPath, folderPath.c_str(), sizeof(newProjectPath) - 1);
+            showNewProjectDialog = true;
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    
     if (!showNewProjectDialog) return;
     
+    ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_Always);
     ImGui::OpenPopup("New Project");
-    if (ImGui::BeginPopupModal("New Project", &showNewProjectDialog, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("New Project", &showNewProjectDialog)) {
         ImGui::Text("Project Name:");
         ImGui::InputText("##name", newProjectName, IM_ARRAYSIZE(newProjectName));
         
@@ -299,9 +346,9 @@ void UIManager::renderNewProjectDialog() {
         ImGui::InputText("##path", newProjectPath, IM_ARRAYSIZE(newProjectPath));
         ImGui::SameLine();
         if (ImGui::Button("Browse...")) {
+            showNewProjectDialog = false;
             IGFD::FileDialogConfig config;
             config.path = ".";
-            config.flags = ImGuiFileDialogFlags_NoDialog;
             ImGuiFileDialog::Instance()->OpenDialog("SelectNewProjectFolder", "Select Project Folder", nullptr, config);
         }
         

@@ -39,6 +39,7 @@ void Renderer::init() {
     createSwapChain();
     createImageViews();
     createRenderPass();
+    createDepthResources();
     createOffscreenRenderPass();
     createGraphicsPipeline();
     createFramebuffers();
@@ -163,13 +164,24 @@ void Renderer::recreateSwapChain() {
         glfwWaitEvents();
     }
 
+    VkExtent2D newExtent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    
+    if (m_SwapChainExtent.width == newExtent.width && m_SwapChainExtent.height == newExtent.height) {
+        return;
+    }
+
+    m_SwapChainExtent = newExtent;
+
     vkDeviceWaitIdle(m_Device);
     cleanupOffscreenResources();
     cleanupSwapChain();
     createSwapChain();
     createImageViews();
+    createDepthResources();
     createFramebuffers();
     createOffscreenResources();
+    createOffscreenRenderPass();
+    createGraphicsPipeline();
 }
 
 uint32_t Renderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -408,27 +420,43 @@ void Renderer::createRenderPass() {
     colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
     VkAttachmentReference colorAttachmentRef{};
     colorAttachmentRef.attachment = 0;
     colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentRef{};
+    depthAttachmentRef.attachment = 1;
+    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
+    subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
+    VkAttachmentDescription attachments[] = {colorAttachment, depthAttachment};
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
@@ -436,6 +464,63 @@ void Renderer::createRenderPass() {
 
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_RenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
+    }
+}
+
+VkFormat Renderer::findDepthFormat() {
+    return VK_FORMAT_D32_SFLOAT;
+}
+
+void Renderer::createDepthResources() {
+    VkFormat depthFormat = findDepthFormat();
+    
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = m_SwapChainExtent.width;
+    imageInfo.extent.height = m_SwapChainExtent.height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = depthFormat;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.flags = 0;
+
+    if (vkCreateImage(m_Device, &imageInfo, nullptr, &m_DepthImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create depth image!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(m_Device, m_DepthImage, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_DepthImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate depth image memory!");
+    }
+
+    vkBindImageMemory(m_Device, m_DepthImage, m_DepthImageMemory, 0);
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = m_DepthImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = depthFormat;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DepthImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create depth image view!");
     }
 }
 
@@ -450,27 +535,43 @@ void Renderer::createOffscreenRenderPass() {
     colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
     VkAttachmentReference colorAttachmentRef{};
     colorAttachmentRef.attachment = 0;
     colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentRef{};
+    depthAttachmentRef.attachment = 1;
+    depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
+    subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
     VkSubpassDependency dependency{};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
+    VkAttachmentDescription attachments[] = {colorAttachment, depthAttachment};
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
@@ -563,9 +664,19 @@ void Renderer::createGraphicsPipeline() {
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // Desabilitado temporariamente
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+    depthStencil.minDepthBounds = 0.0f;
+    depthStencil.maxDepthBounds = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -586,7 +697,7 @@ void Renderer::createGraphicsPipeline() {
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float) * 16; // mat4
+    pushConstantRange.size = sizeof(float) * 16 * 3; // 3x mat4 (model, view, proj)
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -606,6 +717,7 @@ void Renderer::createGraphicsPipeline() {
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = m_PipelineLayout;
@@ -624,12 +736,12 @@ void Renderer::createFramebuffers() {
     m_SwapChainFramebuffers.resize(m_SwapChainImageViews.size());
 
     for (size_t i = 0; i < m_SwapChainImageViews.size(); i++) {
-        VkImageView attachments[] = {m_SwapChainImageViews[i]};
+        VkImageView attachments[] = {m_SwapChainImageViews[i], m_DepthImageView};
 
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = m_RenderPass;
-        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.attachmentCount = 2;
         framebufferInfo.pAttachments = attachments;
         framebufferInfo.width = m_SwapChainExtent.width;
         framebufferInfo.height = m_SwapChainExtent.height;
@@ -755,11 +867,59 @@ void Renderer::createOffscreenResources() {
         throw std::runtime_error("failed to create offscreen sampler!");
     }
 
+    VkImageCreateInfo depthImageInfo{};
+    depthImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    depthImageInfo.imageType = VK_IMAGE_TYPE_2D;
+    depthImageInfo.extent.width = m_SwapChainExtent.width;
+    depthImageInfo.extent.height = m_SwapChainExtent.height;
+    depthImageInfo.extent.depth = 1;
+    depthImageInfo.mipLevels = 1;
+    depthImageInfo.arrayLayers = 1;
+    depthImageInfo.format = VK_FORMAT_D32_SFLOAT;
+    depthImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    depthImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthImageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    depthImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(m_Device, &depthImageInfo, nullptr, &m_OffscreenDepthImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create offscreen depth image!");
+    }
+
+    VkMemoryRequirements depthMemRequirements;
+    vkGetImageMemoryRequirements(m_Device, m_OffscreenDepthImage, &depthMemRequirements);
+
+    VkMemoryAllocateInfo depthAllocInfo{};
+    depthAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    depthAllocInfo.allocationSize = depthMemRequirements.size;
+    depthAllocInfo.memoryTypeIndex = findMemoryType(depthMemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &depthAllocInfo, nullptr, &m_OffscreenDepthImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate offscreen depth image memory!");
+    }
+
+    vkBindImageMemory(m_Device, m_OffscreenDepthImage, m_OffscreenDepthImageMemory, 0);
+
+    VkImageViewCreateInfo depthViewInfo{};
+    depthViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    depthViewInfo.image = m_OffscreenDepthImage;
+    depthViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    depthViewInfo.format = VK_FORMAT_D32_SFLOAT;
+    depthViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depthViewInfo.subresourceRange.baseMipLevel = 0;
+    depthViewInfo.subresourceRange.levelCount = 1;
+    depthViewInfo.subresourceRange.baseArrayLayer = 0;
+    depthViewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(m_Device, &depthViewInfo, nullptr, &m_OffscreenDepthImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create offscreen depth image view!");
+    }
+
+    VkImageView offscreenAttachments[] = {m_OffscreenImageView, m_OffscreenDepthImageView};
     VkFramebufferCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebufferInfo.renderPass = m_OffscreenRenderPass;
-    framebufferInfo.attachmentCount = 1;
-    framebufferInfo.pAttachments = &m_OffscreenImageView;
+    framebufferInfo.attachmentCount = 2;
+    framebufferInfo.pAttachments = offscreenAttachments;
     framebufferInfo.width = m_SwapChainExtent.width;
     framebufferInfo.height = m_SwapChainExtent.height;
     framebufferInfo.layers = 1;
@@ -778,6 +938,10 @@ void Renderer::cleanupSwapChain() {
         vkDestroyImageView(m_Device, imageView, nullptr);
     }
 
+    vkDestroyImageView(m_Device, m_DepthImageView, nullptr);
+    vkDestroyImage(m_Device, m_DepthImage, nullptr);
+    vkFreeMemory(m_Device, m_DepthImageMemory, nullptr);
+
     vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 }
 
@@ -787,12 +951,19 @@ void Renderer::cleanupOffscreenResources() {
     vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
     vkDestroyImage(m_Device, m_OffscreenImage, nullptr);
     vkFreeMemory(m_Device, m_OffscreenImageMemory, nullptr);
+    vkDestroyImageView(m_Device, m_OffscreenDepthImageView, nullptr);
+    vkDestroyImage(m_Device, m_OffscreenDepthImage, nullptr);
+    vkFreeMemory(m_Device, m_OffscreenDepthImageMemory, nullptr);
 
     m_OffscreenFramebuffer = VK_NULL_HANDLE;
     m_OffscreenSampler = VK_NULL_HANDLE;
     m_OffscreenImageView = VK_NULL_HANDLE;
     m_OffscreenImage = VK_NULL_HANDLE;
     m_OffscreenImageMemory = VK_NULL_HANDLE;
+    m_OffscreenImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_OffscreenDepthImageView = VK_NULL_HANDLE;
+    m_OffscreenDepthImage = VK_NULL_HANDLE;
+    m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
 }
 
 void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Scene* scene) {
@@ -803,6 +974,25 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         throw std::runtime_error("failed to begin recording command buffer!");
     }
 
+    // Transition offscreen image to color attachment for rendering
+    if (m_OffscreenImageLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        VkImageMemoryBarrier preRenderBarrier{};
+        preRenderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        preRenderBarrier.oldLayout = m_OffscreenImageLayout;
+        preRenderBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        preRenderBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preRenderBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        preRenderBarrier.image = m_OffscreenImage;
+        preRenderBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        preRenderBarrier.subresourceRange.baseMipLevel = 0;
+        preRenderBarrier.subresourceRange.levelCount = 1;
+        preRenderBarrier.subresourceRange.baseArrayLayer = 0;
+        preRenderBarrier.subresourceRange.layerCount = 1;
+        preRenderBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        preRenderBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &preRenderBarrier);
+    }
+
     // Render scene to offscreen
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -811,29 +1001,102 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = m_SwapChainExtent;
 
-    VkClearValue clearColor = {{{0.2f, 0.2f, 0.2f, 1.0f}}};
-    renderPassInfo.clearValueCount = 1;
-    renderPassInfo.pClearValues = &clearColor;
+    VkClearValue offscreenClearValues[2];
+    offscreenClearValues[0].color = {{0.2f, 0.2f, 0.2f, 1.0f}};
+    offscreenClearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.pClearValues = offscreenClearValues;
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    // Render scene entities (simplified - only background color for now)
+    m_OffscreenImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    // Render scene entities
     if (scene) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
-        // Mesh rendering disabled - ENTT component registration issue
+        auto& registry = scene->getRegistry();
+        auto meshView = registry.view<Mesh>();
+        
+        if (!meshView.empty()) {
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
+            
+            // Get camera
+            glm::mat4 view = glm::mat4(1.0f);
+            glm::mat4 proj = glm::mat4(1.0f);
+            
+            auto cameraView = registry.view<Camera>();
+            if (!cameraView.empty()) {
+                auto cameraEntity = cameraView[0];
+                auto& camera = registry.get<Camera>(cameraEntity);
+                camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+                
+                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, 0.1f, 1000.0f);
+                proj[1][1] = -proj[1][1];
+                
+                view = camera.getViewMatrix();
+            }
+            
+            static int debugFrames = 0;
+            for (auto entity : meshView) {
+                auto& mesh = registry.get<Mesh>(entity);
+                
+                if (debugFrames < 3) {
+                    debugFrames++;
+                    std::cout << "Mesh: vb=" << (void*)mesh.vertexBuffer 
+                              << " ib=" << (void*)mesh.indexBuffer 
+                              << " indices=" << mesh.indexCount << std::endl;
+                }
+                
+                if (mesh.vertexBuffer != VK_NULL_HANDLE && mesh.indexBuffer != VK_NULL_HANDLE && mesh.indexCount > 0) {
+                    if (registry.all_of<Renderable>(entity)) {
+                        auto& renderable = registry.get<Renderable>(entity);
+                        if (!renderable.visible) continue;
+                    }
+
+                    glm::mat4 model = glm::mat4(1.0f);
+                    if (registry.all_of<Transform>(entity)) {
+                        auto& transform = registry.get<Transform>(entity);
+                        model = glm::translate(model, transform.position);
+                        model = glm::rotate(model, glm::radians(transform.rotation.x), glm::vec3(1, 0, 0));
+                        model = glm::rotate(model, glm::radians(transform.rotation.y), glm::vec3(0, 1, 0));
+                        model = glm::rotate(model, glm::radians(transform.rotation.z), glm::vec3(0, 0, 1));
+                        model = glm::scale(model, transform.scale);
+                    }
+                    
+                    struct PushConstants {
+                        glm::mat4 model;
+                        glm::mat4 view;
+                        glm::mat4 proj;
+                    } pushConstants{model, view, proj};
+                    
+                    vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushConstants);
+                    
+                    VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
+                    VkDeviceSize offsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32); 
+                    vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+                }
+            }
+        }
     }
 
     vkCmdEndRenderPass(commandBuffer);
 
+    // Update layout tracking (render pass finalLayout is SHADER_READ_ONLY_OPTIMAL)
+    m_OffscreenImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     // Render UI to swapchain
     renderPassInfo.renderPass = m_RenderPass;
     renderPassInfo.framebuffer = m_SwapChainFramebuffers[imageIndex];
-    VkClearValue clearColorUI = {{{0.1f, 0.1f, 0.1f, 1.0f}}};
-    renderPassInfo.pClearValues = &clearColorUI;
+    VkClearValue clearValues[2];
+    clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
+    clearValues[1].depthStencil = {1.0f, 0};
+    renderPassInfo.clearValueCount = 2;
+    renderPassInfo.pClearValues = clearValues;
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
     
     if (m_RenderCallback) {
-        m_RenderCallback(commandBuffer);
+       m_RenderCallback(commandBuffer);
     }
     
     vkCmdEndRenderPass(commandBuffer);

@@ -2,6 +2,8 @@
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
+    mat4 view;
+    mat4 proj;
 } pushConstants;
 
 layout(location = 0) in vec3 inPosition;
@@ -14,7 +16,7 @@ layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) out vec3 fragNormal;
 
 void main() {
-    gl_Position = pushConstants.model * vec4(inPosition, 1.0);
+    gl_Position = pushConstants.proj * pushConstants.view * pushConstants.model * vec4(inPosition, 1.0);
     fragColor = inColor;
     fragTexCoord = inTexCoord;
     fragNormal = mat3(pushConstants.model) * inNormal;

@@ -65,6 +65,7 @@ private:
     void createSwapChain();
     void createImageViews();
     void createRenderPass();
+    void createDepthResources();
     void createGraphicsPipeline();
     void createFramebuffers();
     void createCommandPool();
@@ -83,6 +84,7 @@ private:
 
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
+    VkFormat findDepthFormat();
 
     VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
     VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
@@ -118,6 +120,11 @@ private:
     std::vector<VkImageView> m_SwapChainImageViews;
     std::vector<VkFramebuffer> m_SwapChainFramebuffers;
 
+    // Depth
+    VkImage m_DepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_DepthImageMemory = VK_NULL_HANDLE;
+    VkImageView m_DepthImageView = VK_NULL_HANDLE;
+
     // Pipeline
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VkRenderPass m_OffscreenRenderPass = VK_NULL_HANDLE;
@@ -142,6 +149,10 @@ private:
     VkImageView m_OffscreenImageView = VK_NULL_HANDLE;
     VkSampler m_OffscreenSampler = VK_NULL_HANDLE;
     VkFramebuffer m_OffscreenFramebuffer = VK_NULL_HANDLE;
+    VkImageLayout m_OffscreenImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage m_OffscreenDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
+    VkImageView m_OffscreenDepthImageView = VK_NULL_HANDLE;
 
     bool m_FramebufferResized = false;
     ResizeCallback m_ResizeCallback;

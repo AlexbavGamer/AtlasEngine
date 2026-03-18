@@ -35,6 +35,16 @@ public:
     
     std::string getAssetFullPath(const std::string& relativePath);
     std::string getProjectPath() const { return currentProject.path; }
+    std::string getAssetsPath() const { return currentProject.assetsPath; }
+    
+    struct FileEntry {
+        std::string name;
+        std::string fullPath;
+        std::string relativePath;
+        bool isFolder;
+        std::vector<FileEntry> children;
+    };
+    FileEntry getAssetTree(const std::string& subfolder = "");
     
 private:
     Project currentProject;

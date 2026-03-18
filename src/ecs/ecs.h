@@ -78,24 +78,24 @@ using World = entt::registry;
 namespace ecs {
 
 template<typename T>
-void renderComponentProperties(T& component) {
+void renderComponentProperties(T& component, uint32_t entityId) {
     if constexpr (std::is_same_v<T, Transform>) {
-        ImGui::DragFloat3("Position", &component.position.x, 0.1f);
-        ImGui::DragFloat3("Rotation", &component.rotation.x, 1.0f);
-        ImGui::DragFloat3("Scale", &component.scale.x, 0.1f);
+        ImGui::DragFloat3("Position##T", &component.position.x, 0.1f);
+        ImGui::DragFloat3("Rotation##T", &component.rotation.x, 1.0f);
+        ImGui::DragFloat3("Scale##T", &component.scale.x, 0.1f);
     } else if constexpr (std::is_same_v<T, Renderable>) {
-        ImGui::Checkbox("Visible", &component.visible);
-        ImGui::DragScalar("Material ID", ImGuiDataType_U32, &component.materialID);
+        ImGui::Checkbox("Visible##R", &component.visible);
+        ImGui::DragScalar("Material ID##R", ImGuiDataType_U32, &component.materialID);
     } else if constexpr (std::is_same_v<T, Mesh>) {
         ImGui::Text("Mesh Path: %s", component.meshPath.c_str());
         ImGui::Text("Vertices: %u", component.vertexCount);
         ImGui::Text("Indices: %u", component.indexCount);
     } else if constexpr (std::is_same_v<T, Camera>) {
-        ImGui::DragFloat3("Position", &component.position.x, 0.1f);
-        ImGui::DragFloat3("Target", &component.target.x, 0.1f);
-        ImGui::DragFloat("FOV", &component.fov, 1.0f, 1.0f, 180.0f);
-        ImGui::DragFloat("Near", &component.nearPlane, 0.1f);
-        ImGui::DragFloat("Far", &component.farPlane, 1.0f);
+        ImGui::DragFloat3("Position##C", &component.position.x, 0.1f);
+        ImGui::DragFloat3("Target##C", &component.target.x, 0.1f);
+        ImGui::DragFloat("FOV##C", &component.fov, 1.0f, 1.0f, 180.0f);
+        ImGui::DragFloat("Near##C", &component.nearPlane, 0.1f);
+        ImGui::DragFloat("Far##C", &component.farPlane, 1.0f);
     }
 }
 

@@ -35,7 +35,6 @@ private:
     void renderHierarchy();
     void renderProperties();
     void renderContentExplorer();
-    void renderTransformPanel();
     void renderMenuBar();
 
     void renderNewProjectDialog();
