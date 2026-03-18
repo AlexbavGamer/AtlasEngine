@@ -88,10 +88,22 @@ public:
         return meshData;
     }
     
-    static MeshData loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*)) {
+    static void fixWindingOrderAndNormals(MeshData& meshData) {
+        for (size_t i = 0; i < meshData.indices.size(); i += 3) {
+            std::swap(meshData.indices[i], meshData.indices[i + 2]);
+        }
+        
+        for (auto& vertex : meshData.vertices) {
+            vertex.normal.x = -vertex.normal.x;
+            vertex.normal.y = -vertex.normal.y;
+            vertex.normal.z = -vertex.normal.z;
+        }
+    }
+    
+    static MeshData loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*), bool fixForVulkan = true) {
         Assimp::Importer importer;
         
-        const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices | aiProcess_FlipWindingOrder);
+        const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_JoinIdenticalVertices | aiProcess_GenNormals);
         
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
             throw std::runtime_error("Failed to load model: " + std::string(importer.GetErrorString()));
@@ -117,7 +129,7 @@ public:
 
                 if (aiMesh->mTextureCoords[0]) {
                     vertex.texCoord.x = aiMesh->mTextureCoords[0][j].x;
-                    vertex.texCoord.y = aiMesh->mTextureCoords[0][j].y;
+                    vertex.texCoord.y = 1.0f - aiMesh->mTextureCoords[0][j].y;
                 } else {
                     vertex.texCoord = {0.0f, 0.0f};
                 }
@@ -144,6 +156,10 @@ public:
         }
 
         meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
+
+        if (fixForVulkan) {
+            fixWindingOrderAndNormals(meshData);
+        }
 
         createBuffers(meshData, device, physicalDevice, findMemoryType);
 
