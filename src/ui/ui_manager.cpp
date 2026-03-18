@@ -12,42 +12,6 @@
 UIManager::UIManager(Scene* scene) : m_Scene(scene) {}
 
 void UIManager::render(ImTextureID viewportTexture) {
-    renderNewProjectDialog();
-    renderOpenProjectDialog();
-    renderMenuBar();
-    
-    if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
-            ImGuiFileDialog::Instance()->Close();
-            if (projectManager) {
-                std::filesystem::path p(filePath);
-                std::string projPath = p.parent_path().string();
-                projectManager->openProject(projPath);
-            }
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    
-    if (ImGuiFileDialog::Instance()->Display("SelectNewProjectFolder")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string folderPath = ImGuiFileDialog::Instance()->GetFilePathName();
-            ImGuiFileDialog::Instance()->Close();
-            showNewProjectDialog = true;
-            strncpy(newProjectPath, folderPath.c_str(), sizeof(newProjectPath) - 1);
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    
-    if (ImGuiFileDialog::Instance()->Display("SaveProject")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
-            ImGuiFileDialog::Instance()->Close();
-            if (onSaveProject) onSaveProject();
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    
     static bool dockspaceInitialized = false;
     static ImGuiID dockspaceID = 0;
 
@@ -85,6 +49,42 @@ void UIManager::render(ImTextureID viewportTexture) {
     renderHierarchy();
     renderProperties();
     renderContentExplorer();
+    
+    renderMenuBar();
+    renderNewProjectDialog();
+    renderOpenProjectDialog();
+    
+    if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            if (projectManager) {
+                std::filesystem::path p(filePath);
+                std::string projPath = p.parent_path().string();
+                projectManager->openProject(projPath);
+            }
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    
+    if (ImGuiFileDialog::Instance()->Display("SelectNewProjectFolder")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string folderPath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            showNewProjectDialog = true;
+            strncpy(newProjectPath, folderPath.c_str(), sizeof(newProjectPath) - 1);
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    
+    if (ImGuiFileDialog::Instance()->Display("SaveProject")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            if (onSaveProject) onSaveProject();
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
 }
 
 void UIManager::setSelectedEntity(Entity entity) {
