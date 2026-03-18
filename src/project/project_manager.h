@@ -34,6 +34,7 @@ public:
     std::vector<std::string> getTextureFiles();
     
     std::string getAssetFullPath(const std::string& relativePath);
+    std::string getProjectPath() const { return currentProject.path; }
     
 private:
     Project currentProject;

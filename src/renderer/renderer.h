@@ -43,6 +43,8 @@ public:
     VkFormat getSwapChainImageFormat() const { return m_SwapChainImageFormat; }
     uint32_t getSwapChainImageCount() const { return static_cast<uint32_t>(m_SwapChainImages.size()); }
     VkCommandBuffer getCurrentCommandBuffer() const { return m_CommandBuffers[m_CurrentFrame]; }
+    VkImageView getOffscreenImageView() const { return m_OffscreenImageView; }
+    VkSampler getOffscreenSampler() const { return m_OffscreenSampler; }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
@@ -121,7 +123,7 @@ private:
     std::vector<VkCommandBuffer> m_CommandBuffers;
 
     // Sync
-    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
     std::vector<VkSemaphore> m_ImageAvailableSemaphores;
     std::vector<VkSemaphore> m_RenderFinishedSemaphores;
     std::vector<VkFence> m_InFlightFences;

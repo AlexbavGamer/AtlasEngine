@@ -1,7 +1,9 @@
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "ui_manager.h"
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
+#include <ImGuiFileDialog.h>
 #include "../ecs/ecs.h"
 #include "../ecs/components.h"
 #include <glm/glm.hpp>
@@ -14,12 +16,42 @@ void UIManager::render(ImTextureID viewportTexture) {
     renderOpenProjectDialog();
     renderMenuBar();
     
+    if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            if (projectManager) {
+                std::filesystem::path p(filePath);
+                std::string projPath = p.parent_path().string();
+                projectManager->openProject(projPath);
+            }
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    
+    if (ImGuiFileDialog::Instance()->Display("SelectNewProjectFolder")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string folderPath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            showNewProjectDialog = true;
+            strncpy(newProjectPath, folderPath.c_str(), sizeof(newProjectPath) - 1);
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    
+    if (ImGuiFileDialog::Instance()->Display("SaveProject")) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+            ImGuiFileDialog::Instance()->Close();
+            if (onSaveProject) onSaveProject();
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+    
     static bool dockspaceInitialized = false;
     static ImGuiID dockspaceID = 0;
 
     if (!dockspaceInitialized) {
-        
-        
         dockspaceID = ImGui::GetID("MyDockspace");
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         
@@ -218,11 +250,13 @@ void UIManager::renderMenuBar() {
                 showNewProjectDialog = true;
             }
             if (ImGui::MenuItem("Open Project", "Ctrl+O")) {
-                showOpenProjectDialog = true;
+                IGFD::FileDialogConfig config;
+                config.path = ".";
+                ImGuiFileDialog::Instance()->OpenDialog("OpenProject", "Open Project", ".json,.atlas", config);
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                if (onSaveProject) onSaveProject();
+                ImGuiFileDialog::Instance()->OpenDialog("SaveProject", "Save Project", ".json,.atlas", IGFD::FileDialogConfig{.path = "."});
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -263,6 +297,13 @@ void UIManager::renderNewProjectDialog() {
         
         ImGui::Text("Location:");
         ImGui::InputText("##path", newProjectPath, IM_ARRAYSIZE(newProjectPath));
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...")) {
+            IGFD::FileDialogConfig config;
+            config.path = ".";
+            config.flags = ImGuiFileDialogFlags_SelectDirectory;
+            ImGuiFileDialog::Instance()->OpenDialog("SelectNewProjectFolder", "Select Project Folder", nullptr, config);
+        }
         
         ImGui::Separator();
         

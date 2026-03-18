@@ -8,6 +8,7 @@
 #include "../ecs/ecs.h"
 #include "../scene/scene.h"
 #include "../project/project_manager.h"
+#include <ImGuiFileDialog.h>
 
 using namespace Atlas;
 
@@ -52,4 +53,7 @@ private:
     char newProjectName[256] = "MyProject";
     char newProjectPath[512] = ".";
     char projectPathBuffer[512] = ".";
+
+    bool showOpenProjectFileDialog = false;
+    bool showSaveProjectFileDialog = false;
 };

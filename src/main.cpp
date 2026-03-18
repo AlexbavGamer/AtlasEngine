@@ -5,6 +5,7 @@
 #include "renderer/renderer.h"
 #include "scene/scene.h"
 #include "imgui/imgui_manager.h"
+#include <imgui_impl_vulkan.h>
 #include "ui/ui_manager.h"
 #include "project/project_manager.h"
 #include "utils/camera_controller.h"
@@ -41,6 +42,13 @@ public:
             m_Window->getGLFWWindow(),
             m_Renderer->getSwapChainImageCount()
         );
+        
+        // Add viewport texture (required for ImGui)
+        m_ViewportTexture = (ImTextureID)ImGui_ImplVulkan_AddTexture(
+            m_Renderer->getOffscreenSampler(),
+            m_Renderer->getOffscreenImageView(),
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        );
 
         m_UIManager = std::make_unique<UIManager>(m_Scene.get());
         m_UIManager->setWindow(m_Window->getGLFWWindow());
@@ -48,7 +56,8 @@ public:
         m_ProjectManager = std::make_unique<ProjectManager>();
         m_UIManager->setProjectManager(m_ProjectManager.get());
         
-        m_ProjectManager->openProject(".");
+        // Não abrir o projeto por padrão para evitar erros de caminho em diferentes máquinas
+        // m_ProjectManager->openProject(".");
         
         // Create camera
         auto cameraEntity = m_Scene->createEntity("Camera");
@@ -65,11 +74,6 @@ public:
             camera.up
         );
         
-        // Test: Create simple triangle
-        auto testEntity = m_Scene->createEntity("Triangle");
-        auto& testMesh = m_Scene->getRegistry().get<Mesh>(testEntity);
-        
-        // Will be populated when model is loaded via drag & drop
 
         // Setup asset drop callback
         m_UIManager->setOnAssetDropped([this](const std::string& assetPath) {
@@ -110,14 +114,13 @@ public:
             m_Renderer->recreateSwapChain();
         });
         
-        // Setup render callback for ImGui
-        // Disabled - ImGui not working properly yet
-        // m_Renderer->setRenderCallback([this](VkCommandBuffer commandBuffer) {
-        //     m_ImGuiManager.render(commandBuffer);
-        // });
+        m_Renderer->setRenderCallback([this](VkCommandBuffer commandBuffer) {
+            m_ImGuiManager.render(commandBuffer);
+        });
     }
 
     ~Editor() {
+        m_ImGuiManager.cleanup(m_Renderer->getDevice());
         m_Renderer->shutdown();
     }
 
@@ -140,8 +143,8 @@ public:
             }
 
             // Render
-            // m_ImGuiManager.newFrame();
-            // m_UIManager->render(ImTextureID(0)); // TODO: viewport texture
+            m_ImGuiManager.newFrame();
+            m_UIManager->render(m_ViewportTexture);
             
             m_Renderer->renderScene(m_Scene.get());
             m_Renderer->endFrame();
@@ -158,6 +161,7 @@ private:
     std::unique_ptr<UIManager> m_UIManager;
     std::unique_ptr<ProjectManager> m_ProjectManager;
     std::unique_ptr<CameraController> m_CameraController;
+    ImTextureID m_ViewportTexture = 0;
 };
 
 }
