@@ -33,6 +33,8 @@ public:
 
         MeshData meshData;
 
+        uint32_t vertexOffset = 0;
+
         for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
             aiMesh* aiMesh = scene->mMeshes[i];
             
@@ -68,9 +70,11 @@ public:
             for (unsigned int j = 0; j < aiMesh->mNumFaces; j++) {
                 aiFace face = aiMesh->mFaces[j];
                 for (unsigned int k = 0; k < face.mNumIndices; k++) {
-                    meshData.indices.push_back(face.mIndices[k]);
+                    meshData.indices.push_back(face.mIndices[k] + vertexOffset);
                 }
             }
+
+            vertexOffset += aiMesh->mNumVertices;
         }
 
         meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());

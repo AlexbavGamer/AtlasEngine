@@ -1,45 +1,60 @@
 #pragma once
 
+#include <entt/entt.hpp>
+#include <string>
+#include <memory>
 #include <vector>
-#include <vulkan/vulkan.h>
-#include "../ecs/ecs.h"
-#include "../ecs/vertex.h"
-#include "../utils/model_loader.h"
 #include <glm/glm.hpp>
 
-class RenderableInterface {
-public:
-    virtual void render(VkCommandBuffer commandBuffer) = 0;
-};
+#include "../ecs/ecs.h"
+#include "../ecs/components/components.h"
 
+namespace Atlas {
+using namespace ECS;
 class Scene {
 public:
-    Scene(entt::registry* world);
-    ~Scene();
+    Scene() = default;
+    ~Scene() = default;
 
-    void init(VkDevice device, VkPhysicalDevice physicalDevice);
-    void loadModel(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*));
-    void addRenderable(RenderableInterface* renderable);
-    void render(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VkDevice device);
+    entt::registry& getRegistry() { return m_Registry; }
+    const entt::registry& getRegistry() const { return m_Registry; }
 
-    entt::registry* getWorld() { return ecsWorld; }
+    // Entity creation
+    entt::entity createEntity(const std::string& name = "Entity");
+    void destroyEntity(entt::entity entity);
 
-    VkBuffer getVertexBuffer() const { return vertexBuffer; }
-    VkBuffer getIndexBuffer() const { return indexBuffer; }
-    uint32_t getIndexCount() const { return static_cast<uint32_t>(indices.size()); }
+    // Transform component
+    Transform& getTransform(entt::entity entity) {
+        return m_Registry.get<Transform>(entity);
+    }
+
+    bool hasTransform(entt::entity entity) const {
+        return m_Registry.all_of<Transform>(entity);
+    }
+
+    // Camera
+    CameraComponent* getActiveCamera();
+    void setActiveCamera(entt::entity entity);
+
+    // Hierarchy
+    std::vector<entt::entity> getAllEntities();
+    std::vector<entt::entity> getEntitiesWithMesh();
+    std::vector<entt::entity> getEntitiesWithCamera();
+    std::vector<entt::entity> getEntitiesWithLight();
+
+    // Scene name
+    const std::string& getName() const { return m_Name; }
+    void setName(const std::string& name) { m_Name = name; }
+
+    // Dirty flag
+    bool isDirty() const { return m_Dirty; }
+    void setDirty(bool dirty) { m_Dirty = dirty; }
 
 private:
-    std::vector<RenderableInterface*> renderables;
-    entt::registry* ecsWorld;
-
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-    VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory indexMemory = VK_NULL_HANDLE;
-
-    MeshData loadedModel;
-
-    void createGeometry(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*));
+    entt::registry m_Registry;
+    std::string m_Name = "Untitled";
+    bool m_Dirty = false;
+    entt::entity m_ActiveCamera = entt::null;
 };
+
+}

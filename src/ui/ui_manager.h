@@ -6,11 +6,14 @@
 #include <GLFW/glfw3.h>
 #include <memory>
 #include "../ecs/ecs.h"
+#include "../scene/scene.h"
 #include "../project/project_manager.h"
+
+using namespace Atlas;
 
 class UIManager {
 public:
-    UIManager(entt::registry* world);
+    UIManager(Atlas::Scene* scene);
 
     void render(ImTextureID viewportTexture);
     void setSelectedEntity(Entity entity);
@@ -22,7 +25,7 @@ public:
     void setWindow(GLFWwindow* win);
 
 private:
-    entt::registry* ecsWorld;
+    Atlas::Scene* m_Scene = nullptr;
     Entity selectedEntity = entt::null;
     ProjectManager* projectManager = nullptr;
     std::function<void(const std::string&)> onAssetDropped;

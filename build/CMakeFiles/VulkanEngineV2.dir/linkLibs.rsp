@@ -1,1 +1,0 @@
- "C:/VulkanSDK/1.4.341.1/Lib/vulkan-1.lib" F:/VulkanEngineV2/deps/build/glfw/src/libglfw3.a libimgui_lib.a "C:/VulkanSDK/1.4.341.1/Lib/vulkan-1.lib" F:/VulkanEngineV2/deps/build/glfw/src/libglfw3.a -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 

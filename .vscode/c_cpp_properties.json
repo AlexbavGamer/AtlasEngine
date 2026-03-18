@@ -8,7 +8,14 @@
                 "${workspaceFolder}/deps/src/imgui/backends",
                 "${workspaceFolder}/deps/src/glm",
                 "${workspaceFolder}/deps/src/glfw/include",
-                "${workspaceFolder}/deps/src/stb"
+                "${workspaceFolder}/deps/src/stb",
+                "${workspaceFolder}/deps/src/entt/src",
+                "${workspaceFolder}/deps/src/vma/include",
+                "${workspaceFolder}/deps/src/tracy",
+                "${workspaceFolder}/deps/src/tinygltf",
+                "${workspaceFolder}/deps/src/assimp/include",
+                "${workspaceFolder}/deps/src/imguizmo",
+                "C:/VulkanSDK/1.4.341.1/Include"
             ],
             "defines": [
                 "_DEBUG",

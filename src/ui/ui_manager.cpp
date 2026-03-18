@@ -7,7 +7,7 @@
 #include <glm/glm.hpp>
 #include <filesystem>
 
-UIManager::UIManager(entt::registry* world) : ecsWorld(world) {}
+UIManager::UIManager(Scene* scene) : m_Scene(scene) {}
 
 void UIManager::render(ImTextureID viewportTexture) {
     renderNewProjectDialog();
@@ -101,9 +101,9 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
 void UIManager::renderTransformPanel() {
     ImGui::Begin("Transform", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     
-    if (selectedEntity != entt::null && ecsWorld && ecsWorld->valid(selectedEntity)) {
-        if (ecsWorld->all_of<Transform>(selectedEntity)) {
-            auto& transform = ecsWorld->get<Transform>(selectedEntity);
+    if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
+        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
+            auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
             
             ImGui::Text("Position:");
             ImGui::DragFloat3("##pos", &transform.position.x, 0.1f);
@@ -122,8 +122,8 @@ void UIManager::renderTransformPanel() {
 void UIManager::renderHierarchy() {
     ImGui::Begin("Hierarchy", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-    if (ecsWorld) {
-        for (auto entity : ecsWorld->view<Transform>()) {
+    if (m_Scene) {
+        for (auto entity : m_Scene->getAllEntities()) {
             std::string entityName = "Entity " + std::to_string(static_cast<uint32_t>(entity));
 
             bool isSelected = (selectedEntity == entity);
@@ -139,7 +139,7 @@ void UIManager::renderHierarchy() {
 void UIManager::renderProperties() {
     ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
-    if (selectedEntity != entt::null && ecsWorld && ecsWorld->valid(selectedEntity)) {
+    if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
         ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
 
         auto renderComponent = [this](auto&& component, const char* name) {
@@ -148,20 +148,20 @@ void UIManager::renderProperties() {
             }
         };
 
-        if (ecsWorld->all_of<Transform>(selectedEntity)) {
-            renderComponent(ecsWorld->get<Transform>(selectedEntity), "Transform");
+        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Transform>(selectedEntity), "Transform");
         }
 
-        if (ecsWorld->all_of<Renderable>(selectedEntity)) {
-            renderComponent(ecsWorld->get<Renderable>(selectedEntity), "Renderable");
+        if (m_Scene->getRegistry().all_of<Renderable>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable");
         }
 
-        if (ecsWorld->all_of<Mesh>(selectedEntity)) {
-            renderComponent(ecsWorld->get<Mesh>(selectedEntity), "Mesh");
+        if (m_Scene->getRegistry().all_of<Mesh>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Mesh>(selectedEntity), "Mesh");
         }
 
-        if (ecsWorld->all_of<Camera>(selectedEntity)) {
-            renderComponent(ecsWorld->get<Camera>(selectedEntity), "Camera");
+        if (m_Scene->getRegistry().all_of<Camera>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Camera>(selectedEntity), "Camera");
         }
     } else {
         ImGui::Text("No entity selected");

@@ -12,4 +12,7 @@ public:
 
 private:
     VkDescriptorPool descriptorPool;
+    VkDevice device;
+    VkQueue graphicsQueue;
+    VkCommandPool commandPool;
 };

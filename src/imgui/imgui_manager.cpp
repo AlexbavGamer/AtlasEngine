@@ -5,6 +5,17 @@
 #include <stdexcept>
 
 void ImGuiManager::init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue, uint32_t queueFamily, VkRenderPass renderPass, GLFWwindow* window, uint32_t imageCount) {
+    this->device = device;
+    this->graphicsQueue = queue;
+
+    // Create command pool for font upload
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = queueFamily;
+    if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create ImGui command pool!");
+    }
+
     // Create descriptor pool for ImGui
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
@@ -56,9 +67,6 @@ void ImGuiManager::init(VkInstance instance, VkPhysicalDevice physicalDevice, Vk
     init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init_info.CheckVkResultFn = nullptr;
     ImGui_ImplVulkan_Init(&init_info);
-
-    // Upload fonts
-    // Note: This requires a command buffer, but for simplicity, assume it's done elsewhere or add later
 }
 
 void ImGuiManager::newFrame() {
@@ -77,4 +85,5 @@ void ImGuiManager::cleanup(VkDevice device) {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    vkDestroyCommandPool(device, commandPool, nullptr);
 }
