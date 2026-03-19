@@ -11,6 +11,13 @@ public:
     void update(float deltaTime);
     void setSpeed(float speed) { moveSpeed = speed; }
     void setSensitivity(float sens) { sensitivity = sens; }
+    void setEnabled(bool enabled) { m_Enabled = enabled; }
+    bool isEnabled() const { return m_Enabled; }
+    
+    glm::mat4 getViewMatrix() const;
+    glm::mat4 getProjMatrix() const;
+    
+    void setAspectRatio(float aspect) { m_AspectRatio = aspect; }
 
 private:
     GLFWwindow* window;
@@ -21,6 +28,8 @@ private:
     float moveSpeed = 5.0f;
     float sensitivity = 0.1f;
     float zoomSpeed = 1.0f;
+    float m_AspectRatio = 16.0f / 9.0f;
+    bool m_Enabled = true;
 
     bool isRightMouseDown = false;
     float lastMouseX = 0.0f;

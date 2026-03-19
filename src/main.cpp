@@ -101,6 +101,8 @@ namespace Atlas
                 camera.position,
                 camera.target,
                 camera.up);
+            
+            m_UIManager->setCameraController(m_CameraController.get());
 
             // Setup asset drop callback
             m_UIManager->setOnAssetDropped([this](const std::string &assetPath)
@@ -181,6 +183,20 @@ namespace Atlas
 
                 // Render
                 m_ImGuiManager.newFrame();
+                
+                // Update camera matrices for ImGuizmo
+                if (m_CameraController) {
+                    m_UIManager->setCameraMatrices(
+                        m_CameraController->getViewMatrix(),
+                        m_CameraController->getProjMatrix()
+                    );
+                    
+                    // Disable camera when using gizmo
+                    if (m_UIManager->getTransformMode() != TransformMode::None) {
+                        // Camera control managed by ImGuizmo state
+                    }
+                }
+                
                 m_UIManager->render(m_ViewportTexture);
 
                 m_Renderer->renderScene(m_Scene.get());

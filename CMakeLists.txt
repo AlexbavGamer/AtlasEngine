@@ -64,6 +64,15 @@ FetchContent_Declare(
 )
 FetchContent_Populate(imguifiledialog)
 
+# ImGuizmo - header-only library for transform gizmos
+FetchContent_Declare(
+    imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG master
+    SOURCE_DIR "${DEPS_SRC_DIR}/imguizmo"
+)
+FetchContent_Populate(imguizmo)
+
 # EnTT
 atlas_fetch(entt https://github.com/skypjack/entt.git v3.12.1)
 
@@ -183,6 +192,7 @@ set(ATLAS_INCLUDE_DIRS
     ${entt_SOURCE_DIR}/src
     ${vma_SOURCE_DIR}/include
     ${assimp_SOURCE_DIR}/include
+    ${imguizmo_SOURCE_DIR}
 )
 
 # ============================================================================
@@ -198,11 +208,17 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
     ${imguifiledialog_SOURCE_DIR}/ImGuiFileDialog.cpp
 )
+target_compile_definitions(imgui_lib PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
+
+add_library(imguizmo_lib STATIC ${imguizmo_SOURCE_DIR}/ImGuizmo.cpp)
+target_include_directories(imguizmo_lib PUBLIC ${imguizmo_SOURCE_DIR} ${imgui_SOURCE_DIR})
+target_compile_definitions(imguizmo_lib PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
 
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imguifiledialog_SOURCE_DIR}
+    ${imguizmo_SOURCE_DIR}
 )
 
 add_library(imguifiledialog INTERFACE)
@@ -231,6 +247,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Vulkan::Vulkan
     glfw
     imgui_lib
+    imguizmo_lib
     assimp
 )
 

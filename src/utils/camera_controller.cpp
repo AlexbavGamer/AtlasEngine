@@ -12,7 +12,7 @@ glm::vec3 CameraController::getCameraRight() const {
 }
 
 void CameraController::update(float deltaTime) {
-    if (!window) return;
+    if (!window || !m_Enabled) return;
 
     double mouseX, mouseY;
     glfwGetCursorPos(window, &mouseX, &mouseY);
@@ -75,4 +75,12 @@ void CameraController::update(float deltaTime) {
         position += up * speed;
         target += up * speed;
     }
+}
+
+glm::mat4 CameraController::getViewMatrix() const {
+    return glm::lookAt(position, target, up);
+}
+
+glm::mat4 CameraController::getProjMatrix() const {
+    return glm::perspective(glm::radians(60.0f), m_AspectRatio, 0.1f, 1000.0f);
 }

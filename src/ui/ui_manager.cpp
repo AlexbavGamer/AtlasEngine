@@ -4,13 +4,45 @@
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
 #include <ImGuiFileDialog.h>
+#include <ImGuizmo.h>
 #include "../ecs/ecs.h"
 #include "../ecs/components.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
+#include <glm/gtx/transform.hpp>
 #include <filesystem>
 #include <iostream>
 
 UIManager::UIManager(Scene* scene) : m_Scene(scene) {}
+
+void UIManager::renderToolbar() {
+    ImGui::Begin("Toolbar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar);
+    
+    ImGui::Text("Transform: ");
+    ImGui::SameLine();
+    
+    bool isTranslate = (m_TransformMode == TransformMode::Translate);
+    bool isRotate = (m_TransformMode == TransformMode::Rotate);
+    bool isScale = (m_TransformMode == TransformMode::Scale);
+    
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    if (ImGui::Button(isTranslate ? "T [Active]" : "T", ImVec2(40, 25))) {
+        m_TransformMode = TransformMode::Translate;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(isRotate ? "R [Active]" : "R", ImVec2(40, 25))) {
+        m_TransformMode = TransformMode::Rotate;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(isScale ? "S [Active]" : "S", ImVec2(40, 25))) {
+        m_TransformMode = TransformMode::Scale;
+    }
+    ImGui::PopStyleVar();
+    
+    ImGui::End();
+}
 
 void UIManager::render(ImTextureID viewportTexture) {
     static bool dockspaceInitialized = false;
@@ -32,7 +64,12 @@ void UIManager::render(ImTextureID viewportTexture) {
             ImGuiID dockLeftBottom = 0;
             ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.5f, &dockLeftTop, &dockLeftBottom);
             
-            ImGui::DockBuilderDockWindow("Viewport", dockMain);
+            ImGuiID dockTop = 0;
+            ImGuiID dockCenter = 0;
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Up, 0.05f, &dockTop, &dockCenter);
+            
+            ImGui::DockBuilderDockWindow("Toolbar", dockTop);
+            ImGui::DockBuilderDockWindow("Viewport", dockCenter);
             ImGui::DockBuilderDockWindow("Hierarchy", dockLeftBottom);
             ImGui::DockBuilderDockWindow("Properties", dockLeftTop);
             ImGui::DockBuilderDockWindow("Content Explorer", dockLeftBottom);
@@ -44,6 +81,7 @@ void UIManager::render(ImTextureID viewportTexture) {
 
     ImGui::DockSpaceOverViewport(dockspaceID, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
+    renderToolbar();
     renderViewport(viewportTexture);
     renderHierarchy();
     renderProperties();
@@ -100,14 +138,74 @@ void UIManager::setWindow(GLFWwindow* win) {
     window = win;
 }
 
+void UIManager::setCameraMatrices(glm::mat4 view, glm::mat4 proj) {
+    m_ViewMatrix = view;
+    m_ProjMatrix = proj;
+}
+
+void UIManager::setCameraController(void* controller) {
+    m_CameraController = controller;
+}
+
 void UIManager::setRenderer(Renderer* r) {
     renderer = r;
 }
 
 void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar);
-    ImVec2 size = ImGui::GetContentRegionAvail();
-    ImGui::Image(viewportTexture, size);
+    
+    if (ImGui::IsWindowFocused() && selectedEntity != entt::null && m_Scene) {
+        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
+            auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
+            glm::mat4 modelMatrix = transform.getModelMatrix();
+            
+            ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+            
+            ImVec2 windowPos = ImGui::GetWindowPos();
+            ImVec2 viewportPos = ImGui::GetCursorPos();
+            float x = windowPos.x + viewportPos.x;
+            float y = windowPos.y + viewportPos.y;
+            
+            ImGui::GetWindowDrawList()->PushClipRect(windowPos, ImVec2(windowPos.x + ImGui::GetWindowWidth(), windowPos.y + ImGui::GetWindowHeight()), true);
+            ImGuizmo::SetRect(x, y, (float)ImGui::GetWindowWidth(), (float)ImGui::GetWindowHeight());
+            
+            ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+            if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
+            if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
+            
+            glm::mat4 deltaMatrix = glm::mat4(1.0f);
+            ImGuizmo::Manipulate(
+                glm::value_ptr(m_ViewMatrix),
+                glm::value_ptr(m_ProjMatrix),
+                operation,
+                ImGuizmo::LOCAL,
+                glm::value_ptr(modelMatrix),
+                glm::value_ptr(deltaMatrix),
+                nullptr
+            );
+            
+            if (ImGuizmo::IsUsing()) {
+                glm::vec3 translation, scale;
+                glm::vec3 rotation;
+                glm::quat quat;
+                
+                glm::vec3 skew;
+                glm::vec4 perspective;
+                glm::decompose(modelMatrix, scale, quat, translation, skew, perspective);
+                rotation = glm::eulerAngles(quat);
+                
+                transform.position = translation;
+                transform.rotation = glm::degrees(rotation);
+                transform.scale = scale;
+            }
+            ImGui::GetWindowDrawList()->PopClipRect();
+        }
+    }
+    
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
+    ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+    ImGui::Image(viewportTexture, viewportSize);
     
     if (ImGui::BeginDragDropTarget()) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_DROP");

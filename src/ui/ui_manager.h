@@ -10,8 +10,11 @@
 #include "../project/project_manager.h"
 #include "../renderer/renderer.h"
 #include <ImGuiFileDialog.h>
+#include <ImGuizmo.h>
 
 using namespace Atlas;
+
+enum class TransformMode { None, Translate, Rotate, Scale };
 
 class UIManager {
 public:
@@ -26,6 +29,10 @@ public:
     void setRenderer(Renderer* renderer);
     void openProject(const std::string& path);
     void setWindow(GLFWwindow* win);
+    void setCameraMatrices(glm::mat4 view, glm::mat4 proj);
+    void setCameraController(void* controller);
+
+    TransformMode getTransformMode() const { return m_TransformMode; }
 
 private:
     Atlas::Scene* m_Scene = nullptr;
@@ -34,6 +41,7 @@ private:
     Renderer* renderer = nullptr;
     std::function<void(const std::string&)> onAssetDropped;
 
+    void renderToolbar();
     void renderViewport(ImTextureID viewportTexture);
     void renderHierarchy();
     void renderProperties();
@@ -49,6 +57,11 @@ private:
     std::function<void()> onExit;
 
     GLFWwindow* window = nullptr;
+
+    TransformMode m_TransformMode = TransformMode::Translate;
+    glm::mat4 m_ViewMatrix = glm::mat4(1.0f);
+    glm::mat4 m_ProjMatrix = glm::mat4(1.0f);
+    void* m_CameraController = nullptr;
 
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
