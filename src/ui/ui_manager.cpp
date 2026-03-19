@@ -154,58 +154,54 @@ void UIManager::setRenderer(Renderer* r) {
 void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar);
     
-    if (ImGui::IsWindowFocused() && selectedEntity != entt::null && m_Scene) {
-        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
-            auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
-            glm::mat4 modelMatrix = transform.getModelMatrix();
-            
-            ImGuizmo::SetOrthographic(false);
-            ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
-            
-            ImVec2 windowPos = ImGui::GetWindowPos();
-            ImVec2 viewportPos = ImGui::GetCursorPos();
-            float x = windowPos.x + viewportPos.x;
-            float y = windowPos.y + viewportPos.y;
-            
-            ImGui::GetWindowDrawList()->PushClipRect(windowPos, ImVec2(windowPos.x + ImGui::GetWindowWidth(), windowPos.y + ImGui::GetWindowHeight()), true);
-            ImGuizmo::SetRect(x, y, (float)ImGui::GetWindowWidth(), (float)ImGui::GetWindowHeight());
-            
-            ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
-            if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
-            if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
-            
-            glm::mat4 deltaMatrix = glm::mat4(1.0f);
-            ImGuizmo::Manipulate(
-                glm::value_ptr(m_ViewMatrix),
-                glm::value_ptr(m_ProjMatrix),
-                operation,
-                ImGuizmo::LOCAL,
-                glm::value_ptr(modelMatrix),
-                glm::value_ptr(deltaMatrix),
-                nullptr
-            );
-            
-            if (ImGuizmo::IsUsing()) {
-                glm::vec3 translation, scale;
-                glm::vec3 rotation;
-                glm::quat quat;
-                
-                glm::vec3 skew;
-                glm::vec4 perspective;
-                glm::decompose(modelMatrix, scale, quat, translation, skew, perspective);
-                rotation = glm::eulerAngles(quat);
-                
-                transform.position = translation;
-                transform.rotation = glm::degrees(rotation);
-                transform.scale = scale;
-            }
-            ImGui::GetWindowDrawList()->PopClipRect();
-        }
-    }
-    
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
+    ImVec2 imagePos = ImGui::GetCursorPos();
     ImVec2 viewportSize = ImGui::GetContentRegionAvail();
     ImGui::Image(viewportTexture, viewportSize);
+    
+    if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
+        auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
+        glm::mat4 modelMatrix = transform.getModelMatrix();
+        
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+        
+        ImVec2 windowPos = ImGui::GetWindowPos();
+        float x = windowPos.x + imagePos.x;
+        float y = windowPos.y + imagePos.y;
+        
+        ImGuizmo::SetRect(x, y, viewportSize.x, viewportSize.y);
+        
+        ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+        if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
+        if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
+        
+        glm::mat4 deltaMatrix = glm::mat4(1.0f);
+        bool used = ImGuizmo::Manipulate(
+            glm::value_ptr(m_ViewMatrix),
+            glm::value_ptr(m_ProjMatrix),
+            operation,
+            ImGuizmo::LOCAL,
+            glm::value_ptr(modelMatrix),
+            glm::value_ptr(deltaMatrix),
+            nullptr
+        );
+        
+        if (used) {
+            glm::vec3 translation, scale;
+            glm::vec3 rotation;
+            glm::quat quat;
+            
+            glm::vec3 skew;
+            glm::vec4 perspective;
+            glm::decompose(modelMatrix, scale, quat, translation, skew, perspective);
+            rotation = glm::eulerAngles(quat);
+            
+            transform.position = translation;
+            transform.rotation = glm::degrees(rotation);
+            transform.scale = scale;
+        }
+    }
     
     if (ImGui::BeginDragDropTarget()) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_DROP");
