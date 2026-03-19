@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include "../../core/string/string_id.h"
 
 namespace Atlas { namespace ECS {
 
@@ -31,13 +32,15 @@ struct MaterialComponent {
     float roughness = 0.5f;
     float ambientOcclusion = 1.0f;
     
-    std::string albedoTexture;
-    std::string normalTexture;
-    std::string metallicRoughnessTexture;
+    StringID albedoTextureId;
+    StringID normalTextureId;
+    StringID metallicRoughnessTextureId;
+    StringID aoTextureId;
     
     bool useAlbedoTexture = false;
     bool useNormalTexture = false;
     bool useMetallicRoughnessTexture = false;
+    bool useAOTexture = false;
 };
 
 struct RenderableComponent {

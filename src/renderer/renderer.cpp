@@ -41,10 +41,12 @@ void Renderer::init() {
     createRenderPass();
     createDepthResources();
     createOffscreenRenderPass();
-    createGraphicsPipeline();
-    createFramebuffers();
     createCommandPool();
     createCommandBuffers();
+    createLightBuffer();
+    createGraphicsPipeline();
+    createDescriptorSet();
+    createFramebuffers();
     createSyncObjects();
     createOffscreenResources();
 }
@@ -54,6 +56,23 @@ void Renderer::shutdown() {
     vkDeviceWaitIdle(m_Device);
     
     m_FrameQueue.flush();
+    
+    if (m_DescriptorPool) vkDestroyDescriptorPool(m_Device, m_DescriptorPool, nullptr);
+    if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_DescriptorSetLayout, nullptr);
+    if (m_LightBuffer) vkDestroyBuffer(m_Device, m_LightBuffer, nullptr);
+    if (m_LightBufferMemory) vkFreeMemory(m_Device, m_LightBufferMemory, nullptr);
+    
+    if (m_PlaceholderSampler) vkDestroySampler(m_Device, m_PlaceholderSampler, nullptr);
+    if (m_PlaceholderImageView) vkDestroyImageView(m_Device, m_PlaceholderImageView, nullptr);
+    if (m_PlaceholderImage) vkDestroyImage(m_Device, m_PlaceholderImage, nullptr);
+    if (m_PlaceholderImageMemory) vkFreeMemory(m_Device, m_PlaceholderImageMemory, nullptr);
+
+    for (uint32_t i = 0; i < m_TextureCount; i++) {
+        if (m_TextureSamplers[i]) vkDestroySampler(m_Device, m_TextureSamplers[i], nullptr);
+        if (m_TextureImageViews[i]) vkDestroyImageView(m_Device, m_TextureImageViews[i], nullptr);
+        if (m_TextureImages[i]) vkDestroyImage(m_Device, m_TextureImages[i], nullptr);
+        if (m_TextureImageMemory[i]) vkFreeMemory(m_Device, m_TextureImageMemory[i], nullptr);
+    }
     
     if (m_GraphicsPipeline) vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr);
     if (m_PipelineLayout) vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
@@ -603,8 +622,8 @@ void Renderer::createOffscreenRenderPass() {
 }
 
 void Renderer::createGraphicsPipeline() {
-    auto vertShaderCode = readFile("shaders/vert.spv");
-    auto fragShaderCode = readFile("shaders/frag.spv");
+    auto vertShaderCode = readFile("shaders/pbr_vert.spv");
+    auto fragShaderCode = readFile("shaders/pbr_frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -715,13 +734,37 @@ void Renderer::createGraphicsPipeline() {
     colorBlending.pAttachments = &colorBlendAttachment;
 
     VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float) * 16 * 3; // 3x mat4 (model, view, proj)
+    pushConstantRange.size = sizeof(PushConstants);
+
+    VkDescriptorSetLayoutBinding lightBinding{};
+    lightBinding.binding = 0;
+    lightBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    lightBinding.descriptorCount = 1;
+    lightBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding samplerBinding{};
+    samplerBinding.binding = 1;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    samplerBinding.descriptorCount = MAX_TEXTURES;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings = {lightBinding, samplerBinding};
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+
+    if (vkCreateDescriptorSetLayout(m_Device, &layoutInfo, nullptr, &m_DescriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor set layout!");
+    }
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_DescriptorSetLayout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -750,6 +793,209 @@ void Renderer::createGraphicsPipeline() {
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+}
+
+void Renderer::createLightBuffer() {
+    m_LightBufferData.lightCount = 1;
+    m_LightBufferData.lights[0].position = glm::vec3(5.0f, 5.0f, 5.0f);
+    m_LightBufferData.lights[0].color = glm::vec3(1.0f, 1.0f, 1.0f);
+    m_LightBufferData.lights[0].intensity = 50.0f;
+    m_LightBufferData.cameraPos = glm::vec3(0.0f, 0.0f, 5.0f);
+
+    VkDeviceSize bufferSize = sizeof(LightBuffer);
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &m_LightBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create light buffer!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(m_Device, m_LightBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_LightBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate light buffer memory!");
+    }
+
+    vkBindBufferMemory(m_Device, m_LightBuffer, m_LightBufferMemory, 0);
+
+    void* data;
+    vkMapMemory(m_Device, m_LightBufferMemory, 0, sizeof(LightBuffer), 0, &data);
+    memcpy(data, &m_LightBufferData, sizeof(LightBuffer));
+    vkUnmapMemory(m_Device, m_LightBufferMemory);
+}
+
+void Renderer::createDescriptorSet() {
+    createPlaceholderTexture();
+
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = MAX_TEXTURES;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(m_Device, &poolInfo, nullptr, &m_DescriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor pool!");
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_DescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &m_DescriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(m_Device, &allocInfo, &m_DescriptorSet) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate descriptor sets!");
+    }
+
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = m_LightBuffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(LightBuffer);
+
+    std::array<VkDescriptorImageInfo, MAX_TEXTURES> imageInfos{};
+    for (uint32_t i = 0; i < MAX_TEXTURES; i++) {
+        imageInfos[i].sampler = m_PlaceholderSampler;
+        imageInfos[i].imageView = m_PlaceholderImageView;
+        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = m_DescriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = m_DescriptorSet;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[1].descriptorCount = MAX_TEXTURES;
+    descriptorWrites[1].pImageInfo = imageInfos.data();
+
+    vkUpdateDescriptorSets(m_Device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
+void Renderer::createPlaceholderTexture() {
+    VkDeviceSize imageSize = 4 * 4 * 4;
+    std::vector<uint8_t> pixels(imageSize, 255);
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    vkCreateBuffer(m_Device, &bufferInfo, nullptr, &stagingBuffer);
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(
+        memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+
+    vkAllocateMemory(m_Device, &allocInfo, nullptr, &stagingMemory);
+    vkBindBufferMemory(m_Device, stagingBuffer, stagingMemory, 0);
+
+    void* data;
+    vkMapMemory(m_Device, stagingMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels.data(), static_cast<size_t>(imageSize));
+    vkUnmapMemory(m_Device, stagingMemory);
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = 4;
+    imageInfo.extent.height = 4;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.tiling = VK_IMAGE_TILING_LINEAR;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    vkCreateImage(m_Device, &imageInfo, nullptr, &m_PlaceholderImage);
+    vkGetImageMemoryRequirements(m_Device, m_PlaceholderImage, &memRequirements);
+
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(
+        memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+
+    vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_PlaceholderImageMemory);
+    vkBindImageMemory(m_Device, m_PlaceholderImage, m_PlaceholderImageMemory, 0);
+
+    VkImageSubresource subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+    VkSubresourceLayout layout;
+    vkGetImageSubresourceLayout(m_Device, m_PlaceholderImage, &subresource, &layout);
+
+    void* imgData;
+    vkMapMemory(m_Device, m_PlaceholderImageMemory, 0, imageSize, 0, &imgData);
+    memcpy(imgData, pixels.data(), static_cast<size_t>(imageSize));
+    vkUnmapMemory(m_Device, m_PlaceholderImageMemory);
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = m_PlaceholderImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    vkCreateImageView(m_Device, &viewInfo, nullptr, &m_PlaceholderImageView);
+
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+
+    vkCreateSampler(m_Device, &samplerInfo, nullptr, &m_PlaceholderSampler);
+
+    vkFreeMemory(m_Device, stagingMemory, nullptr);
+    vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
 }
 
 void Renderer::createFramebuffers() {
@@ -1067,6 +1313,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     }
 
                     glm::mat4 model = glm::mat4(1.0f);
+                    glm::vec4 baseColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+                    float metallic = 0.0f;
+                    float roughness = 0.5f;
+                    
                     if (registry.all_of<Transform>(entity)) {
                         auto& transform = registry.get<Transform>(entity);
                         model = glm::translate(model, transform.position);
@@ -1076,13 +1326,24 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                         model = glm::scale(model, transform.scale);
                     }
                     
-                    struct PushConstants {
-                        glm::mat4 model;
-                        glm::mat4 view;
-                        glm::mat4 proj;
-                    } pushConstants{model, view, proj};
+                    if (registry.all_of<MaterialComponent>(entity)) {
+                        auto& material = registry.get<MaterialComponent>(entity);
+                        baseColor = material.baseColor;
+                        metallic = material.metallic;
+                        roughness = material.roughness;
+                    }
                     
-                    vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushConstants);
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
+                    
+                    PushConstants pushConstants;
+                    pushConstants.model = model;
+                    pushConstants.view = view;
+                    pushConstants.proj = proj;
+                    pushConstants.baseColor = baseColor;
+                    pushConstants.metallic = metallic;
+                    pushConstants.roughness = roughness;
+                    
+                    vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
                     
                     VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
                     VkDeviceSize offsets[] = {0};

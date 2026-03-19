@@ -14,6 +14,30 @@
 
 namespace Atlas {
 
+struct Light {
+    glm::vec3 position;
+    float intensity;
+    glm::vec3 color;
+    float padding;
+};
+
+struct LightBuffer {
+    Light lights[4];
+    int lightCount;
+    glm::vec3 cameraPos;
+    float padding;
+};
+
+struct PushConstants {
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+    glm::vec4 baseColor;
+    float metallic;
+    float roughness;
+    glm::vec2 padding;
+};
+
 class Window;
 class Scene;
 
@@ -79,6 +103,8 @@ private:
     void createSyncObjects();
     void createOffscreenResources();
     void createOffscreenRenderPass();
+    void createLightBuffer();
+    void createDescriptorSet();
 
     void cleanupSwapChain();
     void cleanupOffscreenResources();
@@ -162,6 +188,36 @@ private:
     VkImage m_OffscreenDepthImage = VK_NULL_HANDLE;
     VkDeviceMemory m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
     VkImageView m_OffscreenDepthImageView = VK_NULL_HANDLE;
+
+    // Lights
+    LightBuffer m_LightBufferData{};
+    VkBuffer m_LightBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
+    VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
+
+    // Textures
+    static constexpr uint32_t MAX_TEXTURES = 64;
+    VkImage m_TextureImages[MAX_TEXTURES] = {};
+    VkDeviceMemory m_TextureImageMemory[MAX_TEXTURES] = {};
+    VkImageView m_TextureImageViews[MAX_TEXTURES] = {};
+    VkSampler m_TextureSamplers[MAX_TEXTURES] = {};
+    uint32_t m_TextureCount = 0;
+    
+    VkDescriptorPool m_TextureDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_TextureDescriptorSetLayout = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> m_TextureDescriptorSets;
+
+    // Placeholder texture (white 1x1)
+    VkImage m_PlaceholderImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_PlaceholderImageMemory = VK_NULL_HANDLE;
+    VkImageView m_PlaceholderImageView = VK_NULL_HANDLE;
+    VkSampler m_PlaceholderSampler = VK_NULL_HANDLE;
+
+    void createTextureDescriptorSetLayout();
+    void createPlaceholderTexture();
+    uint32_t createTextureFromFile(const std::string& path);
 
     bool m_FramebufferResized = false;
     ResizeCallback m_ResizeCallback;

@@ -12,6 +12,7 @@ namespace Atlas {
 
 class Mesh;
 class Texture;
+class Renderer;
 
 class AssetManager {
 public:
@@ -24,6 +25,9 @@ public:
     bool hasMesh(const StringID& id) const;
     void unloadMesh(const StringID& id);
     void unloadAllMeshes();
+
+    // Renderer access (must be called before loading textures)
+    static void setRenderer(Renderer* renderer);
 
     // Texture operations
     std::shared_ptr<Texture> loadTexture(const StringID& id, const std::string& path);

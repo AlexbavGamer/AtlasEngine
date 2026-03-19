@@ -2,6 +2,8 @@
 
 #include <string>
 #include <vector>
+#include <iostream>
+#include <chrono>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <assimp/mesh.h>
@@ -18,6 +20,19 @@ struct MeshData {
     VkBuffer indexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory indexMemory = VK_NULL_HANDLE;
     uint32_t indexCount = 0;
+    uint32_t vertexOffset = 0;
+    std::string name;
+};
+
+struct ModelData {
+    std::vector<MeshData> meshes;
+    uint32_t totalVertices = 0;
+    uint32_t totalIndices = 0;
+    
+    ModelData() = default;
+    ~ModelData() = default;
+    ModelData(ModelData&&) = default;
+    ModelData& operator=(ModelData&&) = default;
 };
 
 class ModelLoader {
@@ -122,8 +137,6 @@ public:
         
         const aiScene* scene = importer.ReadFile(path, 
             aiProcess_Triangulate | 
-            aiProcess_GenNormals | 
-            aiProcess_JoinIdenticalVertices |
             aiProcess_FixInfacingNormals);
         
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
@@ -132,6 +145,14 @@ public:
 
         MeshData meshData;
         uint32_t vertexOffset = 0;
+        
+        uint32_t totalVerts = 0, totalIndices = 0;
+        for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
+            totalVerts += scene->mMeshes[i]->mNumVertices;
+            totalIndices += scene->mMeshes[i]->mNumFaces * 3;
+        }
+        meshData.vertices.reserve(totalVerts);
+        meshData.indices.reserve(totalIndices);
 
         for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
             aiMesh* aiMesh = scene->mMeshes[i];
@@ -174,13 +195,155 @@ public:
         }
 
         meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
-        
-        // flipTriangles(meshData.indices); // Disabled for testing
-        // applyCoordinateCorrection(meshData.vertices);
 
         createBuffers(meshData, device, physicalDevice, findMemoryType);
 
         return meshData;
+    }
+    
+    static void loadModelMultiMesh(const std::string& path, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*), ModelData& outData, bool mergeAll = false) {
+        auto startTotal = std::chrono::high_resolution_clock::now();
+        
+        Assimp::Importer importer;
+        auto startRead = std::chrono::high_resolution_clock::now();
+        const aiScene* scene = importer.ReadFile(path, 
+            aiProcess_Triangulate | 
+            aiProcess_FixInfacingNormals);
+        auto endRead = std::chrono::high_resolution_clock::now();
+        std::cout << "  [TIMING] Assimp ReadFile: " << std::chrono::duration<double, std::milli>(endRead - startRead).count() << "ms" << std::endl;
+        
+        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+            throw std::runtime_error("Failed to load model: " + std::string(importer.GetErrorString()));
+        }
+
+        ModelData modelData;
+        
+        if (mergeAll || scene->mNumMeshes > 32) {
+            MeshData merged;
+            merged.name = "merged";
+            
+            uint32_t totalVerts = 0, totalInds = 0;
+            for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
+                totalVerts += scene->mMeshes[i]->mNumVertices;
+                totalInds += scene->mMeshes[i]->mNumFaces * 3;
+            }
+            merged.vertices.reserve(totalVerts);
+            merged.indices.reserve(totalInds);
+            
+            uint32_t vertexOffset = 0;
+            for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
+                aiMesh* aiMesh = scene->mMeshes[i];
+                std::cout << "  Merging mesh " << i << ": " << (aiMesh->mName.length > 0 ? aiMesh->mName.C_Str() : "unnamed") << std::endl;
+                
+                for (unsigned int j = 0; j < aiMesh->mNumVertices; j++) {
+                    Vertex vertex;
+                    vertex.pos.x = aiMesh->mVertices[j].x;
+                    vertex.pos.y = aiMesh->mVertices[j].y;
+                    vertex.pos.z = aiMesh->mVertices[j].z;
+                    vertex.color = {1.0f, 1.0f, 1.0f};
+                    
+                    if (aiMesh->mTextureCoords[0]) {
+                        vertex.texCoord.x = aiMesh->mTextureCoords[0][j].x;
+                        vertex.texCoord.y = aiMesh->mTextureCoords[0][j].y;
+                    } else {
+                        vertex.texCoord = {0.0f, 0.0f};
+                    }
+                    
+                    if (aiMesh->mNormals) {
+                        vertex.normal.x = aiMesh->mNormals[j].x;
+                        vertex.normal.y = aiMesh->mNormals[j].y;
+                        vertex.normal.z = aiMesh->mNormals[j].z;
+                    } else {
+                        vertex.normal = {0.0f, 1.0f, 0.0f};
+                    }
+                    
+                    merged.vertices.push_back(vertex);
+                }
+                
+                for (unsigned int j = 0; j < aiMesh->mNumFaces; j++) {
+                    aiFace face = aiMesh->mFaces[j];
+                    for (unsigned int k = 0; k < face.mNumIndices; k++) {
+                        merged.indices.push_back(face.mIndices[k] + vertexOffset);
+                    }
+                }
+                
+                vertexOffset += aiMesh->mNumVertices;
+            }
+            
+            merged.indexCount = static_cast<uint32_t>(merged.indices.size());
+            
+            auto startBuffer = std::chrono::high_resolution_clock::now();
+            createBuffers(merged, device, physicalDevice, findMemoryType);
+            auto endBuffer = std::chrono::high_resolution_clock::now();
+            std::cout << "  [TIMING] Merged buffer creation: " << std::chrono::duration<double, std::milli>(endBuffer - startBuffer).count() << "ms" << std::endl;
+            
+            modelData.meshes.push_back(std::move(merged));
+        } else {
+            auto startParse = std::chrono::high_resolution_clock::now();
+            for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
+                aiMesh* aiMesh = scene->mMeshes[i];
+                MeshData meshData;
+                
+                meshData.name = aiMesh->mName.length > 0 ? std::string(aiMesh->mName.C_Str()) : "Part_" + std::to_string(i);
+                meshData.vertexOffset = modelData.totalVertices;
+                
+                meshData.vertices.reserve(aiMesh->mNumVertices);
+                meshData.indices.reserve(aiMesh->mNumFaces * 3);
+                
+                for (unsigned int j = 0; j < aiMesh->mNumVertices; j++) {
+                    Vertex vertex;
+                    vertex.pos.x = aiMesh->mVertices[j].x;
+                    vertex.pos.y = aiMesh->mVertices[j].y;
+                    vertex.pos.z = aiMesh->mVertices[j].z;
+                    vertex.color = {1.0f, 1.0f, 1.0f};
+                    
+                    if (aiMesh->mTextureCoords[0]) {
+                        vertex.texCoord.x = aiMesh->mTextureCoords[0][j].x;
+                        vertex.texCoord.y = aiMesh->mTextureCoords[0][j].y;
+                    } else {
+                        vertex.texCoord = {0.0f, 0.0f};
+                    }
+                    
+                    if (aiMesh->mNormals) {
+                        vertex.normal.x = aiMesh->mNormals[j].x;
+                        vertex.normal.y = aiMesh->mNormals[j].y;
+                        vertex.normal.z = aiMesh->mNormals[j].z;
+                    } else {
+                        vertex.normal = {0.0f, 1.0f, 0.0f};
+                    }
+                    
+                    meshData.vertices.push_back(vertex);
+                }
+                
+                for (unsigned int j = 0; j < aiMesh->mNumFaces; j++) {
+                    aiFace face = aiMesh->mFaces[j];
+                    for (unsigned int k = 0; k < face.mNumIndices; k++) {
+                        meshData.indices.push_back(face.mIndices[k]);
+                    }
+                }
+                
+                meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
+                
+                auto startBuffer = std::chrono::high_resolution_clock::now();
+                createBuffers(meshData, device, physicalDevice, findMemoryType);
+                auto endBuffer = std::chrono::high_resolution_clock::now();
+                std::cout << "  [TIMING] Mesh " << i << " (" << meshData.name << ") buffers: " 
+                          << std::chrono::duration<double, std::milli>(endBuffer - startBuffer).count() << "ms" << std::endl;
+                
+                modelData.totalVertices += aiMesh->mNumVertices;
+                modelData.totalIndices += meshData.indexCount;
+                modelData.meshes.push_back(std::move(meshData));
+            }
+            auto endParse = std::chrono::high_resolution_clock::now();
+            std::cout << "  [TIMING] Parse + Buffer creation: " << std::chrono::duration<double, std::milli>(endParse - startParse).count() << "ms" << std::endl;
+        }
+        
+        auto endTotal = std::chrono::high_resolution_clock::now();
+        std::cout << "  [TIMING] TOTAL loadModelMultiMesh: " << std::chrono::duration<double, std::milli>(endTotal - startTotal).count() << "ms" << std::endl;
+        std::cout << "  [LOADER] About to return ModelData with " << modelData.meshes.size() << " meshes" << std::endl;
+        std::cout.flush();
+        
+        outData = std::move(modelData);
     }
 
     static void createBuffers(MeshData& meshData, VkDevice device, VkPhysicalDevice physicalDevice, uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*)) {

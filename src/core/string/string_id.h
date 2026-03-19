@@ -29,7 +29,7 @@ public:
     explicit operator bool() const { return m_ID != 0; }
 
     static const StringID& null() {
-        static StringID nullID(0);
+        static StringID nullID(StringID::ID(0));
         return nullID;
     }
 

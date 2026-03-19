@@ -12,6 +12,7 @@
 #include "project/project_manager.h"
 #include "utils/camera_controller.h"
 #include "ecs/ecs.h"
+#include "core/threading/async_loader.h"
 
 using namespace ecs;
 #include "ecs/vertex.h"
@@ -61,7 +62,7 @@ namespace Atlas
             m_UIManager->setProjectManager(m_ProjectManager.get());
 
             // Não abrir o projeto por padrão para evitar erros de caminho em diferentes máquinas
-            // m_ProjectManager->openProject(".");
+            m_ProjectManager->openProject("MyProject");
 
             // Create camera
             auto cameraEntity = m_Scene->createEntity("Camera");
@@ -106,7 +107,10 @@ namespace Atlas
             
             m_UIManager->setCameraController(m_CameraController.get());
 
-            // Setup asset drop callback
+            // Initialize async loader
+            Atlas::AsyncLoader::getInstance().init();
+            
+            // Setup asset drop callback - ASYNC LOADING
             m_UIManager->setOnAssetDropped([this](const std::string &assetPath)
                                            {
             std::string fullPath = m_ProjectManager->getAssetFullPath(assetPath);
@@ -114,30 +118,59 @@ namespace Atlas
             std::string ext = fsPath.extension().string();
             
             if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") {
-                auto entity = m_Scene->createEntity(fsPath.filename().string());
-                auto& mesh = m_Scene->getRegistry().emplace<Mesh>(entity);
-                mesh.meshPath = fullPath;
+                std::string modelName = fsPath.filename().string();
+                std::string basePath = fullPath;
                 
-                MeshData meshData = ModelLoader::loadModel(fullPath, 
-                    m_Renderer->getDevice(), 
-                    m_Renderer->getPhysicalDevice(),
-                    [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
-                        for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++) {
-                            if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
-                                return i;
-                            }
+                auto findMemoryType = [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
+                    for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++) {
+                        if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
+                            return i;
                         }
-                        return uint32_t(~0);
-                    });
+                    }
+                    return uint32_t(~0);
+                };
                 
-                mesh.vertexBuffer = meshData.vertexBuffer;
-                mesh.indexBuffer = meshData.indexBuffer;
-                mesh.vertexMemory = meshData.vertexMemory;
-                mesh.indexMemory = meshData.indexMemory;
-                mesh.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
-                mesh.indexCount = meshData.indexCount;
+                MeshData placeholderData = ModelLoader::createCube(0.1f);
                 
-                std::cout << "Created entity from asset: " << fullPath << std::endl;
+                auto tempEntity = m_Scene->createEntity(modelName + " [Loading...]");
+                auto& tempMesh = m_Scene->getRegistry().emplace<Mesh>(tempEntity);
+                tempMesh.vertexBuffer = placeholderData.vertexBuffer;
+                tempMesh.indexBuffer = placeholderData.indexBuffer;
+                tempMesh.vertexMemory = placeholderData.vertexMemory;
+                tempMesh.indexMemory = placeholderData.indexMemory;
+                tempMesh.vertexCount = placeholderData.vertices.size();
+                tempMesh.indexCount = placeholderData.indexCount;
+                tempMesh.meshPath = basePath;
+                
+                std::cout << "Started loading model (sync): " << basePath << std::endl;
+                
+                ModelData modelData;
+                std::cout << "  [MAIN] Calling loadModelMultiMesh..." << std::endl; std::cout.flush();
+                ModelLoader::loadModelMultiMesh(
+                    basePath,
+                    m_Renderer->getDevice(),
+                    m_Renderer->getPhysicalDevice(),
+                    findMemoryType,
+                    modelData,
+                    true);
+                std::cout << "  [MAIN] loadModelMultiMesh returned!" << std::endl; std::cout.flush();
+                
+                std::cout << "Creating entities..." << std::endl;
+                for (size_t i = 0; i < modelData.meshes.size(); i++) {
+                    std::string partName = modelName + "_" + modelData.meshes[i].name;
+                    auto entity = m_Scene->createEntity(partName);
+                    auto& mesh = m_Scene->getRegistry().emplace<Mesh>(entity);
+                    mesh.meshPath = basePath + "#" + modelData.meshes[i].name;
+                    mesh.vertexBuffer = modelData.meshes[i].vertexBuffer;
+                    mesh.indexBuffer = modelData.meshes[i].indexBuffer;
+                    mesh.vertexMemory = modelData.meshes[i].vertexMemory;
+                    mesh.indexMemory = modelData.meshes[i].indexMemory;
+                    mesh.vertexCount = modelData.meshes[i].vertices.size();
+                    mesh.indexCount = modelData.meshes[i].indexCount;
+                }
+                
+                m_Scene->getRegistry().destroy(tempEntity);
+                std::cout << "Done! Loaded " << modelData.meshes.size() << " meshes." << std::endl;
             } });
 
             // Setup window resize callback
@@ -158,6 +191,7 @@ namespace Atlas
 
         ~Editor()
         {
+            Atlas::AsyncLoader::getInstance().shutdown();
             m_ImGuiManager.cleanup(m_Renderer->getDevice());
             m_Renderer->shutdown();
             glfwDestroyWindow(static_cast<GLFWwindow*>(m_Window->getNativeWindow()));
