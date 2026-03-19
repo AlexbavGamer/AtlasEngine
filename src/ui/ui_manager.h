@@ -33,6 +33,7 @@ public:
     void setCameraController(void* controller);
 
     TransformMode getTransformMode() const { return m_TransformMode; }
+    bool isGizmoUsing() const { return m_GizmoUsing; }
 
 private:
     Atlas::Scene* m_Scene = nullptr;
@@ -62,6 +63,7 @@ private:
     glm::mat4 m_ViewMatrix = glm::mat4(1.0f);
     glm::mat4 m_ProjMatrix = glm::mat4(1.0f);
     void* m_CameraController = nullptr;
+    bool m_GizmoUsing = false;
 
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;

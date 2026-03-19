@@ -5,7 +5,9 @@
 #include "renderer/renderer.h"
 #include "scene/scene.h"
 #include "imgui/imgui_manager.h"
+#include <imgui.h>
 #include <imgui_impl_vulkan.h>
+#include <ImGuizmo.h>
 #include "ui/ui_manager.h"
 #include "project/project_manager.h"
 #include "utils/camera_controller.h"
@@ -158,6 +160,7 @@ namespace Atlas
         {
             m_ImGuiManager.cleanup(m_Renderer->getDevice());
             m_Renderer->shutdown();
+            glfwDestroyWindow(static_cast<GLFWwindow*>(m_Window->getNativeWindow()));
         }
 
         void run()
@@ -175,28 +178,25 @@ namespace Atlas
 
                 m_Window->update();
 
-                // Update camera
-                if (m_CameraController)
+                // Update camera first
+                if (m_CameraController && !m_UIManager->isGizmoUsing())
                 {
                     m_CameraController->update(deltaTime);
                 }
 
                 // Render
                 m_ImGuiManager.newFrame();
+                ImGuizmo::BeginFrame();
                 
-                // Update camera matrices for ImGuizmo
+                // Update camera matrices for ImGuizmo AFTER updating camera
                 if (m_CameraController) {
                     m_UIManager->setCameraMatrices(
                         m_CameraController->getViewMatrix(),
                         m_CameraController->getProjMatrix()
                     );
-                    
-                    // Disable camera when using gizmo
-                    if (m_UIManager->getTransformMode() != TransformMode::None) {
-                        // Camera control managed by ImGuizmo state
-                    }
                 }
                 
+                // Render UI (includes gizmo)
                 m_UIManager->render(m_ViewportTexture);
 
                 m_Renderer->renderScene(m_Scene.get());

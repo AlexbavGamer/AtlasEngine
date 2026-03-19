@@ -1,7 +1,7 @@
 {
     "cmake.configureOnOpen": true,
     "cmake.buildDirectory": "${workspaceFolder}/build",
-    "cmake.generator": "MinGW Makefiles",
+    "cmake.generator": "Ninja",
     "cmake.configureArgs": [],
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
 }

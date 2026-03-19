@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include <string>
+#include <deque>
 
 #include "../core/base/non_copyable.h"
 #include "../vulkan/vulkan_structs.h"
@@ -165,6 +166,24 @@ private:
     bool m_FramebufferResized = false;
     ResizeCallback m_ResizeCallback;
     RenderCallback m_RenderCallback;
+
+    struct DeletionQueue {
+        std::deque<std::function<void()>> deletors;
+        
+        void push(std::function<void()> fn) {
+            deletors.push_back(fn);
+        }
+        
+        void flush() {
+            for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+                (*it)();
+            }
+            deletors.clear();
+        }
+    };
+    
+    DeletionQueue m_MainQueue;
+    DeletionQueue m_FrameQueue;
 
     static const std::vector<const char*> validationLayers;
     static const std::vector<const char*> deviceExtensions;

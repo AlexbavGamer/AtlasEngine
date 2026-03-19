@@ -152,55 +152,47 @@ void UIManager::setRenderer(Renderer* r) {
 }
 
 void UIManager::renderViewport(ImTextureID viewportTexture) {
-    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar);
     
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
-    ImVec2 imagePos = ImGui::GetCursorPos();
-    ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-    ImGui::Image(viewportTexture, viewportSize);
+    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    ImVec2 windowPos = ImGui::GetWindowPos();
+    
+    ImGui::Image(viewportTexture, contentSize);
+    
+    ImVec2 imageEndPos = ImGui::GetCursorPos();
     
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
         auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
         glm::mat4 modelMatrix = transform.getModelMatrix();
         
         ImGuizmo::SetOrthographic(false);
-        ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
-        
-        ImVec2 windowPos = ImGui::GetWindowPos();
-        float x = windowPos.x + imagePos.x;
-        float y = windowPos.y + imagePos.y;
-        
-        ImGuizmo::SetRect(x, y, viewportSize.x, viewportSize.y);
+        ImGuizmo::SetDrawlist();
+        ImGuizmo::SetRect(windowPos.x, windowPos.y, contentSize.x, contentSize.y);
         
         ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
         if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
         if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
         
         glm::mat4 deltaMatrix = glm::mat4(1.0f);
-        bool used = ImGuizmo::Manipulate(
+        ImGuizmo::Manipulate(
             glm::value_ptr(m_ViewMatrix),
             glm::value_ptr(m_ProjMatrix),
             operation,
             ImGuizmo::LOCAL,
             glm::value_ptr(modelMatrix),
-            glm::value_ptr(deltaMatrix),
-            nullptr
+            glm::value_ptr(deltaMatrix)
         );
         
-        if (used) {
-            glm::vec3 translation, scale;
-            glm::vec3 rotation;
-            glm::quat quat;
-            
-            glm::vec3 skew;
-            glm::vec4 perspective;
-            glm::decompose(modelMatrix, scale, quat, translation, skew, perspective);
-            rotation = glm::eulerAngles(quat);
-            
-            transform.position = translation;
-            transform.rotation = glm::degrees(rotation);
-            transform.scale = scale;
+        m_GizmoUsing = ImGuizmo::IsUsing();
+        
+        if (m_GizmoUsing) {
+            transform.position = glm::vec3(modelMatrix[3]);
+            transform.rotation = glm::vec3(0.0f);
+            transform.scale = glm::vec3(1.0f);
         }
+    } else {
+        m_GizmoUsing = false;
     }
     
     if (ImGui::BeginDragDropTarget()) {
@@ -213,6 +205,7 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     }
     
     ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 void UIManager::renderHierarchy() {
@@ -220,7 +213,14 @@ void UIManager::renderHierarchy() {
 
     if (m_Scene) {
         for (auto entity : m_Scene->getAllEntities()) {
-            std::string entityName = "Entity " + std::to_string(static_cast<uint32_t>(entity));
+            std::string entityName;
+            
+            auto& registry = m_Scene->getRegistry();
+            if (registry.all_of<Atlas::ECS::TagComponent>(entity)) {
+                entityName = registry.get<Atlas::ECS::TagComponent>(entity).name;
+            } else {
+                entityName = "Entity " + std::to_string(static_cast<uint32_t>(entity));
+            }
 
             bool isSelected = (selectedEntity == entity);
             if (ImGui::Selectable(entityName.c_str(), isSelected)) {

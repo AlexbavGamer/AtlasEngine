@@ -50,30 +50,50 @@ void Renderer::init() {
 }
 
 void Renderer::shutdown() {
+    m_RenderCallback = nullptr;
     vkDeviceWaitIdle(m_Device);
-    cleanupSwapChain();
+    
+    m_FrameQueue.flush();
+    
+    if (m_GraphicsPipeline) vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr);
+    if (m_PipelineLayout) vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
+    if (m_RenderPass) vkDestroyRenderPass(m_Device, m_RenderPass, nullptr);
+    if (m_OffscreenRenderPass) vkDestroyRenderPass(m_Device, m_OffscreenRenderPass, nullptr);
 
-    vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
-    vkDestroyRenderPass(m_Device, m_RenderPass, nullptr);
-    vkDestroyRenderPass(m_Device, m_OffscreenRenderPass, nullptr);
-
-    for (size_t i = 0; i < m_ImageAvailableSemaphores.size(); i++) {
-        vkDestroySemaphore(m_Device, m_RenderFinishedSemaphores[i], nullptr);
-        vkDestroySemaphore(m_Device, m_ImageAvailableSemaphores[i], nullptr);
+    for (auto semaphore : m_RenderFinishedSemaphores) {
+        if (semaphore) vkDestroySemaphore(m_Device, semaphore, nullptr);
+    }
+    for (auto semaphore : m_ImageAvailableSemaphores) {
+        if (semaphore) vkDestroySemaphore(m_Device, semaphore, nullptr);
+    }
+    for (auto fence : m_InFlightFences) {
+        if (fence) vkDestroyFence(m_Device, fence, nullptr);
     }
 
-    for (size_t i = 0; i < m_InFlightFences.size(); i++) {
-        vkDestroyFence(m_Device, m_InFlightFences[i], nullptr);
+    if (m_CommandPool) vkDestroyCommandPool(m_Device, m_CommandPool, nullptr);
+
+    if (m_OffscreenSampler) vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
+    if (m_OffscreenImageView) vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
+    if (m_OffscreenImage) vkDestroyImage(m_Device, m_OffscreenImage, nullptr);
+    if (m_OffscreenImageMemory) vkFreeMemory(m_Device, m_OffscreenImageMemory, nullptr);
+    if (m_OffscreenFramebuffer) vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
+
+    if (m_OffscreenDepthImageView) vkDestroyImageView(m_Device, m_OffscreenDepthImageView, nullptr);
+    if (m_OffscreenDepthImage) vkDestroyImage(m_Device, m_OffscreenDepthImage, nullptr);
+    if (m_OffscreenDepthImageMemory) vkFreeMemory(m_Device, m_OffscreenDepthImageMemory, nullptr);
+
+    if (m_DepthImageView) vkDestroyImageView(m_Device, m_DepthImageView, nullptr);
+    if (m_DepthImage) vkDestroyImage(m_Device, m_DepthImage, nullptr);
+    if (m_DepthMemory) vkFreeMemory(m_Device, m_DepthMemory, nullptr);
+
+    for (auto imageView : m_SwapChainImageViews) {
+        if (imageView) vkDestroyImageView(m_Device, imageView, nullptr);
+    }
+    for (auto framebuffer : m_SwapChainFramebuffers) {
+        if (framebuffer) vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
     }
 
-    vkDestroyCommandPool(m_Device, m_CommandPool, nullptr);
-
-    vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
-    vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
-    vkDestroyImage(m_Device, m_OffscreenImage, nullptr);
-    vkFreeMemory(m_Device, m_OffscreenImageMemory, nullptr);
-    vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
+    if (m_SwapChain) vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 
     vkDestroyDevice(m_Device, nullptr);
 
@@ -931,29 +951,31 @@ void Renderer::createOffscreenResources() {
 
 void Renderer::cleanupSwapChain() {
     for (auto framebuffer : m_SwapChainFramebuffers) {
-        vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
+        if (framebuffer) vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
     }
+    m_SwapChainFramebuffers.clear();
 
     for (auto imageView : m_SwapChainImageViews) {
-        vkDestroyImageView(m_Device, imageView, nullptr);
+        if (imageView) vkDestroyImageView(m_Device, imageView, nullptr);
     }
+    m_SwapChainImageViews.clear();
 
-    vkDestroyImageView(m_Device, m_DepthImageView, nullptr);
-    vkDestroyImage(m_Device, m_DepthImage, nullptr);
-    vkFreeMemory(m_Device, m_DepthMemory, nullptr);
+    if (m_DepthImageView) vkDestroyImageView(m_Device, m_DepthImageView, nullptr);
+    if (m_DepthImage) vkDestroyImage(m_Device, m_DepthImage, nullptr);
+    if (m_DepthMemory) vkFreeMemory(m_Device, m_DepthMemory, nullptr);
 
-    vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
+    if (m_SwapChain) vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 }
 
 void Renderer::cleanupOffscreenResources() {
-    vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
-    vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
-    vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
-    vkDestroyImage(m_Device, m_OffscreenImage, nullptr);
-    vkFreeMemory(m_Device, m_OffscreenImageMemory, nullptr);
-    vkDestroyImageView(m_Device, m_OffscreenDepthImageView, nullptr);
-    vkDestroyImage(m_Device, m_OffscreenDepthImage, nullptr);
-    vkFreeMemory(m_Device, m_OffscreenDepthImageMemory, nullptr);
+    if (m_OffscreenFramebuffer) vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
+    if (m_OffscreenSampler) vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
+    if (m_OffscreenImageView) vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
+    if (m_OffscreenImage) vkDestroyImage(m_Device, m_OffscreenImage, nullptr);
+    if (m_OffscreenImageMemory) vkFreeMemory(m_Device, m_OffscreenImageMemory, nullptr);
+    if (m_OffscreenDepthImageView) vkDestroyImageView(m_Device, m_OffscreenDepthImageView, nullptr);
+    if (m_OffscreenDepthImage) vkDestroyImage(m_Device, m_OffscreenDepthImage, nullptr);
+    if (m_OffscreenDepthImageMemory) vkFreeMemory(m_Device, m_OffscreenDepthImageMemory, nullptr);
 
     m_OffscreenFramebuffer = VK_NULL_HANDLE;
     m_OffscreenSampler = VK_NULL_HANDLE;
