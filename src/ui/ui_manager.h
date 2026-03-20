@@ -14,8 +14,6 @@
 namespace Atlas { class AssetManager; }
 #include <ImGuizmo.h>
 
-using namespace Atlas;
-
 enum class TransformMode { None, Translate, Rotate, Scale };
 
 class UIManager {
@@ -26,9 +24,9 @@ public:
     void setSelectedEntity(Entity entity);
     Entity getSelectedEntity() const;
     
-    void setProjectManager(ProjectManager* projManager);
+    void setProjectManager(::ProjectManager* projManager);
     void setOnAssetDropped(std::function<void(const std::string&)> callback);
-    void setRenderer(Renderer* renderer);
+    void setRenderer(Atlas::Renderer* renderer);
     void setAssetManager(Atlas::AssetManager* am) { assetManager = am; }
     void openProject(const std::string& path);
     void setWindow(GLFWwindow* win);
@@ -44,8 +42,8 @@ public:
 private:
     Atlas::Scene* m_Scene = nullptr;
     Entity selectedEntity = entt::null;
-    ProjectManager* projectManager = nullptr;
-    Renderer* renderer = nullptr;
+    ::ProjectManager* projectManager = nullptr;
+    Atlas::Renderer* renderer = nullptr;
     Atlas::AssetManager* assetManager = nullptr;
     std::function<void(const std::string&)> onAssetDropped;
 

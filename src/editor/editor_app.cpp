@@ -31,7 +31,7 @@ EditorApp::EditorApp() {
     m_AssetManager->setRenderer(m_Renderer.get());
 
     m_Scene = std::make_unique<Scene>();
-    m_ImGuiManager = std::make_unique<ImGuiManager>();
+    m_ImGuiManager = std::make_unique<::ImGuiManager>();
     m_ImGuiManager->init(
         m_Renderer->getInstance(),
         m_Renderer->getPhysicalDevice(),
@@ -45,12 +45,12 @@ EditorApp::EditorApp() {
     m_Viewport.setRenderer(m_Renderer.get());
     m_Viewport.refreshTexture();
 
-    m_UIManager = std::make_unique<UIManager>(m_Scene.get());
+    m_UIManager = std::make_unique<::UIManager>(m_Scene.get());
     m_UIManager->setWindow(m_Window->getGLFWWindow());
     m_UIManager->setRenderer(m_Renderer.get());
     m_UIManager->setAssetManager(m_AssetManager.get());
 
-    m_ProjectManager = std::make_unique<ProjectManager>();
+    m_ProjectManager = std::make_unique<::ProjectManager>();
     m_UIManager->setProjectManager(m_ProjectManager.get());
 
     auto cameraEntity = m_Scene->createEntity("Camera");
@@ -59,7 +59,7 @@ EditorApp::EditorApp() {
     camera.position = glm::vec3(0.0f, 2.0f, 5.0f);
     camera.target = glm::vec3(0.0f, 0.0f, 0.0f);
 
-    m_CameraController = std::make_unique<CameraController>(
+    m_CameraController = std::make_unique<::CameraController>(
         m_Window->getGLFWWindow(),
         camera.position,
         camera.target,
@@ -126,15 +126,15 @@ void EditorApp::queueModelImport(const std::string& assetPath) {
     placeholderData.indexMemory = VK_NULL_HANDLE;
     placeholderData.ownerDevice = VK_NULL_HANDLE;
 
-    auto modelDataPtr = std::make_shared<ModelData>();
-    AsyncLoader::getInstance().loadModelAsync<ModelData>(
+    auto modelDataPtr = std::make_shared<::ModelData>();
+    AsyncLoader::getInstance().loadModelAsync<::ModelData>(
         fullPath,
-        [fullPath, modelDataPtr]() -> std::shared_ptr<ModelData> {
+        [fullPath, modelDataPtr]() -> std::shared_ptr<::ModelData> {
             PROFILE_SCOPE("ModelLoad");
             ModelLoader::loadModelMultiMesh(fullPath, VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr, modelDataPtr.get(), false);
             return modelDataPtr;
         },
-        [this, modelName, fullPath, tempEntity](AsyncLoader::LoadResult<ModelData> result) {
+        [this, modelName, fullPath, tempEntity](AsyncLoader::LoadResult<::ModelData> result) {
             if (!result.success || !result.data) {
                 std::cerr << "Async model load failed: " << result.error << std::endl;
                 return;

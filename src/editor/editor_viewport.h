@@ -17,7 +17,7 @@ public:
 
 private:
     Renderer* m_Renderer = nullptr;
-    ImTextureID m_TextureId = nullptr;
+    ImTextureID m_TextureId = ImTextureID{};
 };
 
 }

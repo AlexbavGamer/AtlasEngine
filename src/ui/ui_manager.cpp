@@ -19,7 +19,7 @@
 #include <filesystem>
 #include <iostream>
 
-UIManager::UIManager(Scene* scene) : m_Scene(scene) {}
+UIManager::UIManager(Atlas::Scene* scene) : m_Scene(scene) {}
 
 void UIManager::renderToolbar() {
     ImGui::Begin("Toolbar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar);
@@ -130,7 +130,7 @@ void UIManager::setOnAssetDropped(std::function<void(const std::string&)> callba
     onAssetDropped = callback;
 }
 
-void UIManager::setProjectManager(ProjectManager* projManager) {
+void UIManager::setProjectManager(::ProjectManager* projManager) {
     projectManager = projManager;
 }
 
@@ -153,7 +153,7 @@ void UIManager::setCameraController(void* controller) {
     m_CameraController = controller;
 }
 
-void UIManager::setRenderer(Renderer* r) {
+void UIManager::setRenderer(Atlas::Renderer* r) {
     renderer = r;
 }
 
@@ -455,12 +455,12 @@ std::string getFileIcon(const std::string& filename, bool isFolder) {
     return "[F]";
 }
 
-ProjectManager::FileEntry getFolderAtPath(ProjectManager* pm, const std::vector<std::string>& path) {
+::ProjectManager::FileEntry getFolderAtPath(::ProjectManager* pm, const std::vector<std::string>& path) {
     auto tree = pm->getAssetTree();
     
     if (path.empty()) return tree;
     
-    ProjectManager::FileEntry* current = &tree;
+    ::ProjectManager::FileEntry* current = &tree;
     
     for (const auto& folderName : path) {
         bool found = false;
