@@ -2,6 +2,6 @@
     "cmake.configureOnOpen": true,
     "cmake.buildDirectory": "${workspaceFolder}/build",
     "cmake.generator": "Ninja",
-    "cmake.configureArgs": [],
+    "cmake.configureArgs": ["-DCMAKE_BUILD_TYPE=Release"],
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
 }

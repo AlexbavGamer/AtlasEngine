@@ -8,11 +8,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(ENABLE_TRACY "Enable Tracy profiler" ON)
+option(ATLAS_EMBED_SHADERS "Embed SPIR-V shaders into executable" ON)
 
 find_package(Threads REQUIRED)
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
 include(FetchContent)
@@ -268,6 +269,7 @@ file(GLOB_RECURSE ATLAS_SOURCES
 add_executable(${PROJECT_NAME} ${ATLAS_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
     ${ATLAS_INCLUDE_DIRS}
 )
 
@@ -338,6 +340,32 @@ if(GLSLC_EXECUTABLE)
 
     add_custom_target(shaders ALL DEPENDS ${ATLAS_SHADER_OUTPUTS})
     add_dependencies(${PROJECT_NAME} shaders)
+
+    if(ATLAS_EMBED_SHADERS)
+        file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+        set(ATLAS_EMBEDDED_SHADERS_CPP "${CMAKE_BINARY_DIR}/generated/embedded_shaders.cpp")
+
+        set(ATLAS_EMBED_SHADER_NAMES "pbr_vert;pbr_frag")
+        string(REPLACE ";" "\\;" ATLAS_SHADER_OUTPUTS_ESCAPED "${ATLAS_SHADER_OUTPUTS}")
+        string(REPLACE ";" "\\;" ATLAS_EMBED_SHADER_NAMES_ESCAPED "${ATLAS_EMBED_SHADER_NAMES}")
+
+        add_custom_command(
+            OUTPUT "${ATLAS_EMBEDDED_SHADERS_CPP}"
+            COMMAND ${CMAKE_COMMAND}
+                "-DINPUTS=${ATLAS_SHADER_OUTPUTS_ESCAPED}"
+                "-DNAMES=${ATLAS_EMBED_SHADER_NAMES_ESCAPED}"
+                "-DOUTPUT_CPP=${ATLAS_EMBEDDED_SHADERS_CPP}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/embed_shaders.cmake"
+            DEPENDS ${ATLAS_SHADER_OUTPUTS} "${CMAKE_SOURCE_DIR}/cmake/embed_shaders.cmake"
+            COMMENT "Embedding SPIR-V shaders into executable"
+            VERBATIM
+        )
+
+        add_custom_target(embedded_shaders ALL DEPENDS "${ATLAS_EMBEDDED_SHADERS_CPP}")
+        add_dependencies(${PROJECT_NAME} embedded_shaders)
+        target_sources(${PROJECT_NAME} PRIVATE "${ATLAS_EMBEDDED_SHADERS_CPP}")
+        target_compile_definitions(${PROJECT_NAME} PRIVATE ATLAS_EMBED_SHADERS=1)
+    endif()
 else()
     message(WARNING "glslc not found. Shaders will not be compiled automatically.")
     message(STATUS "Install Vulkan SDK or add glslc to PATH to enable shader compilation")

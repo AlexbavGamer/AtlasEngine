@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "embedded_shaders.h"
 #include "../platform/window.h"
 #include "../scene/scene.h"
 #include "../ecs/components/components.h"
@@ -1758,6 +1759,20 @@ std::vector<char> Renderer::readFile(const std::string& filename) {
         file.seekg(0);
         file.read(buffer.data(), static_cast<std::streamsize>(fileSize));
         return buffer;
+    }
+
+    // Fallback to embedded shaders (when available).
+    if (const auto* embedded = EmbeddedShaders::find(filename.c_str())) {
+        const char* begin = reinterpret_cast<const char*>(embedded->data);
+        return std::vector<char>(begin, begin + embedded->size);
+    }
+
+    const std::string baseName = fs::path(filename).filename().string();
+    if (baseName != filename) {
+        if (const auto* embedded = EmbeddedShaders::find(baseName.c_str())) {
+            const char* begin = reinterpret_cast<const char*>(embedded->data);
+            return std::vector<char>(begin, begin + embedded->size);
+        }
     }
 
     throw std::runtime_error("failed to open shader file: " + filename);

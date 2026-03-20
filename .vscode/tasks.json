@@ -4,7 +4,7 @@
         {
             "label": "Build",
             "type": "shell",
-            "command": "cmake --build build --config Debug",
+            "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build",
             "problemMatcher": ["$gcc"],
             "group": "build"
         }

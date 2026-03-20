@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug AtlasEngine",
+            "name": "Release AtlasEngine",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/AtlasEngine.exe",
