@@ -304,42 +304,48 @@ file(MAKE_DIRECTORY "${SHADER_OUTPUT_DIR}")
 
 if(GLSLC_EXECUTABLE)
     message(STATUS "Found glslc: ${GLSLC_EXECUTABLE}")
-    
-    add_custom_command(
-        OUTPUT "${SHADER_OUTPUT_DIR}/vert.spv"
-        COMMAND ${GLSLC_EXECUTABLE} -fshader-stage=vert
-                "${SHADER_SOURCE_DIR}/vert.glsl"
-                -o "${SHADER_OUTPUT_DIR}/vert.spv"
-        DEPENDS "${SHADER_SOURCE_DIR}/vert.glsl"
-        COMMENT "Compiling vertex shader"
-        VERBATIM
-    )
 
-    add_custom_command(
-        OUTPUT "${SHADER_OUTPUT_DIR}/frag.spv"
-        COMMAND ${GLSLC_EXECUTABLE} -fshader-stage=frag
-                "${SHADER_SOURCE_DIR}/frag.glsl"
-                -o "${SHADER_OUTPUT_DIR}/frag.spv"
-        DEPENDS "${SHADER_SOURCE_DIR}/frag.glsl"
-        COMMENT "Compiling fragment shader"
-        VERBATIM
+    set(ATLAS_SHADER_SOURCES
+        pbr_vert.glsl
+        pbr_frag.glsl
     )
+    set(ATLAS_SHADER_OUTPUTS)
 
-    add_custom_target(shaders ALL
-        DEPENDS
-            "${SHADER_OUTPUT_DIR}/vert.spv"
-            "${SHADER_OUTPUT_DIR}/frag.spv"
-    )
+    foreach(shader_file IN LISTS ATLAS_SHADER_SOURCES)
+        get_filename_component(shader_name "${shader_file}" NAME_WE)
 
+        if(shader_file MATCHES "_vert\.glsl$")
+            set(shader_stage "vert")
+        elseif(shader_file MATCHES "_frag\.glsl$")
+            set(shader_stage "frag")
+        else()
+            message(FATAL_ERROR "Unable to determine shader stage for ${shader_file}")
+        endif()
+
+        set(shader_output "${SHADER_OUTPUT_DIR}/${shader_name}.spv")
+        list(APPEND ATLAS_SHADER_OUTPUTS "${shader_output}")
+
+        add_custom_command(
+            OUTPUT "${shader_output}"
+            COMMAND ${GLSLC_EXECUTABLE} -fshader-stage=${shader_stage}
+                    "${SHADER_SOURCE_DIR}/${shader_file}"
+                    -o "${shader_output}"
+            DEPENDS "${SHADER_SOURCE_DIR}/${shader_file}"
+            COMMENT "Compiling ${shader_file}"
+            VERBATIM
+        )
+    endforeach()
+
+    add_custom_target(shaders ALL DEPENDS ${ATLAS_SHADER_OUTPUTS})
     add_dependencies(${PROJECT_NAME} shaders)
 else()
     message(WARNING "glslc not found. Shaders will not be compiled automatically.")
     message(STATUS "Install Vulkan SDK or add glslc to PATH to enable shader compilation")
 endif()
 
-# Copy shaders to build directory
+# Copy compiled shaders next to the executable runtime directory
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${SHADER_SOURCE_DIR}"
-            "${CMAKE_BINARY_DIR}/shaders_src"
+            "${SHADER_OUTPUT_DIR}"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders"
 )

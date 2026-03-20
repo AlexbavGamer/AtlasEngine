@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Ubuntu CMake build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Cache FetchContent sources
+        uses: actions/cache@v4
+        with:
+          path: deps/src
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            pkg-config \
+            build-essential \
+            libvulkan-dev \
+            glslc \
+            xorg-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            wayland-protocols \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TRACY=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --target AtlasEngine
+
+      - name: Stage Linux artifact
+        run: |
+          mkdir -p dist/linux
+          cp build/AtlasEngine dist/linux/
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AtlasEngine-linux
+          path: dist/linux
+          if-no-files-found: error

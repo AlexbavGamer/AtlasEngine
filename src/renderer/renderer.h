@@ -59,7 +59,6 @@ public:
 
     void recreateSwapChain();
 
-    // Getters
     VkInstance getInstance() const { return m_Instance; }
     VkDevice getDevice() const { return m_Device; }
     VkPhysicalDevice getPhysicalDevice() const { return m_PhysicalDevice; }
@@ -83,7 +82,7 @@ public:
 
     using ResizeCallback = std::function<void(int width, int height)>;
     void setResizeCallback(ResizeCallback callback) { m_ResizeCallback = std::move(callback); }
-    
+
     using RenderCallback = std::function<void(VkCommandBuffer commandBuffer)>;
     void setRenderCallback(RenderCallback callback) { m_RenderCallback = std::move(callback); }
 
@@ -91,7 +90,6 @@ public:
     uint32_t bindTexture(VkImageView imageView, VkSampler sampler);
     void updateTexture(uint32_t index, VkImageView imageView, VkSampler sampler);
 
-    // Clear color
     glm::vec4 getClearColor() const { return m_ClearColor; }
     void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
 
@@ -115,8 +113,9 @@ private:
     void createLightBuffer();
     void createDescriptorSet();
 
-    void cleanupSwapChain();
-    void cleanupOffscreenResources();
+    void destroyPipelineResources();
+    void destroySwapchainResources();
+    void destroyOffscreenResources();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Scene* scene);
 
     bool checkValidationLayerSupport();
@@ -140,13 +139,11 @@ private:
         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
         void* pUserData);
 
-    // Core
     Window* m_Window = nullptr;
     VkInstance m_Instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT m_DebugMessenger = VK_NULL_HANDLE;
     VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
 
-    // Device
     VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
     VkDevice m_Device = VK_NULL_HANDLE;
     VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
@@ -154,7 +151,6 @@ private:
     QueueFamilyIndices m_QueueFamilyIndices{};
     std::unique_ptr<MemoryManager> m_MemoryManager;
 
-    // Swapchain
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
     std::vector<VkImage> m_SwapChainImages;
     VkFormat m_SwapChainImageFormat = VK_FORMAT_UNDEFINED;
@@ -162,25 +158,20 @@ private:
     std::vector<VkImageView> m_SwapChainImageViews;
     std::vector<VkFramebuffer> m_SwapChainFramebuffers;
 
-    // Depth
     VkImage m_DepthImage = VK_NULL_HANDLE;
     VkDeviceMemory m_DepthMemory = VK_NULL_HANDLE;
     VkImageView m_DepthImageView = VK_NULL_HANDLE;
 
-    // Clear color
     glm::vec4 m_ClearColor = glm::vec4(0.5f, 0.7f, 0.9f, 1.0f);
 
-    // Pipeline
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VkRenderPass m_OffscreenRenderPass = VK_NULL_HANDLE;
     VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
 
-    // Command
     VkCommandPool m_CommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_CommandBuffers;
 
-    // Sync
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
     std::vector<VkSemaphore> m_ImageAvailableSemaphores;
     std::vector<VkSemaphore> m_RenderFinishedSemaphores;
@@ -188,7 +179,6 @@ private:
     std::vector<VkFence> m_ImagesInFlight;
     uint32_t m_CurrentFrame = 0;
 
-    // Offscreen
     VkImage m_OffscreenImage = VK_NULL_HANDLE;
     VkDeviceMemory m_OffscreenImageMemory = VK_NULL_HANDLE;
     VkImageView m_OffscreenImageView = VK_NULL_HANDLE;
@@ -199,7 +189,6 @@ private:
     VkDeviceMemory m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
     VkImageView m_OffscreenDepthImageView = VK_NULL_HANDLE;
 
-    // Lights
     LightBuffer m_LightBufferData{};
     VkBuffer m_LightBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
@@ -208,19 +197,17 @@ private:
     VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
     uint32_t m_BoundTextureCount = 1;
 
-    // Textures
     static constexpr uint32_t MAX_TEXTURES = 64;
     VkImage m_TextureImages[MAX_TEXTURES] = {};
     VkDeviceMemory m_TextureImageMemory[MAX_TEXTURES] = {};
     VkImageView m_TextureImageViews[MAX_TEXTURES] = {};
     VkSampler m_TextureSamplers[MAX_TEXTURES] = {};
     uint32_t m_TextureCount = 0;
-    
+
     VkDescriptorPool m_TextureDescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_TextureDescriptorSetLayout = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> m_TextureDescriptorSets;
 
-    // Placeholder texture (white 1x1)
     VkImage m_PlaceholderImage = VK_NULL_HANDLE;
     VkDeviceMemory m_PlaceholderImageMemory = VK_NULL_HANDLE;
     VkImageView m_PlaceholderImageView = VK_NULL_HANDLE;
@@ -230,7 +217,6 @@ private:
     void createPlaceholderTexture();
     uint32_t createTextureFromFile(const std::string& path);
 
-    // Tracy GPU profiling
 #ifdef TRACY_ENABLE
     TracyVkCtx m_TracyVkCtx = nullptr;
 #endif
@@ -241,19 +227,15 @@ private:
 
     struct DeletionQueue {
         std::deque<std::function<void()>> deletors;
-        
-        void push(std::function<void()> fn) {
-            deletors.push_back(fn);
-        }
-        
+        void push(std::function<void()> fn) { deletors.push_back(std::move(fn)); }
         void flush() {
-            for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+            for (auto it = deletors.rbegin(); it != deletors.rend(); ++it) {
                 (*it)();
             }
             deletors.clear();
         }
     };
-    
+
     DeletionQueue m_MainQueue;
     DeletionQueue m_FrameQueue;
 
