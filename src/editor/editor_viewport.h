@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
+
 #include <imgui.h>
+#include <vulkan/vulkan.h>
 
 namespace Atlas {
 class Renderer;
@@ -13,11 +16,11 @@ public:
     void refreshTexture();
     void releaseTexture();
 
-    ImTextureID getTextureId() const { return m_TextureId; }
+    ImTextureID getTextureId() const;
 
 private:
     Renderer* m_Renderer = nullptr;
-    ImTextureID m_TextureId = ImTextureID{};
+    VkDescriptorSet m_TextureDescriptorSet = VK_NULL_HANDLE;
 };
 
 }
