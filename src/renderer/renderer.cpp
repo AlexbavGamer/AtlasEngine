@@ -3,6 +3,7 @@
 #include "../scene/scene.h"
 #include "../ecs/components/components.h"
 #include "../ecs/ecs.h"
+#include "../ecs/vertex.h"
 #include "../core/profiler.h"
 #include <stdexcept>
 #include <fstream>
