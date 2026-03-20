@@ -57,7 +57,7 @@ void Scene::setActiveCamera(entt::entity entity) {
 
 std::vector<entt::entity> Scene::getAllEntities() {
     std::vector<entt::entity> entities;
-    m_Registry.each([&](auto entity) {
+    m_Registry.storage<entt::entity>().each([&](auto entity) {
         entities.push_back(entity);
     });
     return entities;
@@ -77,7 +77,7 @@ std::vector<entt::entity> Scene::getEntitiesWithLight() {
 
 std::vector<entt::entity> Scene::getRootEntities() {
     std::vector<entt::entity> roots;
-    m_Registry.each([&](auto entity) {
+    m_Registry.storage<entt::entity>().each([&](auto entity) {
         if (!m_Registry.all_of<ParentComponent>(entity)) {
             roots.push_back(entity);
         }

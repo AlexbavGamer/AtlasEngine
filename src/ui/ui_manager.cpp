@@ -175,8 +175,8 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
 
         // If entity has parent, keep parent matrix to compute local transform after manipulate.
         glm::mat4 parentWorld = glm::mat4(1.0f);
-        if (m_Scene->getRegistry().all_of<ParentComponent>(selectedEntity)) {
-            entt::entity parent = m_Scene->getRegistry().get<ParentComponent>(selectedEntity).parent;
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::ParentComponent>(selectedEntity)) {
+            entt::entity parent = m_Scene->getRegistry().get<Atlas::ECS::ParentComponent>(selectedEntity).parent;
             if (parent != entt::null) {
                 parentWorld = m_Scene->getWorldTransform(parent);
             }
