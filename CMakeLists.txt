@@ -313,8 +313,15 @@ if(GLSLC_EXECUTABLE)
 
     foreach(shader_file IN LISTS ATLAS_SHADER_SOURCES)
         get_filename_component(shader_name "${shader_file}" NAME_WE)
-        get_filename_component(shader_ext "${shader_file}" LAST_EXT)
-        string(REPLACE "." "" shader_stage "${shader_ext}")
+
+        if(shader_file MATCHES "_vert\.glsl$")
+            set(shader_stage "vert")
+        elseif(shader_file MATCHES "_frag\.glsl$")
+            set(shader_stage "frag")
+        else()
+            message(FATAL_ERROR "Unable to determine shader stage for ${shader_file}")
+        endif()
+
         set(shader_output "${SHADER_OUTPUT_DIR}/${shader_name}.spv")
         list(APPEND ATLAS_SHADER_OUTPUTS "${shader_output}")
 
