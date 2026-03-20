@@ -12,10 +12,19 @@ jobs:
   build-linux:
     name: Ubuntu CMake build
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 1
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Cache FetchContent sources
+        uses: actions/cache@v4
+        with:
+          path: deps/src
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Install system dependencies
         run: |
@@ -39,4 +48,4 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TRACY=OFF
 
       - name: Build
-        run: cmake --build build --config Release --parallel 2
+        run: cmake --build build --config Release --target AtlasEngine
