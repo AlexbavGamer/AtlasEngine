@@ -125,7 +125,7 @@ namespace Atlas
                 std::filesystem::path fsPath(fullPath);
                 std::string ext = fsPath.extension().string();
                 
-                if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") {
+                if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae" || ext == ".blend") {
                     std::string modelName = fsPath.filename().string();
                     std::string basePath = fullPath;
                     

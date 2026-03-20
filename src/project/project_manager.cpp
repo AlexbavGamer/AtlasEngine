@@ -59,7 +59,7 @@ std::vector<std::string> ProjectManager::getAssetFiles(const std::string& subfol
 }
 
 std::vector<std::string> ProjectManager::getModelFiles() {
-    std::vector<std::string> extensions = {".fbx", ".gltf", ".glb", ".obj", ".dae"};
+    std::vector<std::string> extensions = {".fbx", ".gltf", ".glb", ".obj", ".dae", ".blend"};
     std::vector<std::string> allFiles = getAssetFiles("models");
     
     std::vector<std::string> models;
