@@ -39,6 +39,8 @@ public:
     void updateProfiler(float deltaTime);
     void renderProfilerWindow();
 
+    int getMaxFps() const { return m_MaxFps; }
+
 private:
     Atlas::Scene* m_Scene = nullptr;
     Entity selectedEntity = entt::null;
@@ -78,6 +80,10 @@ private:
 
     bool showOpenProjectFileDialog = false;
     bool showSaveProjectFileDialog = false;
+
+    // Frame limiting
+    bool m_VSyncEnabled = true;
+    int m_MaxFps = 0;
 
     // Simple ImGui profiler panel data
     bool m_ShowProfilerWindow = true;

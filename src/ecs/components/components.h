@@ -1,6 +1,10 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <vector>
+
+#include <entt/entt.hpp>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -31,20 +35,45 @@ struct MaterialComponent {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float ambientOcclusion = 1.0f;
-    
+
+    glm::vec3 emissiveFactor = glm::vec3(0.0f);
+
+    enum class AlphaMode : uint8_t {
+        Opaque = 0,
+        Mask = 1,
+        Blend = 2,
+    };
+
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
+
     StringID albedoTextureId;
     std::string albedoTexturePath;
 
     StringID normalTextureId;
+    std::string normalTexturePath;
+
     StringID metallicRoughnessTextureId;
+    std::string metallicRoughnessTexturePath;
+
     StringID aoTextureId;
+    std::string aoTexturePath;
+
+    StringID emissiveTextureId;
+    std::string emissiveTexturePath;
 
     int32_t albedoTextureIndex = -1;
-    
+    int32_t normalTextureIndex = -1;
+    int32_t metallicRoughnessTextureIndex = -1;
+    int32_t aoTextureIndex = -1;
+    int32_t emissiveTextureIndex = -1;
+
     bool useAlbedoTexture = false;
     bool useNormalTexture = false;
     bool useMetallicRoughnessTexture = false;
     bool useAOTexture = false;
+    bool useEmissiveTexture = false;
 };
 
 struct RenderableComponent {

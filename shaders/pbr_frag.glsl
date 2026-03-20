@@ -5,10 +5,15 @@ layout(push_constant) uniform PushConstants {
     mat4 view;
     mat4 proj;
     vec4 baseColor;
+    vec4 emissiveFactor;
     float metallic;
     float roughness;
     int albedoTexIndex;
-    int hasAlbedoTex;
+    int normalTexIndex;
+    int metallicRoughnessTexIndex;
+    int aoTexIndex;
+    int emissiveTexIndex;
+    int flags;
 } pc;
 
 layout(location = 0) in vec3 fragColor;
@@ -75,51 +80,117 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
+    vec3 dp1 = dFdx(p);
+    vec3 dp2 = dFdy(p);
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    float invMax = inversesqrt(max(dot(T, T), dot(B, B)));
+    return mat3(T * invMax, B * invMax, N);
+}
+
 void main() {
-    vec3 N = normalize(fragNormal);
-    vec3 V = normalize(lightData.cameraPos - fragWorldPos);
-    
-    vec4 albedoColor = vec4(fragColor, 1.0);
-    if (pc.hasAlbedoTex != 0) {
+    const int FLAG_HAS_ALBEDO = 1 << 0;
+    const int FLAG_HAS_NORMAL = 1 << 1;
+    const int FLAG_HAS_MR = 1 << 2;
+    const int FLAG_HAS_AO = 1 << 3;
+    const int FLAG_HAS_EMISSIVE = 1 << 4;
+
+    const int ALPHA_MODE_SHIFT = 8;
+    const int ALPHA_MODE_MASK = 3 << ALPHA_MODE_SHIFT;
+    const int ALPHA_OPAQUE = 0;
+    const int ALPHA_MASK = 1;
+    const int ALPHA_BLEND = 2;
+
+    vec4 albedoColor = pc.baseColor * vec4(fragColor, 1.0);
+    if ((pc.flags & FLAG_HAS_ALBEDO) != 0) {
         albedoColor *= texture(textureSamplers[pc.albedoTexIndex], fragTexCoord);
     }
-    
+
+    int alphaMode = (pc.flags & ALPHA_MODE_MASK) >> ALPHA_MODE_SHIFT;
+    float alpha = albedoColor.a;
+
+    if (alphaMode == ALPHA_OPAQUE) {
+        alpha = 1.0;
+    } else if (alphaMode == ALPHA_MASK) {
+        if (alpha < 0.5) {
+            discard;
+        }
+        alpha = 1.0;
+    } else {
+        // ALPHA_BLEND: keep alpha
+    }
+
+    vec3 N = normalize(fragNormal);
+    if ((pc.flags & FLAG_HAS_NORMAL) != 0) {
+        vec3 mapN = texture(textureSamplers[pc.normalTexIndex], fragTexCoord).xyz * 2.0 - 1.0;
+        mat3 TBN = cotangentFrame(N, fragWorldPos, fragTexCoord);
+        N = normalize(TBN * mapN);
+    }
+
+    float metallic = pc.metallic;
+    float roughness = pc.roughness;
+    if ((pc.flags & FLAG_HAS_MR) != 0) {
+        vec4 mr = texture(textureSamplers[pc.metallicRoughnessTexIndex], fragTexCoord);
+        // glTF convention: B=metallic, G=roughness
+        metallic *= mr.b;
+        roughness *= mr.g;
+    }
+
+    float ao = 1.0;
+    if ((pc.flags & FLAG_HAS_AO) != 0) {
+        ao = texture(textureSamplers[pc.aoTexIndex], fragTexCoord).r;
+    }
+
+    vec3 emissive = pc.emissiveFactor.rgb;
+    if ((pc.flags & FLAG_HAS_EMISSIVE) != 0) {
+        emissive *= texture(textureSamplers[pc.emissiveTexIndex], fragTexCoord).rgb;
+    }
+
+    vec3 V = normalize(lightData.cameraPos - fragWorldPos);
+
     vec3 F0 = vec3(0.04);
-    F0 = mix(F0, albedoColor.rgb, pc.metallic);
-    
+    F0 = mix(F0, albedoColor.rgb, metallic);
+
     vec3 Lo = vec3(0.0);
-    
+
     for (int i = 0; i < lightData.lightCount; i++) {
         Light light = lightData.lights[i];
-        
+
         vec3 L = normalize(light.position - fragWorldPos);
         vec3 H = normalize(V + L);
-        
+
         float distance = length(light.position - fragWorldPos);
         float attenuation = 1.0 / (distance * distance);
         vec3 radiance = light.color * light.intensity * attenuation;
-        
-        float NDF = DistributionGGX(N, H, pc.roughness);
-        float G = GeometrySmith(N, V, L, pc.roughness);
+
+        float NDF = DistributionGGX(N, H, roughness);
+        float G = GeometrySmith(N, V, L, roughness);
         vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-        
+
         vec3 kS = F;
         vec3 kD = vec3(1.0) - kS;
-        kD *= 1.0 - pc.metallic;
-        
+        kD *= 1.0 - metallic;
+
         vec3 numerator = NDF * G * F;
         float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
         vec3 specular = numerator / denominator;
-        
+
         float NdotL = max(dot(N, L), 0.0);
         Lo += (kD * albedoColor.rgb / PI + specular) * radiance * NdotL;
     }
-    
+
     vec3 ambient = vec3(0.03) * albedoColor.rgb;
-    vec3 color = ambient + Lo;
-    
+    vec3 color = (ambient + Lo) * ao + emissive;
+
     color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0/2.2));
-    
-    outColor = vec4(color, albedoColor.a);
+    color = pow(color, vec3(1.0 / 2.2));
+
+    outColor = vec4(color, alpha);
 }

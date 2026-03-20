@@ -36,10 +36,15 @@ struct PushConstants {
     glm::mat4 view;
     glm::mat4 proj;
     glm::vec4 baseColor;
+    glm::vec4 emissiveFactor;
     float metallic;
     float roughness;
     int32_t albedoTexIndex;
-    int32_t hasAlbedoTex;
+    int32_t normalTexIndex;
+    int32_t metallicRoughnessTexIndex;
+    int32_t aoTexIndex;
+    int32_t emissiveTexIndex;
+    int32_t flags;
 };
 
 class Window;
@@ -89,6 +94,9 @@ public:
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
     uint32_t bindTexture(VkImageView imageView, VkSampler sampler);
     void updateTexture(uint32_t index, VkImageView imageView, VkSampler sampler);
+
+    void setVSyncEnabled(bool enabled);
+    bool isVSyncEnabled() const { return m_VSyncEnabled; }
 
     glm::vec4 getClearColor() const { return m_ClearColor; }
     void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
@@ -152,6 +160,7 @@ private:
     std::unique_ptr<MemoryManager> m_MemoryManager;
 
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
+    bool m_VSyncEnabled = true;
     std::vector<VkImage> m_SwapChainImages;
     VkFormat m_SwapChainImageFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D m_SwapChainExtent = {};
@@ -168,6 +177,7 @@ private:
     VkRenderPass m_OffscreenRenderPass = VK_NULL_HANDLE;
     VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineBlend = VK_NULL_HANDLE;
 
     VkCommandPool m_CommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_CommandBuffers;

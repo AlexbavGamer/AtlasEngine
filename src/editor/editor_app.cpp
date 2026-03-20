@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <iostream>
+#include <chrono>
+#include <thread>
 
 #include <ImGuizmo.h>
 #include <imgui.h>
@@ -150,6 +152,8 @@ void EditorApp::run() {
 
     double lastTime = glfwGetTime();
     while (!m_Window->shouldClose()) {
+        auto frameStart = std::chrono::steady_clock::now();
+
         double currentTime = glfwGetTime();
         float deltaTime = static_cast<float>(currentTime - lastTime);
         lastTime = currentTime;
@@ -172,6 +176,20 @@ void EditorApp::run() {
         processPendingModels();
         m_Renderer->renderScene(m_Scene.get());
         m_Renderer->endFrame();
+
+        int maxFps = m_UIManager ? m_UIManager->getMaxFps() : 0;
+        if (maxFps > 0) {
+            using namespace std::chrono;
+            duration<double> targetFrameTime(1.0 / static_cast<double>(maxFps));
+            auto frameEnd = steady_clock::now();
+            duration<double> frameTime = frameEnd - frameStart;
+            if (frameTime < targetFrameTime) {
+                auto sleepDuration = duration_cast<microseconds>(targetFrameTime - frameTime);
+                if (sleepDuration.count() > 0) {
+                    std::this_thread::sleep_for(sleepDuration);
+                }
+            }
+        }
     }
 
     vkDeviceWaitIdle(m_Renderer->getDevice());
@@ -231,27 +249,67 @@ void EditorApp::processPendingModels() {
             material.baseColor = meshData.baseColor;
             material.metallic = meshData.metallic;
             material.roughness = meshData.roughness;
+            material.emissiveFactor = meshData.emissiveFactor;
+            material.alphaCutoff = meshData.alphaCutoff;
+            material.doubleSided = meshData.doubleSided;
 
-            if (!meshData.baseColorTexturePath.empty()) {
-                std::filesystem::path texPath = (std::filesystem::path(item.basePath).parent_path() / meshData.baseColorTexturePath).lexically_normal();
-                const std::string texFullPath = texPath.string();
+            if (meshData.alphaMode == 1) material.alphaMode = ECS::MaterialComponent::AlphaMode::Mask;
+            else if (meshData.alphaMode == 2) material.alphaMode = ECS::MaterialComponent::AlphaMode::Blend;
+            else material.alphaMode = ECS::MaterialComponent::AlphaMode::Opaque;
+
+            auto bindMaterialTexture = [&](const std::string& relPath, AssetManager::TextureColorSpace colorSpace,
+                bool& useFlag, int32_t& outIndex, StringID& outId, std::string& outPath) {
+                useFlag = false;
+                outIndex = -1;
+                outPath.clear();
+
+                if (relPath.empty() || !m_AssetManager || !m_Renderer) {
+                    return;
+                }
+
+                std::filesystem::path modelDir = std::filesystem::path(item.basePath).parent_path();
+                std::filesystem::path candidate(relPath);
+                std::filesystem::path texPath;
+                if (candidate.is_absolute() || std::filesystem::exists(candidate)) {
+                    texPath = candidate;
+                } else {
+                    texPath = (modelDir / candidate).lexically_normal();
+                }
+                std::string texFullPath = texPath.string();
+
+                std::string cacheKey = texFullPath + ((colorSpace == AssetManager::TextureColorSpace::Linear) ? "#linear" : "#srgb");
+
                 uint32_t slot = 0;
-                if (auto it = m_TextureSlots.find(texFullPath); it != m_TextureSlots.end()) {
+                if (auto it = m_TextureSlots.find(cacheKey); it != m_TextureSlots.end()) {
                     slot = it->second;
-                } else if (auto tex = m_AssetManager->loadTexture(StringID(texFullPath), texFullPath); tex && tex->isValid()) {
-                    slot = m_Renderer->bindTexture(tex->getImageView(), tex->getSampler());
-                    if (slot != 0) {
-                        m_TextureSlots[texFullPath] = slot;
+                } else {
+                    auto tex = m_AssetManager->loadTexture(StringID(cacheKey), texFullPath, colorSpace);
+                    if (tex && tex->isValid()) {
+                        slot = m_Renderer->bindTexture(tex->getImageView(), tex->getSampler());
+                        if (slot != 0) {
+                            m_TextureSlots[cacheKey] = slot;
+                        }
                     }
                 }
 
                 if (slot != 0) {
-                    material.useAlbedoTexture = true;
-                    material.albedoTextureIndex = static_cast<int32_t>(slot);
-                    material.albedoTextureId = StringID(texFullPath);
-                    material.albedoTexturePath = texFullPath;
+                    useFlag = true;
+                    outIndex = static_cast<int32_t>(slot);
+                    outId = StringID(texFullPath);
+                    outPath = texFullPath;
                 }
-            }
+            };
+
+            bindMaterialTexture(meshData.baseColorTexturePath, AssetManager::TextureColorSpace::SRGB,
+                material.useAlbedoTexture, material.albedoTextureIndex, material.albedoTextureId, material.albedoTexturePath);
+            bindMaterialTexture(meshData.normalTexturePath, AssetManager::TextureColorSpace::Linear,
+                material.useNormalTexture, material.normalTextureIndex, material.normalTextureId, material.normalTexturePath);
+            bindMaterialTexture(meshData.metallicRoughnessTexturePath, AssetManager::TextureColorSpace::Linear,
+                material.useMetallicRoughnessTexture, material.metallicRoughnessTextureIndex, material.metallicRoughnessTextureId, material.metallicRoughnessTexturePath);
+            bindMaterialTexture(meshData.aoTexturePath, AssetManager::TextureColorSpace::Linear,
+                material.useAOTexture, material.aoTextureIndex, material.aoTextureId, material.aoTexturePath);
+            bindMaterialTexture(meshData.emissiveTexturePath, AssetManager::TextureColorSpace::SRGB,
+                material.useEmissiveTexture, material.emissiveTextureIndex, material.emissiveTextureId, material.emissiveTexturePath);
 
             m_Scene->getRegistry().emplace<ECS::MaterialComponent>(entity, material);
             meshData.freeCPUMemory();

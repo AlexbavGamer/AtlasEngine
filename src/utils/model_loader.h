@@ -5,6 +5,9 @@
 #include <iostream>
 #include <chrono>
 #include <unordered_map>
+#include <filesystem>
+#include <fstream>
+#include <cstdlib>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <assimp/mesh.h>
@@ -12,6 +15,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/material.h>
+#include <assimp/GltfMaterial.h>
+#include <assimp/pbrmaterial.h>
 #include "../ecs/vertex.h"
 
 struct MeshData {
@@ -30,9 +35,18 @@ struct MeshData {
     std::string name;
 
     glm::vec4 baseColor = glm::vec4(1.0f);
+    glm::vec3 emissiveFactor = glm::vec3(0.0f);
     float metallic = 0.0f;
     float roughness = 0.5f;
     std::string baseColorTexturePath;
+    std::string normalTexturePath;
+    std::string metallicRoughnessTexturePath;
+    std::string aoTexturePath;
+    std::string emissiveTexturePath;
+
+    int alphaMode = 0; // 0=Opaque, 1=Mask, 2=Blend
+    float alphaCutoff = 0.5f;
+    bool doubleSided = false;
 
     MeshData() = default;
 
@@ -52,9 +66,17 @@ struct MeshData {
           ownerDevice(other.ownerDevice),
           name(std::move(other.name)),
           baseColor(other.baseColor),
+          emissiveFactor(other.emissiveFactor),
           metallic(other.metallic),
           roughness(other.roughness),
-          baseColorTexturePath(std::move(other.baseColorTexturePath))
+          baseColorTexturePath(std::move(other.baseColorTexturePath)),
+          normalTexturePath(std::move(other.normalTexturePath)),
+          metallicRoughnessTexturePath(std::move(other.metallicRoughnessTexturePath)),
+          aoTexturePath(std::move(other.aoTexturePath)),
+          emissiveTexturePath(std::move(other.emissiveTexturePath)),
+          alphaMode(other.alphaMode),
+          alphaCutoff(other.alphaCutoff),
+          doubleSided(other.doubleSided)
     {
         other.vertexBuffer = VK_NULL_HANDLE;
         other.vertexMemory = VK_NULL_HANDLE;
@@ -65,9 +87,17 @@ struct MeshData {
         other.vertexOffset = 0;
         other.ownerDevice = VK_NULL_HANDLE;
         other.baseColor = glm::vec4(1.0f);
+        other.emissiveFactor = glm::vec3(0.0f);
         other.metallic = 0.0f;
         other.roughness = 0.5f;
         other.baseColorTexturePath.clear();
+        other.normalTexturePath.clear();
+        other.metallicRoughnessTexturePath.clear();
+        other.aoTexturePath.clear();
+        other.emissiveTexturePath.clear();
+        other.alphaMode = 0;
+        other.alphaCutoff = 0.5f;
+        other.doubleSided = false;
     }
 
     MeshData& operator=(MeshData&& other) noexcept {
@@ -87,9 +117,17 @@ struct MeshData {
             ownerDevice = other.ownerDevice;
             name = std::move(other.name);
             baseColor = other.baseColor;
+            emissiveFactor = other.emissiveFactor;
             metallic = other.metallic;
             roughness = other.roughness;
             baseColorTexturePath = std::move(other.baseColorTexturePath);
+            normalTexturePath = std::move(other.normalTexturePath);
+            metallicRoughnessTexturePath = std::move(other.metallicRoughnessTexturePath);
+            aoTexturePath = std::move(other.aoTexturePath);
+            emissiveTexturePath = std::move(other.emissiveTexturePath);
+            alphaMode = other.alphaMode;
+            alphaCutoff = other.alphaCutoff;
+            doubleSided = other.doubleSided;
 
             other.vertexBuffer = VK_NULL_HANDLE;
             other.vertexMemory = VK_NULL_HANDLE;
@@ -100,9 +138,17 @@ struct MeshData {
             other.vertexOffset = 0;
             other.ownerDevice = VK_NULL_HANDLE;
             other.baseColor = glm::vec4(1.0f);
+            other.emissiveFactor = glm::vec3(0.0f);
             other.metallic = 0.0f;
             other.roughness = 0.5f;
             other.baseColorTexturePath.clear();
+            other.normalTexturePath.clear();
+            other.metallicRoughnessTexturePath.clear();
+            other.aoTexturePath.clear();
+            other.emissiveTexturePath.clear();
+            other.alphaMode = 0;
+            other.alphaCutoff = 0.5f;
+            other.doubleSided = false;
         }
         return *this;
     }
@@ -362,6 +408,172 @@ public:
             throw std::runtime_error("Failed to load model: " + std::string(importer.GetErrorString()));
         }
 
+        std::filesystem::path modelPath(path);
+        std::filesystem::path modelDir = modelPath.parent_path();
+        // Prefer extracting into the project's assets folder next to /models.
+        std::filesystem::path extractedDir = modelDir.parent_path() / "textures";
+        std::error_code ec;
+        std::filesystem::create_directories(extractedDir, ec);
+
+        auto extractEmbeddedTexture = [&](int index) -> std::string {
+            if (index < 0 || static_cast<unsigned int>(index) >= scene->mNumTextures) {
+                return std::string();
+            }
+
+            const aiTexture* tex = scene->mTextures[index];
+            std::string hint = tex->achFormatHint;
+            if (hint.empty()) hint = "png";
+
+            for (auto& ch : hint) {
+                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+            }
+
+            std::string fileStem = modelPath.stem().string() + "_embedded_" + std::to_string(index);
+
+            auto pickUniquePath = [&](const std::string& ext, uintmax_t expectedSize) -> std::filesystem::path {
+                std::filesystem::path base = extractedDir / (fileStem + ext);
+                if (!std::filesystem::exists(base)) return base;
+
+                if (expectedSize > 0) {
+                    std::error_code fsEc;
+                    auto sz = std::filesystem::file_size(base, fsEc);
+                    if (!fsEc && sz == expectedSize) {
+                        return base;
+                    }
+                }
+
+                for (int v = 2; v < 1000; ++v) {
+                    std::filesystem::path cand = extractedDir / (fileStem + "_v" + std::to_string(v) + ext);
+                    if (!std::filesystem::exists(cand)) return cand;
+                    if (expectedSize > 0) {
+                        std::error_code fsEc;
+                        auto sz = std::filesystem::file_size(cand, fsEc);
+                        if (!fsEc && sz == expectedSize) {
+                            return cand;
+                        }
+                    }
+                }
+
+                return base;
+            };
+
+            std::filesystem::path outPath;
+            if (tex->mHeight == 0) {
+                // Compressed data; mWidth is byte count.
+                outPath = pickUniquePath("." + hint, static_cast<uintmax_t>(tex->mWidth));
+                if (!std::filesystem::exists(outPath)) {
+                    std::ofstream out(outPath, std::ios::binary);
+                    out.write(reinterpret_cast<const char*>(tex->pcData), static_cast<std::streamsize>(tex->mWidth));
+                }
+            } else {
+                // Uncompressed data (aiTexel array).
+                outPath = pickUniquePath(".ppm", 0);
+                if (!std::filesystem::exists(outPath)) {
+                    std::ofstream out(outPath, std::ios::binary);
+                    out << "P6\n" << tex->mWidth << " " << tex->mHeight << "\n255\n";
+                    for (unsigned int y = 0; y < tex->mHeight; ++y) {
+                        for (unsigned int x = 0; x < tex->mWidth; ++x) {
+                            const aiTexel& t = tex->pcData[y * tex->mWidth + x];
+                            unsigned char rgb[3] = {t.r, t.g, t.b};
+                            out.write(reinterpret_cast<const char*>(rgb), 3);
+                        }
+                    }
+                }
+            }
+
+            return outPath.string();
+        };
+
+        auto copyExternalTexture = [&](const std::string& rawPath) -> std::string {
+            if (rawPath.empty()) return std::string();
+
+            std::filesystem::path input(rawPath);
+            std::filesystem::path src;
+
+            std::error_code fsEc;
+            if (input.is_absolute() || std::filesystem::exists(input, fsEc)) {
+                src = input;
+            } else {
+                src = (modelDir / input).lexically_normal();
+            }
+
+            fsEc.clear();
+            if (!std::filesystem::exists(src, fsEc) || !std::filesystem::is_regular_file(src, fsEc)) {
+                return rawPath;
+            }
+
+            // If the texture is already in the extracted folder, keep it.
+            if (src.parent_path() == extractedDir) {
+                return src.lexically_normal().string();
+            }
+
+            std::string ext = src.extension().string();
+            if (ext.empty()) {
+                ext = ".png";
+            }
+
+            std::string fileStem = modelPath.stem().string() + "_" + src.stem().string();
+
+            auto pickUniquePath = [&](uintmax_t expectedSize) -> std::filesystem::path {
+                std::filesystem::path base = extractedDir / (fileStem + ext);
+                if (!std::filesystem::exists(base)) return base;
+
+                if (expectedSize > 0) {
+                    std::error_code szEc;
+                    auto sz = std::filesystem::file_size(base, szEc);
+                    if (!szEc && sz == expectedSize) {
+                        return base;
+                    }
+                }
+
+                for (int v = 2; v < 1000; ++v) {
+                    std::filesystem::path cand = extractedDir / (fileStem + "_v" + std::to_string(v) + ext);
+                    if (!std::filesystem::exists(cand)) return cand;
+
+                    if (expectedSize > 0) {
+                        std::error_code szEc;
+                        auto sz = std::filesystem::file_size(cand, szEc);
+                        if (!szEc && sz == expectedSize) {
+                            return cand;
+                        }
+                    }
+                }
+
+                return base;
+            };
+
+            uintmax_t srcSize = 0;
+            {
+                std::error_code szEc;
+                srcSize = std::filesystem::file_size(src, szEc);
+                if (szEc) srcSize = 0;
+            }
+
+            std::filesystem::path dst = pickUniquePath(srcSize);
+
+            if (!std::filesystem::exists(dst)) {
+                std::error_code copyEc;
+                std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, copyEc);
+                // If copy fails, fall back to original path.
+                if (copyEc) {
+                    return rawPath;
+                }
+            }
+
+            return dst.lexically_normal().string();
+        };
+
+        auto resolveTexturePath = [&](const aiString& texPath) -> std::string {
+            const char* cstr = texPath.C_Str();
+            if (!cstr || cstr[0] == '\0') return std::string();
+            if (cstr[0] == '*') {
+                int idx = std::atoi(cstr + 1);
+                return extractEmbeddedTexture(idx);
+            }
+
+            return copyExternalTexture(std::string(cstr));
+        };
+
         ModelData modelData(device);
 
         if (mergeAll || scene->mNumMeshes > 32) {
@@ -372,9 +584,17 @@ public:
                 uint32_t vertexOffset = 0;
                 uint32_t partIndex = 0;
                 glm::vec4 baseColor = glm::vec4(1.0f);
+                glm::vec3 emissiveFactor = glm::vec3(0.0f);
                 float metallic = 0.0f;
                 float roughness = 0.5f;
                 std::string baseColorTexturePath;
+                std::string normalTexturePath;
+                std::string metallicRoughnessTexturePath;
+                std::string aoTexturePath;
+                std::string emissiveTexturePath;
+                int alphaMode = 0;
+                float alphaCutoff = 0.5f;
+                bool doubleSided = false;
                 bool materialInitialized = false;
             };
 
@@ -393,6 +613,11 @@ public:
                     build.baseColor = glm::vec4(color.r, color.g, color.b, color.a);
                 }
 
+                aiColor4D emissive(0.0f, 0.0f, 0.0f, 1.0f);
+                if (aiGetMaterialColor(mat, AI_MATKEY_COLOR_EMISSIVE, &emissive) == AI_SUCCESS) {
+                    build.emissiveFactor = glm::vec3(emissive.r, emissive.g, emissive.b);
+                }
+
                 ai_real value = 0.0f;
                 if (aiGetMaterialFloat(mat, AI_MATKEY_METALLIC_FACTOR, &value) == AI_SUCCESS) {
                     build.metallic = static_cast<float>(value);
@@ -401,21 +626,57 @@ public:
                     build.roughness = static_cast<float>(value);
                 }
 
-                aiString texPath;
-                if (mat->GetTexture(aiTextureType_BASE_COLOR, 0, &texPath) == AI_SUCCESS ||
-                    mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS ||
-                    mat->GetTexture(aiTextureType_UNKNOWN, 0, &texPath) == AI_SUCCESS) {
-                    build.baseColorTexturePath = texPath.C_Str();
+                int twoSided = 0;
+                if (aiGetMaterialInteger(mat, AI_MATKEY_TWOSIDED, &twoSided) == AI_SUCCESS) {
+                    build.doubleSided = (twoSided != 0);
                 }
 
-                if (build.baseColorTexturePath.empty()) {
-                    std::cout << "  [MAT] mat=" << materialIndex
-                              << " texCounts base=" << mat->GetTextureCount(aiTextureType_BASE_COLOR)
-                              << " diff=" << mat->GetTextureCount(aiTextureType_DIFFUSE)
-                              << " unk=" << mat->GetTextureCount(aiTextureType_UNKNOWN)
-                              << std::endl;
-                } else {
-                    std::cout << "  [MAT] mat=" << materialIndex << " baseColorTexPath=" << build.baseColorTexturePath << std::endl;
+                // Alpha mode / opacity
+                build.alphaMode = 0;
+                aiString alphaModeStr;
+                if (aiGetMaterialString(mat, AI_MATKEY_GLTF_ALPHAMODE, &alphaModeStr) == AI_SUCCESS) {
+                    std::string s = alphaModeStr.C_Str();
+                    if (s == "MASK") build.alphaMode = 1;
+                    if (s == "BLEND") build.alphaMode = 2;
+                }
+
+                if (aiGetMaterialFloat(mat, AI_MATKEY_GLTF_ALPHACUTOFF, &value) == AI_SUCCESS) {
+                    build.alphaCutoff = static_cast<float>(value);
+                }
+
+                if (aiGetMaterialFloat(mat, AI_MATKEY_OPACITY, &value) == AI_SUCCESS) {
+                    if (static_cast<float>(value) < 0.999f) {
+                        build.alphaMode = 2;
+                    }
+                    build.baseColor.a *= static_cast<float>(value);
+                }
+
+                auto tryTex = [&](aiTextureType type, std::string& dst) {
+                    aiString p;
+                    if (mat->GetTexture(type, 0, &p) == AI_SUCCESS) {
+                        dst = resolveTexturePath(p);
+                    }
+                };
+
+                tryTex(aiTextureType_BASE_COLOR, build.baseColorTexturePath);
+                if (build.baseColorTexturePath.empty()) tryTex(aiTextureType_DIFFUSE, build.baseColorTexturePath);
+
+                tryTex(aiTextureType_NORMALS, build.normalTexturePath);
+                if (build.normalTexturePath.empty()) tryTex(aiTextureType_HEIGHT, build.normalTexturePath);
+
+                // glTF metallic-roughness is usually exposed as METALNESS by Assimp.
+                tryTex(aiTextureType_METALNESS, build.metallicRoughnessTexturePath);
+                if (build.metallicRoughnessTexturePath.empty()) tryTex(aiTextureType_DIFFUSE_ROUGHNESS, build.metallicRoughnessTexturePath);
+
+                tryTex(aiTextureType_AMBIENT_OCCLUSION, build.aoTexturePath);
+                if (build.aoTexturePath.empty()) tryTex(aiTextureType_LIGHTMAP, build.aoTexturePath);
+
+                tryTex(aiTextureType_EMISSIVE, build.emissiveTexturePath);
+
+                // If an explicit opacity texture exists, treat as BLEND.
+                aiString opacityTex;
+                if (mat->GetTexture(aiTextureType_OPACITY, 0, &opacityTex) == AI_SUCCESS) {
+                    build.alphaMode = 2;
                 }
             };
 
@@ -430,9 +691,17 @@ public:
                 chunk.indexCount = static_cast<uint32_t>(chunk.indices.size());
 
                 chunk.baseColor = build.baseColor;
+                chunk.emissiveFactor = build.emissiveFactor;
                 chunk.metallic = build.metallic;
                 chunk.roughness = build.roughness;
                 chunk.baseColorTexturePath = build.baseColorTexturePath;
+                chunk.normalTexturePath = build.normalTexturePath;
+                chunk.metallicRoughnessTexturePath = build.metallicRoughnessTexturePath;
+                chunk.aoTexturePath = build.aoTexturePath;
+                chunk.emissiveTexturePath = build.emissiveTexturePath;
+                chunk.alphaMode = build.alphaMode;
+                chunk.alphaCutoff = build.alphaCutoff;
+                chunk.doubleSided = build.doubleSided;
 
                 if (device != VK_NULL_HANDLE && physicalDevice != VK_NULL_HANDLE && findMemoryType != nullptr) {
                     createBuffers(chunk, device, physicalDevice, findMemoryType);
@@ -525,11 +794,62 @@ public:
                         meshData.roughness = static_cast<float>(value);
                     }
 
-                    aiString texPath;
-                    if (mat->GetTexture(aiTextureType_BASE_COLOR, 0, &texPath) == AI_SUCCESS ||
-                        mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS ||
-                        mat->GetTexture(aiTextureType_UNKNOWN, 0, &texPath) == AI_SUCCESS) {
-                        meshData.baseColorTexturePath = texPath.C_Str();
+                    aiColor4D emissive(0.0f, 0.0f, 0.0f, 1.0f);
+                    if (aiGetMaterialColor(mat, AI_MATKEY_COLOR_EMISSIVE, &emissive) == AI_SUCCESS) {
+                        meshData.emissiveFactor = glm::vec3(emissive.r, emissive.g, emissive.b);
+                    }
+
+                    int twoSided = 0;
+                    if (aiGetMaterialInteger(mat, AI_MATKEY_TWOSIDED, &twoSided) == AI_SUCCESS) {
+                        meshData.doubleSided = (twoSided != 0);
+                    }
+
+                    // Alpha mode / opacity
+                    meshData.alphaMode = 0;
+                    aiString alphaModeStr;
+                    if (aiGetMaterialString(mat, AI_MATKEY_GLTF_ALPHAMODE, &alphaModeStr) == AI_SUCCESS) {
+                        std::string s = alphaModeStr.C_Str();
+                        if (s == "MASK") meshData.alphaMode = 1;
+                        if (s == "BLEND") meshData.alphaMode = 2;
+                    }
+
+                    if (aiGetMaterialFloat(mat, AI_MATKEY_GLTF_ALPHACUTOFF, &value) == AI_SUCCESS) {
+                        meshData.alphaCutoff = static_cast<float>(value);
+                    }
+
+                    if (aiGetMaterialFloat(mat, AI_MATKEY_OPACITY, &value) == AI_SUCCESS) {
+                        if (static_cast<float>(value) < 0.999f) {
+                            meshData.alphaMode = 2;
+                        }
+                        meshData.baseColor.a *= static_cast<float>(value);
+                    }
+
+                    auto tryTex = [&](aiTextureType type, std::string& dst) {
+                        aiString p;
+                        if (mat->GetTexture(type, 0, &p) == AI_SUCCESS) {
+                            dst = resolveTexturePath(p);
+                        }
+                    };
+
+                    tryTex(aiTextureType_BASE_COLOR, meshData.baseColorTexturePath);
+                    if (meshData.baseColorTexturePath.empty()) tryTex(aiTextureType_DIFFUSE, meshData.baseColorTexturePath);
+                    if (meshData.baseColorTexturePath.empty()) tryTex(aiTextureType_UNKNOWN, meshData.baseColorTexturePath);
+
+                    tryTex(aiTextureType_NORMALS, meshData.normalTexturePath);
+                    if (meshData.normalTexturePath.empty()) tryTex(aiTextureType_HEIGHT, meshData.normalTexturePath);
+
+                    tryTex(aiTextureType_METALNESS, meshData.metallicRoughnessTexturePath);
+                    if (meshData.metallicRoughnessTexturePath.empty()) tryTex(aiTextureType_DIFFUSE_ROUGHNESS, meshData.metallicRoughnessTexturePath);
+
+                    tryTex(aiTextureType_AMBIENT_OCCLUSION, meshData.aoTexturePath);
+                    if (meshData.aoTexturePath.empty()) tryTex(aiTextureType_LIGHTMAP, meshData.aoTexturePath);
+
+                    tryTex(aiTextureType_EMISSIVE, meshData.emissiveTexturePath);
+
+                    // If an explicit opacity texture exists, treat as BLEND.
+                    aiString opacityTex;
+                    if (mat->GetTexture(aiTextureType_OPACITY, 0, &opacityTex) == AI_SUCCESS) {
+                        meshData.alphaMode = 2;
                     }
                 }
 

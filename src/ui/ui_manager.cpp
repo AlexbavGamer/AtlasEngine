@@ -155,6 +155,9 @@ void UIManager::setCameraController(void* controller) {
 
 void UIManager::setRenderer(Atlas::Renderer* r) {
     renderer = r;
+    if (renderer) {
+        m_VSyncEnabled = renderer->isVSyncEnabled();
+    }
 }
 
 void UIManager::renderViewport(ImTextureID viewportTexture) {
@@ -391,7 +394,7 @@ void UIManager::renderProperties() {
                     if (ImGui::Button("Apply##Mat") || applyTex) {
                         std::string newPath = std::string(m_AlbedoTexturePathBuf);
                         if (mat.useAlbedoTexture && !newPath.empty() && assetManager && renderer) {
-                            auto tex = assetManager->loadTexture(Atlas::StringID(newPath), newPath);
+                            auto tex = assetManager->loadTexture(Atlas::StringID(newPath + "#srgb"), newPath, Atlas::AssetManager::TextureColorSpace::SRGB);
                             if (tex && tex->isValid()) {
                                 uint32_t slot = 0;
                                 if (mat.albedoTextureIndex > 0) {
@@ -636,6 +639,16 @@ void UIManager::renderProfilerWindow()
 
     ImGui::Text("Frame history (last %d frames)", PROFILER_HISTORY);
     ImGui::PlotLines("##FrameTimes", m_FrameTimeHistory, PROFILER_HISTORY, m_FrameTimeIndex, nullptr, minTime, ImMax(maxTime, 1.0f), ImVec2(320, 80));
+
+    ImGui::SeparatorText("Frame limiting");
+
+    bool prevVsync = m_VSyncEnabled;
+    ImGui::Checkbox("VSync", &m_VSyncEnabled);
+    if (prevVsync != m_VSyncEnabled && renderer) {
+        renderer->setVSyncEnabled(m_VSyncEnabled);
+    }
+
+    ImGui::SliderInt("Max FPS (0=Unlimited)", &m_MaxFps, 0, 240);
 
 #ifdef TRACY_ENABLE
     bool connected = tracy::GetProfiler().IsConnected();

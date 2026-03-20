@@ -5,10 +5,15 @@ layout(push_constant) uniform PushConstants {
     mat4 view;
     mat4 proj;
     vec4 baseColor;
+    vec4 emissiveFactor;
     float metallic;
     float roughness;
     int albedoTexIndex;
-    int hasAlbedoTex;
+    int normalTexIndex;
+    int metallicRoughnessTexIndex;
+    int aoTexIndex;
+    int emissiveTexIndex;
+    int flags;
 } pc;
 
 layout(location = 0) in vec3 inPosition;

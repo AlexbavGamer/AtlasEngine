@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <memory>
 #include <vector>
+#include <cstdint>
 
 #include "../core/string/string_id.h"
 #include "../renderer/memory/memory_manager.h"
@@ -109,7 +110,12 @@ public:
     void unloadMesh(const StringID& id);
     void unloadAllMeshes();
 
-    std::shared_ptr<Texture> loadTexture(const StringID& id, const std::string& path);
+    enum class TextureColorSpace : uint8_t {
+        SRGB = 0,
+        Linear = 1,
+    };
+
+    std::shared_ptr<Texture> loadTexture(const StringID& id, const std::string& path, TextureColorSpace colorSpace = TextureColorSpace::SRGB);
     std::shared_ptr<Texture> getTexture(const StringID& id);
     bool hasTexture(const StringID& id) const;
     void unloadTexture(const StringID& id);

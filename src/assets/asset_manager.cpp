@@ -55,7 +55,7 @@ void AssetManager::unloadAllMeshes() {
     m_Meshes.clear();
 }
 
-std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std::string& path) {
+std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std::string& path, TextureColorSpace colorSpace) {
     std::cout << "[AssetManager] loadTexture path=" << path << " id=" << id.getID() << std::endl;
 
     if (auto it = m_Textures.find(id); it != m_Textures.end()) {
@@ -79,7 +79,8 @@ std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std
     texture->m_Path = path;
     texture->m_Width = static_cast<uint32_t>(texWidth);
     texture->m_Height = static_cast<uint32_t>(texHeight);
-    texture->m_Format = VK_FORMAT_R8G8B8A8_SRGB;
+    VkFormat format = (colorSpace == TextureColorSpace::Linear) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB;
+    texture->m_Format = format;
 
     VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth * texHeight * 4);
 
@@ -101,7 +102,7 @@ std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.format = format;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;

@@ -11,6 +11,7 @@
 #include <array>
 #include <filesystem>
 #include <iostream>
+#include <algorithm>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -270,6 +271,19 @@ uint32_t Renderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags pro
         }
     }
     throw std::runtime_error("failed to find suitable memory type!");
+}
+
+void Renderer::setVSyncEnabled(bool enabled) {
+    if (m_VSyncEnabled == enabled) {
+        return;
+    }
+    m_VSyncEnabled = enabled;
+
+    if (m_Device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    recreateSwapChain();
 }
 
 void Renderer::immediateSubmit(const std::function<void(VkCommandBuffer)>& fn) {
@@ -934,6 +948,21 @@ void Renderer::createGraphicsPipeline() {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
 
+    // Transparent pipeline: alpha blending + depth test, but no depth writes.
+    colorBlendAttachment.blendEnable = VK_TRUE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    depthStencil.depthWriteEnable = VK_FALSE;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineBlend) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create transparent graphics pipeline!");
+    }
+
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
 }
@@ -1393,6 +1422,7 @@ void Renderer::createOffscreenResources() {
 
 
 void Renderer::destroyPipelineResources() {
+    if (m_GraphicsPipelineBlend) { vkDestroyPipeline(m_Device, m_GraphicsPipelineBlend, nullptr); m_GraphicsPipelineBlend = VK_NULL_HANDLE; }
     if (m_GraphicsPipeline) { vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr); m_GraphicsPipeline = VK_NULL_HANDLE; }
     if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
     if (m_RenderPass) { vkDestroyRenderPass(m_Device, m_RenderPass, nullptr); m_RenderPass = VK_NULL_HANDLE; }
@@ -1482,74 +1512,156 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         auto meshView = registry.view<Mesh>();
         
         if (!meshView.empty()) {
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
-            
             // Get camera
             glm::mat4 view = glm::mat4(1.0f);
             glm::mat4 proj = glm::mat4(1.0f);
-            
+            glm::vec3 cameraPos = glm::vec3(0.0f);
+
             auto cameraView = registry.view<Camera>();
             if (!cameraView.empty()) {
                 auto cameraEntity = cameraView[0];
                 auto& camera = registry.get<Camera>(cameraEntity);
                 camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
-                
+
                 proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, 0.1f, 1000.0f);
                 proj[1][1] = -proj[1][1];
-                
+
                 view = camera.getViewMatrix();
+                cameraPos = camera.position;
             }
-            
+
+            struct DrawItem {
+                entt::entity entity;
+                float distSq;
+            };
+
+            std::vector<entt::entity> opaqueItems;
+            std::vector<DrawItem> transparentItems;
+
             for (auto entity : meshView) {
                 auto& mesh = registry.get<Mesh>(entity);
-                
-                if (mesh.vertexBuffer != VK_NULL_HANDLE && mesh.indexBuffer != VK_NULL_HANDLE && mesh.indexCount > 0) {
-                    if (registry.all_of<Renderable>(entity)) {
-                        auto& renderable = registry.get<Renderable>(entity);
-                        if (!renderable.visible) continue;
+                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+                    continue;
+                }
+
+                if (registry.all_of<Renderable>(entity)) {
+                    auto& renderable = registry.get<Renderable>(entity);
+                    if (!renderable.visible) continue;
+                }
+
+                bool isBlend = false;
+                if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                    auto& material = registry.get<ECS::MaterialComponent>(entity);
+                    if (material.alphaMode == ECS::MaterialComponent::AlphaMode::Blend) {
+                        isBlend = true;
+                    }
+                }
+
+                if (isBlend) {
+                    glm::vec3 pos = glm::vec3(0.0f);
+                    if (scene && scene->hasTransform(entity)) {
+                        glm::mat4 model = scene->getWorldTransform(entity);
+                        pos = glm::vec3(model[3]);
+                    }
+                    glm::vec3 d = pos - cameraPos;
+                    transparentItems.push_back(DrawItem{entity, glm::dot(d, d)});
+                } else {
+                    opaqueItems.push_back(entity);
+                }
+            }
+
+            std::sort(transparentItems.begin(), transparentItems.end(),
+                [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
+
+            auto drawEntity = [&](entt::entity entity) {
+                auto& mesh = registry.get<Mesh>(entity);
+
+                glm::mat4 model = glm::mat4(1.0f);
+                glm::vec4 baseColor = glm::vec4(1.0f);
+                glm::vec4 emissiveFactor = glm::vec4(0.0f);
+                float metallic = 0.0f;
+                float roughness = 0.5f;
+
+                int32_t albedoTexIndex = 0;
+                int32_t normalTexIndex = 0;
+                int32_t metallicRoughnessTexIndex = 0;
+                int32_t aoTexIndex = 0;
+                int32_t emissiveTexIndex = 0;
+                int32_t flags = 0;
+
+                if (scene && scene->hasTransform(entity)) {
+                    model = scene->getWorldTransform(entity);
+                }
+
+                if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                    auto& material = registry.get<ECS::MaterialComponent>(entity);
+                    baseColor = material.baseColor;
+                    metallic = material.metallic;
+                    roughness = material.roughness;
+                    emissiveFactor = glm::vec4(material.emissiveFactor, 0.0f);
+
+                    if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) {
+                        flags |= (1 << 0);
+                        albedoTexIndex = material.albedoTextureIndex;
+                    }
+                    if (material.useNormalTexture && material.normalTextureIndex >= 0) {
+                        flags |= (1 << 1);
+                        normalTexIndex = material.normalTextureIndex;
+                    }
+                    if (material.useMetallicRoughnessTexture && material.metallicRoughnessTextureIndex >= 0) {
+                        flags |= (1 << 2);
+                        metallicRoughnessTexIndex = material.metallicRoughnessTextureIndex;
+                    }
+                    if (material.useAOTexture && material.aoTextureIndex >= 0) {
+                        flags |= (1 << 3);
+                        aoTexIndex = material.aoTextureIndex;
+                    }
+                    if (material.useEmissiveTexture && material.emissiveTextureIndex >= 0) {
+                        flags |= (1 << 4);
+                        emissiveTexIndex = material.emissiveTextureIndex;
                     }
 
-                    glm::mat4 model = glm::mat4(1.0f);
-                    glm::vec4 baseColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-                    float metallic = 0.0f;
-                    float roughness = 0.5f;
-                    int32_t albedoTexIndex = 0;
-                    int32_t hasAlbedoTex = 0;
-                    
-                    if (scene && scene->hasTransform(entity)) {
-                        model = scene->getWorldTransform(entity);
-                    }
-                    
-                    if (registry.all_of<ECS::MaterialComponent>(entity)) {
-                        auto& material = registry.get<ECS::MaterialComponent>(entity);
-                        baseColor = material.baseColor;
-                        metallic = material.metallic;
-                        roughness = material.roughness;
-                        if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) {
-                            hasAlbedoTex = 1;
-                            albedoTexIndex = material.albedoTextureIndex;
-                        }
-                    }
-                    
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
-                    
-                    PushConstants pushConstants;
-                    pushConstants.model = model;
-                    pushConstants.view = view;
-                    pushConstants.proj = proj;
-                    pushConstants.baseColor = baseColor;
-                    pushConstants.metallic = metallic;
-                    pushConstants.roughness = roughness;
-                    pushConstants.albedoTexIndex = albedoTexIndex;
-                    pushConstants.hasAlbedoTex = hasAlbedoTex;
-                    
-                    vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
-                    
-                    VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
-                    VkDeviceSize offsets[] = {0};
-                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                    vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32); 
-                    vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+                    flags |= (static_cast<int32_t>(material.alphaMode) & 3) << 8;
+                }
+
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
+
+                PushConstants pushConstants;
+                pushConstants.model = model;
+                pushConstants.view = view;
+                pushConstants.proj = proj;
+                pushConstants.baseColor = baseColor;
+                pushConstants.emissiveFactor = emissiveFactor;
+                pushConstants.metallic = metallic;
+                pushConstants.roughness = roughness;
+                pushConstants.albedoTexIndex = albedoTexIndex;
+                pushConstants.normalTexIndex = normalTexIndex;
+                pushConstants.metallicRoughnessTexIndex = metallicRoughnessTexIndex;
+                pushConstants.aoTexIndex = aoTexIndex;
+                pushConstants.emissiveTexIndex = emissiveTexIndex;
+                pushConstants.flags = flags;
+
+                vkCmdPushConstants(commandBuffer, m_PipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
+
+                VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
+                VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+            };
+
+            if (!opaqueItems.empty()) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
+                for (auto entity : opaqueItems) {
+                    drawEntity(entity);
+                }
+            }
+
+            if (!transparentItems.empty() && m_GraphicsPipelineBlend != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlend);
+                for (const auto& item : transparentItems) {
+                    drawEntity(item.entity);
                 }
             }
         }
@@ -1690,27 +1802,25 @@ VkSurfaceFormatKHR Renderer::chooseSwapSurfaceFormat(const std::vector<VkSurface
 }
 
 VkPresentModeKHR Renderer::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
-    // Prefer VRR modes when available.
     bool hasMailbox = false;
-    bool hasFifoRelaxed = false;
     bool hasImmediate = false;
 
     for (const auto& mode : availablePresentModes) {
-        if (mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR) hasFifoRelaxed = true;
         if (mode == VK_PRESENT_MODE_MAILBOX_KHR) hasMailbox = true;
         if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) hasImmediate = true;
     }
 
-    if (hasFifoRelaxed) {
-        return VK_PRESENT_MODE_FIFO_RELAXED_KHR; // VRR-friendly
+    if (m_VSyncEnabled) {
+        return VK_PRESENT_MODE_FIFO_KHR; // guaranteed support
     }
-    if (hasMailbox) {
-        return VK_PRESENT_MODE_MAILBOX_KHR; // low latency with v-sync
-    }
+
     if (hasImmediate) {
         return VK_PRESENT_MODE_IMMEDIATE_KHR; // no v-sync (tearing)
     }
-    return VK_PRESENT_MODE_FIFO_KHR; // guaranteed support
+    if (hasMailbox) {
+        return VK_PRESENT_MODE_MAILBOX_KHR; // best-effort when immediate unavailable
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
 }
 
 VkExtent2D Renderer::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
