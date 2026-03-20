@@ -448,7 +448,7 @@ static std::vector<std::string> folderStack;
 std::string getFileIcon(const std::string& filename, bool isFolder) {
     if (isFolder) return "[D]";
     std::string ext = fs::path(filename).extension().string();
-    if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") return "[M]";
+    if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae" || ext == ".blend") return "[M]";
     if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" || ext == ".hdr") return "[T]";
     if (ext == ".mat" || ext == ".material") return "[*]";
     if (ext == ".scene" || ext == ".json") return "[S]";
