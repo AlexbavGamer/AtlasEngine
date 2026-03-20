@@ -33,9 +33,13 @@ struct MaterialComponent {
     float ambientOcclusion = 1.0f;
     
     StringID albedoTextureId;
+    std::string albedoTexturePath;
+
     StringID normalTextureId;
     StringID metallicRoughnessTextureId;
     StringID aoTextureId;
+
+    int32_t albedoTextureIndex = -1;
     
     bool useAlbedoTexture = false;
     bool useNormalTexture = false;
@@ -83,19 +87,27 @@ struct LightComponent {
         Point = 1,
         Spot = 2
     };
-    
+
     Type type = Type::Point;
     glm::vec3 color = glm::vec3(1.0f);
     float intensity = 1.0f;
-    
+
     float constant = 1.0f;
     float linear = 0.09f;
     float quadratic = 0.032f;
-    
+
     float cutOff = glm::cos(glm::radians(12.5f));
     float outerCutOff = glm::cos(glm::radians(15.0f));
-    
+
     bool castShadows = false;
+};
+
+struct ParentComponent {
+    entt::entity parent = entt::null;
+};
+
+struct ChildrenComponent {
+    std::vector<entt::entity> children;
 };
 
 }}

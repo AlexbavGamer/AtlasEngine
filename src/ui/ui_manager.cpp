@@ -7,8 +7,12 @@
 #include <ImGuizmo.h>
 #include "../ecs/ecs.h"
 #include "../ecs/components.h"
+#include "../assets/asset_manager.h"
+#include "../ecs/components/components.h"
 #include <glm/glm.hpp>
+#include <cstring>
 #include <glm/gtc/type_ptr.hpp>
+#include <cfloat>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/transform.hpp>
@@ -90,6 +94,8 @@ void UIManager::render(ImTextureID viewportTexture) {
     renderNewProjectDialog();
     renderOpenProjectDialog();
     renderMenuBar();
+
+    renderProfilerWindow();
     
     if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
         if (ImGuiFileDialog::Instance()->IsOk()) {
@@ -164,8 +170,18 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
         auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
-        glm::mat4 modelMatrix = transform.getModelMatrix();
-        
+        glm::mat4 localModel = transform.getModelMatrix();
+        glm::mat4 worldModel = m_Scene->getWorldTransform(selectedEntity);
+
+        // If entity has parent, keep parent matrix to compute local transform after manipulate.
+        glm::mat4 parentWorld = glm::mat4(1.0f);
+        if (m_Scene->getRegistry().all_of<ParentComponent>(selectedEntity)) {
+            entt::entity parent = m_Scene->getRegistry().get<ParentComponent>(selectedEntity).parent;
+            if (parent != entt::null) {
+                parentWorld = m_Scene->getWorldTransform(parent);
+            }
+        }
+
         ImGuizmo::SetOrthographic(false);
         ImGuizmo::SetDrawlist();
         ImGuizmo::SetRect(windowPos.x, windowPos.y, contentSize.x, contentSize.y);
@@ -173,23 +189,42 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
         ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
         if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
         if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
-        
+
         glm::mat4 deltaMatrix = glm::mat4(1.0f);
         ImGuizmo::Manipulate(
             glm::value_ptr(m_ViewMatrix),
             glm::value_ptr(m_ProjMatrix),
             operation,
-            ImGuizmo::LOCAL,
-            glm::value_ptr(modelMatrix),
+            ImGuizmo::WORLD,
+            glm::value_ptr(worldModel),
             glm::value_ptr(deltaMatrix)
         );
-        
+
         m_GizmoUsing = ImGuizmo::IsUsing();
-        
+
         if (m_GizmoUsing) {
-            transform.position = glm::vec3(modelMatrix[3]);
-            transform.rotation = glm::vec3(0.0f);
-            transform.scale = glm::vec3(1.0f);
+            glm::vec3 translation;
+            glm::vec3 skew;
+            glm::vec4 perspective;
+            glm::quat orientation;
+            glm::vec3 newScale;
+            
+            if (glm::decompose(worldModel, newScale, orientation, translation, skew, perspective)) {
+                glm::mat4 editedWorld = glm::translate(glm::mat4(1.0f), translation);
+                editedWorld *= glm::mat4_cast(orientation);
+                editedWorld = glm::scale(editedWorld, newScale);
+
+                glm::mat4 editedLocal = parentWorld == glm::mat4(1.0f) ? editedWorld : glm::inverse(parentWorld) * editedWorld;
+
+                glm::vec3 localPos;
+                glm::quat localOrient;
+                glm::vec3 localScale;
+                if (glm::decompose(editedLocal, localScale, localOrient, localPos, skew, perspective)) {
+                    transform.position = localPos;
+                    transform.rotation = glm::eulerAngles(localOrient);
+                    transform.scale = localScale;
+                }
+            }
         }
     } else {
         m_GizmoUsing = false;
@@ -212,19 +247,62 @@ void UIManager::renderHierarchy() {
     ImGui::Begin("Hierarchy", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
     if (m_Scene) {
-        for (auto entity : m_Scene->getAllEntities()) {
+        auto& registry = m_Scene->getRegistry();
+
+        const auto renderEntityRecursively = [&](auto&& self, entt::entity entity, std::vector<Entity>& pendingDelete) -> void {
             std::string entityName;
-            
-            auto& registry = m_Scene->getRegistry();
             if (registry.all_of<Atlas::ECS::TagComponent>(entity)) {
                 entityName = registry.get<Atlas::ECS::TagComponent>(entity).name;
             } else {
                 entityName = "Entity " + std::to_string(static_cast<uint32_t>(entity));
             }
 
-            bool isSelected = (selectedEntity == entity);
-            if (ImGui::Selectable(entityName.c_str(), isSelected)) {
+            const auto children = m_Scene->getChildren(entity);
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (entity == selectedEntity) flags |= ImGuiTreeNodeFlags_Selected;
+            if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+            ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entity)));
+            bool nodeOpen = ImGui::TreeNodeEx(entityName.c_str(), flags);
+
+            if (ImGui::IsItemClicked()) {
                 setSelectedEntity(entity);
+            }
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(entity);
+                if (!isCameraEntity) {
+                    pendingDelete.push_back(entity);
+                }
+            }
+
+            if (nodeOpen && !children.empty()) {
+                for (auto child : children) {
+                    self(self, child, pendingDelete);
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        };
+
+        std::vector<Entity> pendingDelete;
+
+        auto roots = m_Scene->getRootEntities();
+        if (roots.empty()) {
+            for (auto entity : m_Scene->getAllEntities()) {
+                renderEntityRecursively(renderEntityRecursively, entity, pendingDelete);
+            }
+        } else {
+            for (auto root : roots) {
+                renderEntityRecursively(renderEntityRecursively, root, pendingDelete);
+            }
+        }
+
+        for (auto entity : pendingDelete) {
+            if (m_Scene->getRegistry().valid(entity)) {
+                if (selectedEntity == entity) {
+                    selectedEntity = entt::null;
+                }
+                m_Scene->destroyEntity(entity);
             }
         }
     }
@@ -237,6 +315,18 @@ void UIManager::renderProperties() {
 
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
         ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
+
+        bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
+        if (isCameraEntity) {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Camera entity cannot be deleted");
+        }
+
+        ImGui::BeginDisabled(isCameraEntity);
+        if (ImGui::Button("Delete Entity")) {
+            m_Scene->destroyEntity(selectedEntity);
+            selectedEntity = entt::null;
+        }
+        ImGui::EndDisabled();
 
         auto renderComponent = [this](auto&& component, const char* name) {
             if (ImGui::CollapsingHeader(name, ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -252,8 +342,95 @@ void UIManager::renderProperties() {
             renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable");
         }
 
-        if (m_Scene->getRegistry().all_of<Mesh>(selectedEntity)) {
-            renderComponent(m_Scene->getRegistry().get<Mesh>(selectedEntity), "Mesh");
+        if (m_Scene->getRegistry().all_of<::Mesh>(selectedEntity)) {
+            if (ImGui::CollapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ecs::renderComponentProperties(m_Scene->getRegistry().get<::Mesh>(selectedEntity), static_cast<uint32_t>(selectedEntity));
+
+                // Material/texture controls (kept under Mesh for convenience)
+                if (m_Scene->getRegistry().all_of<Atlas::ECS::MaterialComponent>(selectedEntity)) {
+                    auto& mat = m_Scene->getRegistry().get<Atlas::ECS::MaterialComponent>(selectedEntity);
+
+                    ImGui::Separator();
+                    ImGui::Text("Material");
+
+                    ImGui::ColorEdit4("Base Color##Mat", &mat.baseColor.x, ImGuiColorEditFlags_Float);
+                    ImGui::DragFloat("Metallic##Mat", &mat.metallic, 0.01f, 0.0f, 1.0f);
+                    ImGui::DragFloat("Roughness##Mat", &mat.roughness, 0.01f, 0.0f, 1.0f);
+
+                    ImGui::Checkbox("Use Albedo Texture##Mat", &mat.useAlbedoTexture);
+
+                    uint32_t entId = static_cast<uint32_t>(selectedEntity);
+                    if (m_MaterialEditEntityId != entId) {
+                        m_MaterialEditEntityId = entId;
+                        std::memset(m_AlbedoTexturePathBuf, 0, sizeof(m_AlbedoTexturePathBuf));
+                        if (!mat.albedoTexturePath.empty()) {
+                            std::strncpy(m_AlbedoTexturePathBuf, mat.albedoTexturePath.c_str(), sizeof(m_AlbedoTexturePathBuf) - 1);
+                        }
+                    }
+
+                    ImGui::SetNextItemWidth(320.0f);
+                    ImGui::InputText("Albedo Texture##Mat", m_AlbedoTexturePathBuf, sizeof(m_AlbedoTexturePathBuf));
+                    ImGui::SameLine();
+                    if (ImGui::Button("Browse##Mat")) {
+                        IGFD::FileDialogConfig cfg;
+                        cfg.path = ".";
+                        ImGuiFileDialog::Instance()->OpenDialog("SelectAlbedoTex", "Select Albedo Texture", ".png,.jpg,.jpeg,.tga,.bmp", cfg);
+                    }
+
+                    bool applyTex = false;
+                    if (ImGuiFileDialog::Instance()->Display("SelectAlbedoTex")) {
+                        if (ImGuiFileDialog::Instance()->IsOk()) {
+                            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+                            std::memset(m_AlbedoTexturePathBuf, 0, sizeof(m_AlbedoTexturePathBuf));
+                            std::strncpy(m_AlbedoTexturePathBuf, filePath.c_str(), sizeof(m_AlbedoTexturePathBuf) - 1);
+                            applyTex = true;
+                        }
+                        ImGuiFileDialog::Instance()->Close();
+                    }
+
+                    if (ImGui::Button("Apply##Mat") || applyTex) {
+                        std::string newPath = std::string(m_AlbedoTexturePathBuf);
+                        if (mat.useAlbedoTexture && !newPath.empty() && assetManager && renderer) {
+                            auto tex = assetManager->loadTexture(Atlas::StringID(newPath), newPath);
+                            if (tex && tex->isValid()) {
+                                uint32_t slot = 0;
+                                if (mat.albedoTextureIndex > 0) {
+                                    renderer->updateTexture(static_cast<uint32_t>(mat.albedoTextureIndex), tex->getImageView(), tex->getSampler());
+                                    slot = static_cast<uint32_t>(mat.albedoTextureIndex);
+                                } else {
+                                    slot = renderer->bindTexture(tex->getImageView(), tex->getSampler());
+                                }
+
+                                if (slot != 0) {
+                                    mat.albedoTextureIndex = static_cast<int32_t>(slot);
+                                    mat.albedoTextureId = Atlas::StringID(newPath);
+                                    mat.albedoTexturePath = newPath;
+                                }
+                            }
+                        }
+
+                        if (!mat.useAlbedoTexture) {
+                            mat.albedoTextureIndex = -1;
+                            mat.albedoTextureId = Atlas::StringID::null();
+                            mat.albedoTexturePath.clear();
+                            std::memset(m_AlbedoTexturePathBuf, 0, sizeof(m_AlbedoTexturePathBuf));
+                        }
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Clear##Mat")) {
+                        mat.useAlbedoTexture = false;
+                        mat.albedoTextureIndex = -1;
+                        mat.albedoTextureId = Atlas::StringID::null();
+                        mat.albedoTexturePath.clear();
+                        std::memset(m_AlbedoTexturePathBuf, 0, sizeof(m_AlbedoTexturePathBuf));
+                    }
+
+                    if (!assetManager || !renderer) {
+                        ImGui::TextColored(ImVec4(1, 0.6f, 0.2f, 1), "Texture swapping requires AssetManager+Renderer");
+                    }
+                }
+            }
         }
 
         if (m_Scene->getRegistry().all_of<Camera>(selectedEntity)) {
@@ -425,6 +602,52 @@ void UIManager::renderMenuBar() {
         }
         ImGui::EndMainMenuBar();
     }
+}
+
+void UIManager::updateProfiler(float deltaTime)
+{
+    m_FrameTimeMs = deltaTime * 1000.0f;
+    m_Fps = deltaTime > 0.0f ? 1.0f / deltaTime : 0.0f;
+
+    m_FrameTimeHistory[m_FrameTimeIndex] = m_FrameTimeMs;
+    m_FrameTimeIndex = (m_FrameTimeIndex + 1) % PROFILER_HISTORY;
+}
+
+void UIManager::renderProfilerWindow()
+{
+    if (!m_ShowProfilerWindow) return;
+
+    ImGui::Begin("Profiler", &m_ShowProfilerWindow, ImGuiWindowFlags_AlwaysAutoResize);
+
+    ImGui::Text("FPS: %.1f", m_Fps);
+    ImGui::Text("Frame: %.3f ms", m_FrameTimeMs);
+
+    float minTime = FLT_MAX;
+    float maxTime = 0.0f;
+    for (int i = 0; i < PROFILER_HISTORY; ++i) {
+        float v = m_FrameTimeHistory[i];
+        if (v > 0.0f) {
+            minTime = ImMin(minTime, v);
+            maxTime = ImMax(maxTime, v);
+        }
+    }
+
+    if (minTime == FLT_MAX) minTime = 0.0f;
+
+    ImGui::Text("Frame history (last %d frames)", PROFILER_HISTORY);
+    ImGui::PlotLines("##FrameTimes", m_FrameTimeHistory, PROFILER_HISTORY, m_FrameTimeIndex, nullptr, minTime, ImMax(maxTime, 1.0f), ImVec2(320, 80));
+
+#ifdef TRACY_ENABLE
+    bool connected = tracy::GetProfiler().IsConnected();
+    ImGui::Text("Tracy status: %s", connected ? "Connected" : "Disconnected");
+#else
+    ImGui::Text("Tracy status: disabled (TRACY_ENABLE not set)");
+#endif
+
+    ImGui::Checkbox("Show Tracy Connection", &m_ShowTracyConnection);
+    ImGui::Checkbox("Show profiler window", &m_ShowProfilerWindow);
+
+    ImGui::End();
 }
 
 void UIManager::renderNewProjectDialog() {

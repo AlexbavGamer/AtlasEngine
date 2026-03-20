@@ -5,8 +5,11 @@ project(AtlasEngine VERSION 1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(ENABLE_TRACY "Enable Tracy profiler" ON)
+
+find_package(Threads REQUIRED)
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
@@ -62,7 +65,13 @@ FetchContent_Declare(
     GIT_TAG v0.6.8
     SOURCE_DIR "${DEPS_SRC_DIR}/imguifiledialog"
 )
-FetchContent_Populate(imguifiledialog)
+set(FETCHCONTENT_QUIET OFF)
+FetchContent_GetProperties(imguifiledialog)
+if(NOT imguifiledialog_POPULATED)
+    FetchContent_Populate(imguifiledialog)
+    add_subdirectory(${imguifiledialog_SOURCE_DIR} ${imguifiledialog_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
+target_include_directories(ImGuiFileDialog PRIVATE ${imgui_SOURCE_DIR})
 
 # ImGuizmo - header-only library for transform gizmos
 FetchContent_Declare(
@@ -71,7 +80,7 @@ FetchContent_Declare(
     GIT_TAG master
     SOURCE_DIR "${DEPS_SRC_DIR}/imguizmo"
 )
-FetchContent_Populate(imguizmo)
+FetchContent_MakeAvailable(imguizmo)
 
 # EnTT
 atlas_fetch(entt https://github.com/skypjack/entt.git v3.12.1)
@@ -79,6 +88,13 @@ atlas_fetch(entt https://github.com/skypjack/entt.git v3.12.1)
 # VMA
 set(VMA_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 atlas_fetch(vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git v3.3.0)
+
+# Tracy (profiler) - optional
+if(ENABLE_TRACY)
+    # Disable frame image compression thread for improved stability in this integration.
+    set(TRACY_NO_FRAME_IMAGE ON CACHE BOOL "Disable the frame image support and its thread" FORCE)
+    atlas_fetch(tracy https://github.com/wolfpld/tracy.git v0.13.1)
+endif()
 
 # Assimp - Only FBX, OBJ, DAE
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -187,6 +203,7 @@ atlas_fetch(assimp https://github.com/assimp/assimp.git v6.0.4)
 
 # Common include directories
 set(ATLAS_INCLUDE_DIRS
+    ${imgui_SOURCE_DIR}
     ${glm_SOURCE_DIR}
     ${stb_SOURCE_DIR}
     ${entt_SOURCE_DIR}/src
@@ -194,6 +211,10 @@ set(ATLAS_INCLUDE_DIRS
     ${assimp_SOURCE_DIR}/include
     ${imguizmo_SOURCE_DIR}
 )
+
+if(ENABLE_TRACY)
+    list(APPEND ATLAS_INCLUDE_DIRS ${tracy_SOURCE_DIR}/public)
+endif()
 
 # ============================================================================
 # Library: imgui_lib
@@ -228,6 +249,13 @@ target_include_directories(imguifiledialog INTERFACE
     ${imguifiledialog_SOURCE_DIR}
 )
 
+# Tracy client
+if(ENABLE_TRACY)
+    add_library(tracy_lib INTERFACE)
+    target_include_directories(tracy_lib INTERFACE ${tracy_SOURCE_DIR}/public)
+    target_link_libraries(tracy_lib INTERFACE TracyClient)
+endif()
+
 target_link_libraries(imgui_lib PUBLIC glfw Vulkan::Vulkan imguifiledialog)
 
 # ============================================================================
@@ -251,7 +279,13 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     assimp
 )
 
+if(ENABLE_TRACY)
+    target_link_libraries(${PROJECT_NAME} PRIVATE TracyClient tracy_lib)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TRACY_ENABLE TRACY_NO_FRAME_IMAGE)
+endif()
+
 target_compile_definitions(${PROJECT_NAME} PRIVATE VMA_STATIC)
+target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 
 # ============================================================================
 # Shader compilation

@@ -8,9 +8,12 @@
 #include <functional>
 #include <string>
 #include <deque>
+#include <cstdint>
 
 #include "../core/base/non_copyable.h"
 #include "../vulkan/vulkan_structs.h"
+#include "memory/memory_manager.h"
+#include "../core/profiler.h"
 
 namespace Atlas {
 
@@ -35,7 +38,8 @@ struct PushConstants {
     glm::vec4 baseColor;
     float metallic;
     float roughness;
-    glm::vec2 padding;
+    int32_t albedoTexIndex;
+    int32_t hasAlbedoTex;
 };
 
 class Window;
@@ -73,6 +77,7 @@ public:
     VkCommandBuffer getCurrentCommandBuffer() const { return m_CommandBuffers[m_CurrentFrame]; }
     VkImageView getOffscreenImageView() const { return m_OffscreenImageView; }
     VkSampler getOffscreenSampler() const { return m_OffscreenSampler; }
+    MemoryManager* getMemoryManager() { return m_MemoryManager.get(); }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
@@ -81,6 +86,10 @@ public:
     
     using RenderCallback = std::function<void(VkCommandBuffer commandBuffer)>;
     void setRenderCallback(RenderCallback callback) { m_RenderCallback = std::move(callback); }
+
+    void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
+    uint32_t bindTexture(VkImageView imageView, VkSampler sampler);
+    void updateTexture(uint32_t index, VkImageView imageView, VkSampler sampler);
 
     // Clear color
     glm::vec4 getClearColor() const { return m_ClearColor; }
@@ -143,6 +152,7 @@ private:
     VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
     VkQueue m_PresentQueue = VK_NULL_HANDLE;
     QueueFamilyIndices m_QueueFamilyIndices{};
+    std::unique_ptr<MemoryManager> m_MemoryManager;
 
     // Swapchain
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
@@ -196,6 +206,7 @@ private:
     VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
+    uint32_t m_BoundTextureCount = 1;
 
     // Textures
     static constexpr uint32_t MAX_TEXTURES = 64;
@@ -218,6 +229,11 @@ private:
     void createTextureDescriptorSetLayout();
     void createPlaceholderTexture();
     uint32_t createTextureFromFile(const std::string& path);
+
+    // Tracy GPU profiling
+#ifdef TRACY_ENABLE
+    TracyVkCtx m_TracyVkCtx = nullptr;
+#endif
 
     bool m_FramebufferResized = false;
     ResizeCallback m_ResizeCallback;

@@ -8,13 +8,16 @@ namespace Atlas {
 // MemoryManager
 // ============================================================================
 
-MemoryManager::MemoryManager(VkPhysicalDevice physicalDevice, VkDevice device)
-    : m_PhysicalDevice(physicalDevice), m_Device(device) {
+MemoryManager::MemoryManager(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion)
+    : m_Instance(instance)
+    , m_PhysicalDevice(physicalDevice)
+    , m_Device(device) {
 
     VmaAllocatorCreateInfo createInfo{};
+    createInfo.instance = instance;
     createInfo.physicalDevice = physicalDevice;
     createInfo.device = device;
-    createInfo.instance = VK_NULL_HANDLE; // Will be set automatically
+    createInfo.vulkanApiVersion = vulkanApiVersion;
 
     VkResult result = vmaCreateAllocator(&createInfo, &m_Allocator);
     if (result != VK_SUCCESS) {
@@ -25,11 +28,13 @@ MemoryManager::MemoryManager(VkPhysicalDevice physicalDevice, VkDevice device)
 MemoryManager::~MemoryManager() {
     if (m_Allocator != VK_NULL_HANDLE) {
         vmaDestroyAllocator(m_Allocator);
+        m_Allocator = VK_NULL_HANDLE;
     }
 }
 
 MemoryManager::Allocation MemoryManager::allocateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage) {
     Allocation allocation{};
+    allocation.type = Allocation::Type::Buffer;
     allocation.size = size;
 
     VkBufferCreateInfo bufferInfo{};
@@ -48,13 +53,13 @@ MemoryManager::Allocation MemoryManager::allocateBuffer(VkDeviceSize size, VkBuf
         throw std::runtime_error("Failed to allocate buffer: " + std::to_string(result));
     }
 
-    m_TotalAllocatedMemory += size;
+    m_TotalAllocatedMemory += allocation.allocationInfo.size;
     return allocation;
 }
 
 MemoryManager::Allocation MemoryManager::allocateImage(const VkImageCreateInfo& imageInfo, VmaMemoryUsage memoryUsage) {
     Allocation allocation{};
-    allocation.size = imageInfo.extent.width * imageInfo.extent.height * 4; // Approximate
+    allocation.type = Allocation::Type::Image;
 
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = memoryUsage;
@@ -66,21 +71,49 @@ MemoryManager::Allocation MemoryManager::allocateImage(const VkImageCreateInfo& 
         throw std::runtime_error("Failed to allocate image: " + std::to_string(result));
     }
 
+    allocation.size = allocation.allocationInfo.size;
     m_TotalAllocatedMemory += allocation.size;
     return allocation;
 }
 
 void MemoryManager::free(Allocation& allocation) {
-    if (allocation.buffer != VK_NULL_HANDLE) {
+    if (allocation.type == Allocation::Type::Buffer && allocation.buffer != VK_NULL_HANDLE) {
         vmaDestroyBuffer(m_Allocator, allocation.buffer, allocation.vmaAllocation);
         allocation.buffer = VK_NULL_HANDLE;
     }
-    if (allocation.image != VK_NULL_HANDLE) {
+    else if (allocation.type == Allocation::Type::Image && allocation.image != VK_NULL_HANDLE) {
         vmaDestroyImage(m_Allocator, allocation.image, allocation.vmaAllocation);
         allocation.image = VK_NULL_HANDLE;
     }
     allocation.vmaAllocation = VK_NULL_HANDLE;
     m_TotalAllocatedMemory -= allocation.size;
+    allocation.size = 0;
+}
+
+VkImageView MemoryManager::createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectMask) {
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = aspectMask;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+    VkImageView imageView = VK_NULL_HANDLE;
+    VkResult result = vkCreateImageView(m_Device, &viewInfo, nullptr, &imageView);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("Failed to create image view: " + std::to_string(result));
+    }
+    return imageView;
+}
+
+void MemoryManager::destroyImageView(VkImageView imageView) {
+    if (imageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(m_Device, imageView, nullptr);
+    }
 }
 
 void* MemoryManager::map(Allocation& allocation) {
@@ -88,23 +121,36 @@ void* MemoryManager::map(Allocation& allocation) {
         return allocation.mappedData;
     }
 
+    if (allocation.vmaAllocation == VK_NULL_HANDLE) {
+        return nullptr;
+    }
+
     void* data = nullptr;
-    vmaMapMemory(m_Allocator, allocation.vmaAllocation, &data);
+    VkResult result = vmaMapMemory(m_Allocator, allocation.vmaAllocation, &data);
+    if (result != VK_SUCCESS) {
+        return nullptr;
+    }
+
     allocation.mappedData = data;
     allocation.mapped = true;
     return data;
 }
 
 void MemoryManager::unmap(Allocation& allocation) {
-    if (allocation.mapped) {
+    if (allocation.mapped && allocation.vmaAllocation != VK_NULL_HANDLE) {
         vmaUnmapMemory(m_Allocator, allocation.vmaAllocation);
         allocation.mappedData = nullptr;
         allocation.mapped = false;
     }
 }
 
-void MemoryManager::flush(Allocation& allocation) {
-    vmaFlushAllocation(m_Allocator, allocation.vmaAllocation, 0, VK_WHOLE_SIZE);
+bool MemoryManager::flush(Allocation& allocation, VkDeviceSize offset, VkDeviceSize size) {
+    if (allocation.vmaAllocation == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkResult result = vmaFlushAllocation(m_Allocator, allocation.vmaAllocation, offset, size);
+    return result == VK_SUCCESS;
 }
 
 // ============================================================================
@@ -158,10 +204,11 @@ void Buffer::unmap() {
     }
 }
 
-void Buffer::flush() {
+bool Buffer::flush(VkDeviceSize offset, VkDeviceSize size) {
     if (m_MemoryManager) {
-        m_MemoryManager->flush(m_Allocation);
+        return m_MemoryManager->flush(m_Allocation, offset, size);
     }
+    return false;
 }
 
 // ============================================================================
@@ -174,7 +221,8 @@ Image::Image(MemoryManager& memoryManager, const VkImageCreateInfo& imageInfo, V
     m_Width = imageInfo.extent.width;
     m_Height = imageInfo.extent.height;
     m_Format = imageInfo.format;
-    createImageView(imageInfo.format);
+
+    m_ImageView = memoryManager.createImageView(m_Allocation.image, m_Format);
 }
 
 Image::~Image() {
@@ -210,27 +258,16 @@ Image& Image::operator=(Image&& other) noexcept {
 }
 
 void Image::destroy() {
-    if (m_MemoryManager && m_Allocation.image != VK_NULL_HANDLE) {
-        m_MemoryManager->free(m_Allocation);
-        m_Allocation = {};
+    if (m_MemoryManager) {
+        if (m_ImageView != VK_NULL_HANDLE) {
+            m_MemoryManager->destroyImageView(m_ImageView);
+            m_ImageView = VK_NULL_HANDLE;
+        }
+        if (m_Allocation.image != VK_NULL_HANDLE) {
+            m_MemoryManager->free(m_Allocation);
+            m_Allocation = {};
+        }
     }
-    m_ImageView = VK_NULL_HANDLE;
-}
-
-void Image::createImageView(VkFormat format) {
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = m_Allocation.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    // TODO: Get device from memory manager
-    // vkCreateImageView(device, &viewInfo, nullptr, &m_ImageView);
 }
 
 }

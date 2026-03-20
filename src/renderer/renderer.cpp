@@ -3,6 +3,7 @@
 #include "../scene/scene.h"
 #include "../ecs/components/components.h"
 #include "../ecs/ecs.h"
+#include "../core/profiler.h"
 #include <stdexcept>
 #include <fstream>
 #include <array>
@@ -36,6 +37,8 @@ void Renderer::init() {
     createSurface();
     pickPhysicalDevice();
     createLogicalDevice();
+    
+    m_MemoryManager = std::make_unique<MemoryManager>(m_Instance, m_PhysicalDevice, m_Device);
     createSwapChain();
     createImageViews();
     createRenderPass();
@@ -49,12 +52,34 @@ void Renderer::init() {
     createFramebuffers();
     createSyncObjects();
     createOffscreenResources();
+
+#ifdef TRACY_ENABLE
+    // Create a one-shot command buffer for Tracy context initialization
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = m_CommandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+    VkCommandBuffer tracyInitCmdBuf;
+    vkAllocateCommandBuffers(m_Device, &allocInfo, &tracyInitCmdBuf);
+
+    m_TracyVkCtx = PROFILE_GPU_CONTEXT(m_PhysicalDevice, m_Device, m_GraphicsQueue, tracyInitCmdBuf);
+
+    vkFreeCommandBuffers(m_Device, m_CommandPool, 1, &tracyInitCmdBuf);
+#endif
 }
 
 void Renderer::shutdown() {
     m_RenderCallback = nullptr;
     vkDeviceWaitIdle(m_Device);
-    
+
+#ifdef TRACY_ENABLE
+    if (m_TracyVkCtx) {
+        PROFILE_GPU_DESTROY(m_TracyVkCtx);
+        m_TracyVkCtx = nullptr;
+    }
+#endif
+
     m_FrameQueue.flush();
     
     if (m_DescriptorPool) vkDestroyDescriptorPool(m_Device, m_DescriptorPool, nullptr);
@@ -114,6 +139,8 @@ void Renderer::shutdown() {
 
     if (m_SwapChain) vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 
+    m_MemoryManager.reset();
+
     vkDestroyDevice(m_Device, nullptr);
 
     if (enableValidationLayers) {
@@ -134,6 +161,7 @@ void Renderer::endFrame() {
 }
 
 void Renderer::renderScene(Scene* scene) {
+    PROFILE_SCOPE("RenderFrame");
     if (!scene) return;
 
     // Wait for the current frame to complete
@@ -193,6 +221,7 @@ void Renderer::renderScene(Scene* scene) {
     }
 
     m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    PROFILE_FRAME();
 }
 
 void Renderer::recreateSwapChain() {
@@ -233,6 +262,133 @@ uint32_t Renderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags pro
         }
     }
     throw std::runtime_error("failed to find suitable memory type!");
+}
+
+void Renderer::immediateSubmit(const std::function<void(VkCommandBuffer)>& fn) {
+    if (!fn) return;
+
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    poolInfo.queueFamilyIndex = m_QueueFamilyIndices.graphicsFamily.value();
+
+    if (vkCreateCommandPool(m_Device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create immediate command pool!");
+    }
+
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(m_Device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+        throw std::runtime_error("failed to allocate immediate command buffer!");
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        vkFreeCommandBuffers(m_Device, commandPool, 1, &commandBuffer);
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+        throw std::runtime_error("failed to begin immediate command buffer!");
+    }
+
+    fn(commandBuffer);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        vkFreeCommandBuffers(m_Device, commandPool, 1, &commandBuffer);
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+        throw std::runtime_error("failed to end immediate command buffer!");
+    }
+
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    if (vkCreateFence(m_Device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(m_Device, commandPool, 1, &commandBuffer);
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+        throw std::runtime_error("failed to create immediate fence!");
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        vkDestroyFence(m_Device, fence, nullptr);
+        vkFreeCommandBuffers(m_Device, commandPool, 1, &commandBuffer);
+        vkDestroyCommandPool(m_Device, commandPool, nullptr);
+        throw std::runtime_error("failed to submit immediate command buffer!");
+    }
+
+    vkWaitForFences(m_Device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyFence(m_Device, fence, nullptr);
+    vkFreeCommandBuffers(m_Device, commandPool, 1, &commandBuffer);
+    vkDestroyCommandPool(m_Device, commandPool, nullptr);
+}
+
+uint32_t Renderer::bindTexture(VkImageView imageView, VkSampler sampler) {
+    if (imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+        return 0;
+    }
+    if (m_BoundTextureCount >= MAX_TEXTURES) {
+        return 0;
+    }
+
+    uint32_t index = m_BoundTextureCount++;
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.sampler = sampler;
+    imageInfo.imageView = imageView;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_DescriptorSet;
+    write.dstBinding = 1;
+    write.dstArrayElement = index;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &imageInfo;
+
+    vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+
+    return index;
+}
+
+void Renderer::updateTexture(uint32_t index, VkImageView imageView, VkSampler sampler) {
+    if (index == 0 || index >= MAX_TEXTURES) {
+        return;
+    }
+    if (imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.sampler = sampler;
+    imageInfo.imageView = imageView;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_DescriptorSet;
+    write.dstBinding = 1;
+    write.dstArrayElement = index;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &imageInfo;
+
+    vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
 }
 
 void Renderer::createInstance() {
@@ -836,6 +992,7 @@ void Renderer::createLightBuffer() {
 
 void Renderer::createDescriptorSet() {
     createPlaceholderTexture();
+    m_BoundTextureCount = 1;
 
     std::array<VkDescriptorPoolSize, 2> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -896,11 +1053,12 @@ void Renderer::createDescriptorSet() {
 }
 
 void Renderer::createPlaceholderTexture() {
+    // Upload a small white texture and transition to SHADER_READ_ONLY.
     VkDeviceSize imageSize = 4 * 4 * 4;
-    std::vector<uint8_t> pixels(imageSize, 255);
+    std::vector<uint8_t> pixels(static_cast<size_t>(imageSize), 255);
 
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingMemory;
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
 
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -908,7 +1066,9 @@ void Renderer::createPlaceholderTexture() {
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    vkCreateBuffer(m_Device, &bufferInfo, nullptr, &stagingBuffer);
+    if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create placeholder staging buffer!");
+    }
 
     VkMemoryRequirements memRequirements;
     vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &memRequirements);
@@ -921,10 +1081,14 @@ void Renderer::createPlaceholderTexture() {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
 
-    vkAllocateMemory(m_Device, &allocInfo, nullptr, &stagingMemory);
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+        throw std::runtime_error("failed to allocate placeholder staging memory!");
+    }
+
     vkBindBufferMemory(m_Device, stagingBuffer, stagingMemory, 0);
 
-    void* data;
+    void* data = nullptr;
     vkMapMemory(m_Device, stagingMemory, 0, imageSize, 0, &data);
     memcpy(data, pixels.data(), static_cast<size_t>(imageSize));
     vkUnmapMemory(m_Device, stagingMemory);
@@ -938,32 +1102,73 @@ void Renderer::createPlaceholderTexture() {
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
-    imageInfo.tiling = VK_IMAGE_TILING_LINEAR;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    vkCreateImage(m_Device, &imageInfo, nullptr, &m_PlaceholderImage);
+    if (vkCreateImage(m_Device, &imageInfo, nullptr, &m_PlaceholderImage) != VK_SUCCESS) {
+        vkFreeMemory(m_Device, stagingMemory, nullptr);
+        vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+        throw std::runtime_error("failed to create placeholder image!");
+    }
+
     vkGetImageMemoryRequirements(m_Device, m_PlaceholderImage, &memRequirements);
 
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(
-        memRequirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-    );
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_PlaceholderImageMemory);
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_PlaceholderImageMemory) != VK_SUCCESS) {
+        vkDestroyImage(m_Device, m_PlaceholderImage, nullptr);
+        vkFreeMemory(m_Device, stagingMemory, nullptr);
+        vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+        throw std::runtime_error("failed to allocate placeholder image memory!");
+    }
+
     vkBindImageMemory(m_Device, m_PlaceholderImage, m_PlaceholderImageMemory, 0);
 
-    VkImageSubresource subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
-    VkSubresourceLayout layout;
-    vkGetImageSubresourceLayout(m_Device, m_PlaceholderImage, &subresource, &layout);
+    immediateSubmit([&](VkCommandBuffer commandBuffer) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = m_PlaceholderImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-    void* imgData;
-    vkMapMemory(m_Device, m_PlaceholderImageMemory, 0, imageSize, 0, &imgData);
-    memcpy(imgData, pixels.data(), static_cast<size_t>(imageSize));
-    vkUnmapMemory(m_Device, m_PlaceholderImageMemory);
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {0, 0, 0};
+        region.imageExtent = {4, 4, 1};
+
+        vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, m_PlaceholderImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    });
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -976,7 +1181,9 @@ void Renderer::createPlaceholderTexture() {
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
-    vkCreateImageView(m_Device, &viewInfo, nullptr, &m_PlaceholderImageView);
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_PlaceholderImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create placeholder image view!");
+    }
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -992,7 +1199,9 @@ void Renderer::createPlaceholderTexture() {
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
 
-    vkCreateSampler(m_Device, &samplerInfo, nullptr, &m_PlaceholderSampler);
+    if (vkCreateSampler(m_Device, &samplerInfo, nullptr, &m_PlaceholderSampler) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create placeholder sampler!");
+    }
 
     vkFreeMemory(m_Device, stagingMemory, nullptr);
     vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
@@ -1242,6 +1451,15 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         throw std::runtime_error("failed to begin recording command buffer!");
     }
 
+#ifdef TRACY_ENABLE
+    TracyVkCollect(m_TracyVkCtx, commandBuffer);
+#endif
+
+    {
+#ifdef TRACY_ENABLE
+    TracyVkZone(m_TracyVkCtx, commandBuffer, "RenderFrame_GPU");
+#endif
+
     // Transition offscreen image to color attachment for rendering
     if (m_OffscreenImageLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
         VkImageMemoryBarrier preRenderBarrier{};
@@ -1316,21 +1534,22 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     glm::vec4 baseColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
                     float metallic = 0.0f;
                     float roughness = 0.5f;
+                    int32_t albedoTexIndex = 0;
+                    int32_t hasAlbedoTex = 0;
                     
-                    if (registry.all_of<Transform>(entity)) {
-                        auto& transform = registry.get<Transform>(entity);
-                        model = glm::translate(model, transform.position);
-                        model = glm::rotate(model, glm::radians(transform.rotation.x), glm::vec3(1, 0, 0));
-                        model = glm::rotate(model, glm::radians(transform.rotation.y), glm::vec3(0, 1, 0));
-                        model = glm::rotate(model, glm::radians(transform.rotation.z), glm::vec3(0, 0, 1));
-                        model = glm::scale(model, transform.scale);
+                    if (scene && scene->hasTransform(entity)) {
+                        model = scene->getWorldTransform(entity);
                     }
                     
-                    if (registry.all_of<MaterialComponent>(entity)) {
-                        auto& material = registry.get<MaterialComponent>(entity);
+                    if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                        auto& material = registry.get<ECS::MaterialComponent>(entity);
                         baseColor = material.baseColor;
                         metallic = material.metallic;
                         roughness = material.roughness;
+                        if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) {
+                            hasAlbedoTex = 1;
+                            albedoTexIndex = material.albedoTextureIndex;
+                        }
                     }
                     
                     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
@@ -1342,6 +1561,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     pushConstants.baseColor = baseColor;
                     pushConstants.metallic = metallic;
                     pushConstants.roughness = roughness;
+                    pushConstants.albedoTexIndex = albedoTexIndex;
+                    pushConstants.hasAlbedoTex = hasAlbedoTex;
                     
                     vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
                     
@@ -1375,6 +1596,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     }
     
     vkCmdEndRenderPass(commandBuffer);
+
+    } // end TracyVkZone scope
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to record command buffer!");
@@ -1488,12 +1711,27 @@ VkSurfaceFormatKHR Renderer::chooseSwapSurfaceFormat(const std::vector<VkSurface
 }
 
 VkPresentModeKHR Renderer::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
-    for (const auto& availablePresentMode : availablePresentModes) {
-        if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            return availablePresentMode;
-        }
+    // Prefer VRR modes when available.
+    bool hasMailbox = false;
+    bool hasFifoRelaxed = false;
+    bool hasImmediate = false;
+
+    for (const auto& mode : availablePresentModes) {
+        if (mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR) hasFifoRelaxed = true;
+        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) hasMailbox = true;
+        if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) hasImmediate = true;
     }
-    return VK_PRESENT_MODE_FIFO_KHR;
+
+    if (hasFifoRelaxed) {
+        return VK_PRESENT_MODE_FIFO_RELAXED_KHR; // VRR-friendly
+    }
+    if (hasMailbox) {
+        return VK_PRESENT_MODE_MAILBOX_KHR; // low latency with v-sync
+    }
+    if (hasImmediate) {
+        return VK_PRESENT_MODE_IMMEDIATE_KHR; // no v-sync (tearing)
+    }
+    return VK_PRESENT_MODE_FIFO_KHR; // guaranteed support
 }
 
 VkExtent2D Renderer::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {

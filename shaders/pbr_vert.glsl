@@ -7,7 +7,8 @@ layout(push_constant) uniform PushConstants {
     vec4 baseColor;
     float metallic;
     float roughness;
-    vec2 padding;
+    int albedoTexIndex;
+    int hasAlbedoTex;
 } pc;
 
 layout(location = 0) in vec3 inPosition;

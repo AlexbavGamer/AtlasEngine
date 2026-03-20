@@ -10,6 +10,8 @@
 #include "../project/project_manager.h"
 #include "../renderer/renderer.h"
 #include <ImGuiFileDialog.h>
+
+namespace Atlas { class AssetManager; }
 #include <ImGuizmo.h>
 
 using namespace Atlas;
@@ -27,6 +29,7 @@ public:
     void setProjectManager(ProjectManager* projManager);
     void setOnAssetDropped(std::function<void(const std::string&)> callback);
     void setRenderer(Renderer* renderer);
+    void setAssetManager(Atlas::AssetManager* am) { assetManager = am; }
     void openProject(const std::string& path);
     void setWindow(GLFWwindow* win);
     void setCameraMatrices(glm::mat4 view, glm::mat4 proj);
@@ -35,11 +38,15 @@ public:
     TransformMode getTransformMode() const { return m_TransformMode; }
     bool isGizmoUsing() const { return m_GizmoUsing; }
 
+    void updateProfiler(float deltaTime);
+    void renderProfilerWindow();
+
 private:
     Atlas::Scene* m_Scene = nullptr;
     Entity selectedEntity = entt::null;
     ProjectManager* projectManager = nullptr;
     Renderer* renderer = nullptr;
+    Atlas::AssetManager* assetManager = nullptr;
     std::function<void(const std::string&)> onAssetDropped;
 
     void renderToolbar();
@@ -73,4 +80,17 @@ private:
 
     bool showOpenProjectFileDialog = false;
     bool showSaveProjectFileDialog = false;
+
+    // Simple ImGui profiler panel data
+    bool m_ShowProfilerWindow = true;
+    float m_FrameTimeMs = 0.0f;
+    float m_Fps = 0.0f;
+    static constexpr int PROFILER_HISTORY = 120;
+    float m_FrameTimeHistory[PROFILER_HISTORY] = {};
+    int m_FrameTimeIndex = 0;
+    bool m_ShowTracyConnection = true;
+
+    // Material editor state (selected entity)
+    uint32_t m_MaterialEditEntityId = 0;
+    char m_AlbedoTexturePathBuf[512] = {};
 };

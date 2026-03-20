@@ -7,7 +7,8 @@ layout(push_constant) uniform PushConstants {
     vec4 baseColor;
     float metallic;
     float roughness;
-    vec2 padding;
+    int albedoTexIndex;
+    int hasAlbedoTex;
 } pc;
 
 layout(location = 0) in vec3 fragColor;
@@ -79,6 +80,9 @@ void main() {
     vec3 V = normalize(lightData.cameraPos - fragWorldPos);
     
     vec4 albedoColor = vec4(fragColor, 1.0);
+    if (pc.hasAlbedoTex != 0) {
+        albedoColor *= texture(textureSamplers[pc.albedoTexIndex], fragTexCoord);
+    }
     
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedoColor.rgb, pc.metallic);

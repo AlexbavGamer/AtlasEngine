@@ -168,12 +168,25 @@ VkSurfaceFormatKHR VulkanSwapchain::chooseSwapSurfaceFormat(const std::vector<Vk
 }
 
 VkPresentModeKHR VulkanSwapchain::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
-    for (const auto& availablePresentMode : availablePresentModes) {
-        if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            return availablePresentMode;
-        }
+    bool hasMailbox = false;
+    bool hasFifoRelaxed = false;
+    bool hasImmediate = false;
+
+    for (auto mode : availablePresentModes) {
+        if (mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR) hasFifoRelaxed = true;
+        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) hasMailbox = true;
+        if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) hasImmediate = true;
     }
 
+    if (hasFifoRelaxed) {
+        return VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    }
+    if (hasMailbox) {
+        return VK_PRESENT_MODE_MAILBOX_KHR;
+    }
+    if (hasImmediate) {
+        return VK_PRESENT_MODE_IMMEDIATE_KHR;
+    }
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 

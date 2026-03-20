@@ -50,7 +50,14 @@ public:
             LoadResult<T> result;
             try {
                 std::cout << "  [ASYNC] Calling loadFunc..." << std::endl; std::cout.flush();
-                result.data = loadFunc();
+                try {
+                    std::cout << "  [ASYNC] calling loadFunc..." << std::endl; std::cout.flush();
+                    result.data = loadFunc();
+                    std::cout << "  [ASYNC] loadFunc returned, data=" << (result.data ? "valid" : "null") << std::endl; std::cout.flush();
+                } catch (...) {
+                    // rethrow to be caught below
+                    throw;
+                }
                 std::cout << "  [ASYNC] loadFunc returned, success=" << result.success << std::endl; std::cout.flush();
                 result.success = true;
                 std::cout << "  [ASYNC] Load complete, success=" << result.success << std::endl; std::cout.flush();

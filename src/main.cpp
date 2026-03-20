@@ -3,6 +3,7 @@
 
 #include "platform/window.h"
 #include "renderer/renderer.h"
+#include "assets/asset_manager.h"
 #include "scene/scene.h"
 #include "imgui/imgui_manager.h"
 #include <imgui.h>
@@ -13,6 +14,10 @@
 #include "utils/camera_controller.h"
 #include "ecs/ecs.h"
 #include "core/threading/async_loader.h"
+#include "core/profiler.h"
+#include <mutex>
+#include <unordered_map>
+#include <filesystem>
 
 using namespace ecs;
 #include "ecs/vertex.h"
@@ -36,6 +41,9 @@ namespace Atlas
             m_Renderer = std::make_unique<Renderer>(m_Window.get());
             m_Renderer->init();
 
+            m_AssetManager = std::make_unique<AssetManager>();
+            m_AssetManager->setRenderer(m_Renderer.get());
+
             m_Scene = std::make_unique<Scene>();
 
             m_ImGuiManager.init(
@@ -57,6 +65,7 @@ namespace Atlas
             m_UIManager = std::make_unique<UIManager>(m_Scene.get());
             m_UIManager->setWindow(m_Window->getGLFWWindow());
             m_UIManager->setRenderer(m_Renderer.get());
+            m_UIManager->setAssetManager(m_AssetManager.get());
 
             m_ProjectManager = std::make_unique<ProjectManager>();
             m_UIManager->setProjectManager(m_ProjectManager.get());
@@ -74,8 +83,8 @@ namespace Atlas
 
             // Procedural cube disabled - use FBX import instead
             // auto cubeEntity = m_Scene->createEntity("Cube");
-            // m_Scene->getRegistry().emplace<Mesh>(cubeEntity);
-            // auto &mesh = m_Scene->getRegistry().get<Mesh>(cubeEntity);
+            // m_Scene->getRegistry().emplace<::Mesh>(cubeEntity);
+            // auto &mesh = m_Scene->getRegistry().get<::Mesh>(cubeEntity);
             // mesh.meshPath = "[procedural]";
             // MeshData meshData = ModelLoader::createCube(1.0f,
             //                                            m_Renderer->getDevice(),
@@ -111,72 +120,86 @@ namespace Atlas
             Atlas::AsyncLoader::getInstance().init();
             
             // Setup asset drop callback - ASYNC LOADING
-            m_UIManager->setOnAssetDropped([this](const std::string &assetPath)
-                                           {
-            std::string fullPath = m_ProjectManager->getAssetFullPath(assetPath);
-            std::filesystem::path fsPath(fullPath);
-            std::string ext = fsPath.extension().string();
-            
-            if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") {
-                std::string modelName = fsPath.filename().string();
-                std::string basePath = fullPath;
+            m_UIManager->setOnAssetDropped([this](const std::string &assetPath) {
+                std::string fullPath = m_ProjectManager->getAssetFullPath(assetPath);
+                std::filesystem::path fsPath(fullPath);
+                std::string ext = fsPath.extension().string();
                 
-                auto findMemoryType = [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
-                    for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++) {
-                        if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
-                            return i;
+                if (ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae") {
+                    std::string modelName = fsPath.filename().string();
+                    std::string basePath = fullPath;
+                    
+                    auto findMemoryType = [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
+                        for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++) {
+                            if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
+                                return i;
+                            }
                         }
-                    }
-                    return uint32_t(~0);
-                };
-                
-                MeshData placeholderData = ModelLoader::createCube(0.1f);
-                
-                auto tempEntity = m_Scene->createEntity(modelName + " [Loading...]");
-                auto& tempMesh = m_Scene->getRegistry().emplace<Mesh>(tempEntity);
-                tempMesh.vertexBuffer = placeholderData.vertexBuffer;
-                tempMesh.indexBuffer = placeholderData.indexBuffer;
-                tempMesh.vertexMemory = placeholderData.vertexMemory;
-                tempMesh.indexMemory = placeholderData.indexMemory;
-                tempMesh.vertexCount = placeholderData.vertices.size();
-                tempMesh.indexCount = placeholderData.indexCount;
-                tempMesh.meshPath = basePath;
-                
-                std::cout << "Started loading model (sync): " << basePath << std::endl;
-                
-                ModelData modelData;
-                std::cout << "  [MAIN] Calling loadModelMultiMesh..." << std::endl; std::cout.flush();
-                ModelLoader::loadModelMultiMesh(
-                    basePath,
-                    m_Renderer->getDevice(),
-                    m_Renderer->getPhysicalDevice(),
-                    findMemoryType,
-                    modelData,
-                    true);
-                std::cout << "  [MAIN] loadModelMultiMesh returned!" << std::endl; std::cout.flush();
-                
-                std::cout << "Creating entities..." << std::endl;
-                for (size_t i = 0; i < modelData.meshes.size(); i++) {
-                    std::string partName = modelName + "_" + modelData.meshes[i].name;
-                    auto entity = m_Scene->createEntity(partName);
-                    auto& mesh = m_Scene->getRegistry().emplace<Mesh>(entity);
-                    mesh.meshPath = basePath + "#" + modelData.meshes[i].name;
-                    mesh.vertexBuffer = modelData.meshes[i].vertexBuffer;
-                    mesh.indexBuffer = modelData.meshes[i].indexBuffer;
-                    mesh.vertexMemory = modelData.meshes[i].vertexMemory;
-                    mesh.indexMemory = modelData.meshes[i].indexMemory;
-                    mesh.vertexCount = modelData.meshes[i].vertices.size();
-                    mesh.indexCount = modelData.meshes[i].indexCount;
+                        return uint32_t(~0);
+                    };
+                    
+                    // Create placeholder while loading
+                    MeshData placeholderData = ModelLoader::createCube(0.1f, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(), findMemoryType);
+                    
+                    auto tempEntity = m_Scene->createEntity(modelName + " [Loading...]");
+                    auto& tempMesh = m_Scene->getRegistry().emplace<::Mesh>(tempEntity);
+                    tempMesh.vertexBuffer = placeholderData.vertexBuffer;
+                    tempMesh.indexBuffer = placeholderData.indexBuffer;
+                    tempMesh.vertexMemory = placeholderData.vertexMemory;
+                    tempMesh.vertexCount = placeholderData.vertices.size();
+                    tempMesh.indexCount = placeholderData.indexCount;
+                    tempMesh.meshPath = basePath;
+                    
+                    std::cout << "Started loading model (async): " << basePath << std::endl;
+
+                    std::shared_ptr<ModelData> modelDataPtr = std::make_shared<ModelData>();
+
+                    Atlas::AsyncLoader::getInstance().loadModelAsync<ModelData>(
+                        basePath,
+                        [basePath, modelDataPtr]() -> std::shared_ptr<ModelData> {
+                            PROFILE_SCOPE("ModelLoad");
+                            ModelLoader::loadModelMultiMesh(
+                                basePath,
+                                VK_NULL_HANDLE,
+                                VK_NULL_HANDLE,
+                                nullptr,
+                                modelDataPtr.get(),
+                                false);
+                            return modelDataPtr;
+                        },
+                        [this, modelName, basePath, tempEntity](Atlas::AsyncLoader::LoadResult<ModelData> result) {
+                            if (result.success && result.data) {
+                                PendingModel pending;
+                                pending.modelData = result.data;
+                                pending.modelName = modelName;
+                                pending.basePath = basePath;
+                                pending.placeholderEntity = tempEntity;
+
+                                std::lock_guard<std::mutex> lock(m_PendingModelsMutex);
+                                m_PendingModels.push_back(std::move(pending));
+
+                                std::cout << "Async model data ready: " << basePath << std::endl;
+                            } else {
+                                std::cerr << "Async model load failed: " << result.error << std::endl;
+                            }
+                        });
+
+                    std::cout << "Model loading dispatched, continuing main loop..." << std::endl;
+                    std::cout.flush();
+
+                    // We keep placeholder visible until model load completes.
+                    // No immediate scene entity creation here.
+
+                    // Skip synchronous creation block.
+                    // The pending model callback will handle adding entities in processPendingModels().
+
                 }
-                
-                m_Scene->getRegistry().destroy(tempEntity);
-                std::cout << "Done! Loaded " << modelData.meshes.size() << " meshes." << std::endl;
-            } });
+            });
 
             // Setup window resize callback
             m_Window->setResizeCallback([this](int width, int height)
             {
-                 m_Renderer->recreateSwapChain();
+                m_Renderer->recreateSwapChain();
                 // Recreate viewport texture after swapchain recreation
                 m_ViewportTexture = (ImTextureID)ImGui_ImplVulkan_AddTexture(
                     m_Renderer->getOffscreenSampler(),
@@ -193,6 +216,9 @@ namespace Atlas
         {
             Atlas::AsyncLoader::getInstance().shutdown();
             m_ImGuiManager.cleanup(m_Renderer->getDevice());
+            if (m_AssetManager) {
+                m_AssetManager->shutdown();
+            }
             m_Renderer->shutdown();
             glfwDestroyWindow(static_cast<GLFWwindow*>(m_Window->getNativeWindow()));
         }
@@ -211,6 +237,9 @@ namespace Atlas
                 lastTime = currentTime;
 
                 m_Window->update();
+
+                // Update profile counters
+                m_UIManager->updateProfiler(deltaTime);
 
                 // Update camera first
                 if (m_CameraController && !m_UIManager->isGizmoUsing())
@@ -233,6 +262,7 @@ namespace Atlas
                 // Render UI (includes gizmo)
                 m_UIManager->render(m_ViewportTexture);
 
+                processPendingModels();
                 m_Renderer->renderScene(m_Scene.get());
                 m_Renderer->endFrame();
             }
@@ -240,15 +270,140 @@ namespace Atlas
             vkDeviceWaitIdle(m_Renderer->getDevice());
         }
 
+        void processPendingModels() {
+            std::lock_guard<std::mutex> lock(m_PendingModelsMutex);
+            if (m_PendingModels.empty()) {
+                return;
+            }
+
+            auto findMemoryType = [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
+                for (uint32_t i = 0; i < memProperties->memoryTypeCount; i++) {
+                    if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
+                        return i;
+                    }
+                }
+                return uint32_t(~0);
+            };
+
+            for (auto& item : m_PendingModels) {
+                if (item.modelData && m_Scene) {
+                    if (m_Scene->getRegistry().valid(item.placeholderEntity)) {
+                        m_Scene->getRegistry().destroy(item.placeholderEntity);
+                    }
+
+                    // Create root entity for model (container node, not renderable)
+                    auto rootEntity = m_Scene->createEntity(item.modelName);
+
+                    // Ensure root has transform for hierarchy manipulation.
+                    if (!m_Scene->hasTransform(rootEntity)) {
+                        m_Scene->getRegistry().emplace<Transform>(rootEntity);
+                    }
+                    auto& rootTransform = m_Scene->getTransform(rootEntity);
+                    rootTransform.position = glm::vec3(0.0f);
+                    rootTransform.rotation = glm::vec3(0.0f);
+                    rootTransform.scale = glm::vec3(1.0f);
+
+                    // Root should be a container, not an actual renderable mesh.
+                    if (m_Scene->getRegistry().all_of<Renderable>(rootEntity)) {
+                        m_Scene->getRegistry().remove<Renderable>(rootEntity);
+                    }
+                    if (m_Scene->getRegistry().all_of<::Mesh>(rootEntity)) {
+                        m_Scene->getRegistry().remove<Mesh>(rootEntity);
+                    }
+
+                    // Ensure buffers exist on render thread context
+                    for (auto& meshData : item.modelData->meshes) {
+                        std::cout << "  [DEBUG] Pending mesh " << meshData.name
+                                  << " verts=" << meshData.vertices.size()
+                                  << " idx=" << meshData.indices.size()
+                                  << " vb=" << meshData.vertexBuffer
+                                  << " ib=" << meshData.indexBuffer << std::endl;
+                        if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
+                            ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(), findMemoryType);
+                        }
+
+                        auto entity = m_Scene->createEntity(item.modelName + "_" + meshData.name);
+                        auto& mesh = m_Scene->getRegistry().emplace<::Mesh>(entity);
+                        mesh.meshPath = item.basePath + "#" + meshData.name;
+                        mesh.vertexBuffer = meshData.vertexBuffer;
+                        mesh.indexBuffer = meshData.indexBuffer;
+                        mesh.vertexMemory = meshData.vertexMemory;
+                        mesh.indexMemory = meshData.indexMemory;
+                        mesh.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
+                        mesh.indexCount = meshData.indexCount;
+
+                        if (m_AssetManager && m_Renderer) {
+                            ECS::MaterialComponent material;
+                            material.baseColor = meshData.baseColor;
+                            material.metallic = meshData.metallic;
+                            material.roughness = meshData.roughness;
+
+                            if (!meshData.baseColorTexturePath.empty()) {
+                                std::filesystem::path modelDir = std::filesystem::path(item.basePath).parent_path();
+                                std::filesystem::path texPath = (modelDir / meshData.baseColorTexturePath).lexically_normal();
+                                std::string texFullPath = texPath.string();
+
+                                std::cout << "[Import] mesh=" << meshData.name
+                                          << " baseColorTexRel=" << meshData.baseColorTexturePath
+                                          << " resolved=" << texFullPath << std::endl;
+
+                                uint32_t slot = 0;
+                                if (auto it = m_TextureSlots.find(texFullPath); it != m_TextureSlots.end()) {
+                                    slot = it->second;
+                                } else {
+                                    auto tex = m_AssetManager->loadTexture(StringID(texFullPath), texFullPath);
+                                    if (tex && tex->isValid()) {
+                                        slot = m_Renderer->bindTexture(tex->getImageView(), tex->getSampler());
+                                        if (slot != 0) {
+                                            m_TextureSlots[texFullPath] = slot;
+                                        }
+                                    }
+                                }
+
+                                if (slot != 0) {
+                                    material.useAlbedoTexture = true;
+                                    material.albedoTextureIndex = static_cast<int32_t>(slot);
+                                    material.albedoTextureId = StringID(texFullPath);
+                                    material.albedoTexturePath = texFullPath;
+                                }
+                            } else {
+                                std::cout << "[Import] mesh=" << meshData.name << " has no baseColorTexture" << std::endl;
+                            }
+
+                            m_Scene->getRegistry().emplace<ECS::MaterialComponent>(entity, material);
+                        }
+
+                        meshData.freeCPUMemory();
+                        m_Scene->setParent(entity, rootEntity);
+                    }
+                }
+            }
+
+            m_PendingModels.clear();
+        }
+
     private:
+        struct PendingModel {
+            std::shared_ptr<ModelData> modelData;
+            std::string modelName;
+            std::string basePath;
+            entt::entity placeholderEntity = entt::null;
+        };
+
         std::unique_ptr<Window> m_Window;
         std::unique_ptr<Renderer> m_Renderer;
+        std::unique_ptr<AssetManager> m_AssetManager;
         std::unique_ptr<Scene> m_Scene;
         ImGuiManager m_ImGuiManager;
         std::unique_ptr<UIManager> m_UIManager;
         std::unique_ptr<ProjectManager> m_ProjectManager;
         std::unique_ptr<CameraController> m_CameraController;
         ImTextureID m_ViewportTexture = 0;
+
+        std::unordered_map<std::string, uint32_t> m_TextureSlots;
+
+        std::vector<PendingModel> m_PendingModels;
+        std::mutex m_PendingModelsMutex;
     };
 
 }

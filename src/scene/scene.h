@@ -21,7 +21,7 @@ public:
 
     // Entity creation
     entt::entity createEntity(const std::string& name = "Entity");
-    void destroyEntity(entt::entity entity);
+    void destroyEntity(entt::entity entity); // recursive with child cleanup
 
     // Transform component
     Transform& getTransform(entt::entity entity) {
@@ -38,9 +38,15 @@ public:
 
     // Hierarchy
     std::vector<entt::entity> getAllEntities();
+    std::vector<entt::entity> getRootEntities();
+    std::vector<entt::entity> getChildren(entt::entity parent);
+    void setParent(entt::entity child, entt::entity parent);
+
     std::vector<entt::entity> getEntitiesWithMesh();
     std::vector<entt::entity> getEntitiesWithCamera();
     std::vector<entt::entity> getEntitiesWithLight();
+
+    glm::mat4 getWorldTransform(entt::entity entity) const;
 
     // Scene name
     const std::string& getName() const { return m_Name; }

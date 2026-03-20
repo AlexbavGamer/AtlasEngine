@@ -1,0 +1,11 @@
+Model Information:
+* title:	2022 Audi RS e-tron GT
+* source:	https://sketchfab.com/3d-models/2022-audi-rs-e-tron-gt-e5b032ec99bc44be9f31761c574fe4c2
+* author:	Ddiaz Design (https://sketchfab.com/ddiaz-design)
+
+Model License:
+* license type:	CC-BY-NC-SA-4.0 (http://creativecommons.org/licenses/by-nc-sa/4.0/)
+* requirements:	Author must be credited. No commercial use. Modified versions must have the same license.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "2022 Audi RS e-tron GT" (https://sketchfab.com/3d-models/2022-audi-rs-e-tron-gt-e5b032ec99bc44be9f31761c574fe4c2) by Ddiaz Design (https://sketchfab.com/ddiaz-design) licensed under CC-BY-NC-SA-4.0 (http://creativecommons.org/licenses/by-nc-sa/4.0/)

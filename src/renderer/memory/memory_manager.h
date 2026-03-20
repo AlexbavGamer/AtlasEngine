@@ -8,15 +8,22 @@ namespace Atlas {
 
 class MemoryManager {
 public:
-    MemoryManager(VkPhysicalDevice physicalDevice, VkDevice device);
+    MemoryManager(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion = VK_API_VERSION_1_0);
     ~MemoryManager();
 
     struct Allocation {
+        enum class Type {
+            Unknown,
+            Buffer,
+            Image
+        };
+
         VkBuffer buffer = VK_NULL_HANDLE;
         VkImage image = VK_NULL_HANDLE;
         VmaAllocation vmaAllocation = VK_NULL_HANDLE;
         VmaAllocationInfo allocationInfo{};
         VkDeviceSize size = 0;
+        Type type = Type::Unknown;
         bool mapped = false;
         void* mappedData = nullptr;
     };
@@ -25,15 +32,20 @@ public:
     Allocation allocateImage(const VkImageCreateInfo& imageInfo, VmaMemoryUsage memoryUsage);
     void free(Allocation& allocation);
 
+    VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT);
+    void destroyImageView(VkImageView imageView);
+
     void* map(Allocation& allocation);
     void unmap(Allocation& allocation);
-
-    void flush(Allocation& allocation);
+    bool flush(Allocation& allocation, VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
 
     VkDeviceSize getTotalAllocatedMemory() const { return m_TotalAllocatedMemory; }
+    VkDevice getDevice() const { return m_Device; }
+    VmaAllocator getAllocator() const { return m_Allocator; }
 
 private:
     VmaAllocator m_Allocator = VK_NULL_HANDLE;
+    VkInstance m_Instance = VK_NULL_HANDLE;
     VkDevice m_Device = VK_NULL_HANDLE;
     VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
     VkDeviceSize m_TotalAllocatedMemory = 0;
@@ -54,16 +66,18 @@ public:
     void destroy();
 
     VkBuffer getBuffer() const { return m_Allocation.buffer; }
-    VkDeviceMemory getMemory() const { return m_Allocation.vmaAllocation ? VK_NULL_HANDLE : VK_NULL_HANDLE; }
     VkDeviceSize getSize() const { return m_Allocation.size; }
     bool isValid() const { return m_Allocation.buffer != VK_NULL_HANDLE; }
+    bool isMapped() const { return m_Allocation.mapped; }
 
     void* map();
     void unmap();
-    void flush();
+    bool flush(VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
 
     template<typename T>
     T* mapAs() { return static_cast<T*>(map()); }
+
+    MemoryManager* getMemoryManager() const { return m_MemoryManager; }
 
 private:
     MemoryManager* m_MemoryManager = nullptr;
@@ -90,10 +104,9 @@ public:
     uint32_t getWidth() const { return m_Width; }
     uint32_t getHeight() const { return m_Height; }
     bool isValid() const { return m_Allocation.image != VK_NULL_HANDLE; }
+    MemoryManager* getMemoryManager() const { return m_MemoryManager; }
 
 private:
-    void createImageView(VkFormat format);
-
     MemoryManager* m_MemoryManager = nullptr;
     MemoryManager::Allocation m_Allocation{};
     VkImageView m_ImageView = VK_NULL_HANDLE;
