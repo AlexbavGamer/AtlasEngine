@@ -26,6 +26,7 @@ struct MeshData {
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
     uint32_t vertexOffset = 0;
+    VkDevice ownerDevice = VK_NULL_HANDLE;
     std::string name;
 
     glm::vec4 baseColor = glm::vec4(1.0f);
@@ -48,6 +49,7 @@ struct MeshData {
           vertexCount(other.vertexCount),
           indexCount(other.indexCount),
           vertexOffset(other.vertexOffset),
+          ownerDevice(other.ownerDevice),
           name(std::move(other.name)),
           baseColor(other.baseColor),
           metallic(other.metallic),
@@ -61,6 +63,7 @@ struct MeshData {
         other.vertexCount = 0;
         other.indexCount = 0;
         other.vertexOffset = 0;
+        other.ownerDevice = VK_NULL_HANDLE;
         other.baseColor = glm::vec4(1.0f);
         other.metallic = 0.0f;
         other.roughness = 0.5f;
@@ -69,7 +72,7 @@ struct MeshData {
 
     MeshData& operator=(MeshData&& other) noexcept {
         if (this != &other) {
-            // Just overwrite without destroying - old handles are leaked but we avoid crashes
+            clearVulkanResources();
             vertices = std::move(other.vertices);
             indices = std::move(other.indices);
 
@@ -81,6 +84,7 @@ struct MeshData {
             vertexCount = other.vertexCount;
             indexCount = other.indexCount;
             vertexOffset = other.vertexOffset;
+            ownerDevice = other.ownerDevice;
             name = std::move(other.name);
             baseColor = other.baseColor;
             metallic = other.metallic;
@@ -94,6 +98,7 @@ struct MeshData {
             other.vertexCount = 0;
             other.indexCount = 0;
             other.vertexOffset = 0;
+            other.ownerDevice = VK_NULL_HANDLE;
             other.baseColor = glm::vec4(1.0f);
             other.metallic = 0.0f;
             other.roughness = 0.5f;
@@ -102,7 +107,14 @@ struct MeshData {
         return *this;
     }
 
-    void clearVulkanResources(VkDevice device) {
+    ~MeshData() {
+        clearVulkanResources();
+    }
+
+    void clearVulkanResources(VkDevice device = VK_NULL_HANDLE) {
+        if (device == VK_NULL_HANDLE) {
+            device = ownerDevice;
+        }
         if (device != VK_NULL_HANDLE) {
             if (vertexBuffer != VK_NULL_HANDLE) {
                 vkDestroyBuffer(device, vertexBuffer, nullptr);
@@ -123,6 +135,7 @@ struct MeshData {
         }
         vertexCount = 0;
         indexCount = 0;
+        ownerDevice = VK_NULL_HANDLE;
     }
 
     void freeCPUMemory() {
@@ -166,6 +179,7 @@ struct ModelData {
     }
 
     ~ModelData() {
+        clear();
     }
 
     void clear() {
@@ -760,13 +774,28 @@ public:
             throw std::runtime_error("failed to bind index memory!");
         }
 
+        uint32_t graphicsQueueFamily = UINT32_MAX;
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
+        for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+            if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+                graphicsQueueFamily = i;
+                break;
+            }
+        }
+        if (graphicsQueueFamily == UINT32_MAX) {
+            throw std::runtime_error("failed to find graphics queue family for upload!");
+        }
+
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkCommandPool commandPool = VK_NULL_HANDLE;
         
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        poolInfo.queueFamilyIndex = 0;
+        poolInfo.queueFamilyIndex = graphicsQueueFamily;
         
         if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
             vkFreeMemory(device, stagingIndexMemory, nullptr);
@@ -822,10 +851,12 @@ public:
         submitInfo.pCommandBuffers = &commandBuffer;
         
         VkQueue graphicsQueue = VK_NULL_HANDLE;
-        vkGetDeviceQueue(device, 0, 0, &graphicsQueue);
+        vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
         vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
         vkQueueWaitIdle(graphicsQueue);
-        
+
+        meshData.ownerDevice = device;
+
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         vkDestroyCommandPool(device, commandPool, nullptr);
 
