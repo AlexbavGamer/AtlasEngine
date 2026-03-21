@@ -19,6 +19,26 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 
+namespace {
+void setDebugName(VkDevice device, VkObjectType type, uint64_t handle, const char* name) {
+    if (!enableValidationLayers || device == VK_NULL_HANDLE || handle == 0 || !name) {
+        return;
+    }
+
+    auto fn = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(vkGetDeviceProcAddr(device, "vkSetDebugUtilsObjectNameEXT"));
+    if (!fn) {
+        return;
+    }
+
+    VkDebugUtilsObjectNameInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    info.objectType = type;
+    info.objectHandle = handle;
+    info.pObjectName = name;
+    fn(device, &info);
+}
+}
+
 namespace Atlas {
 
 const std::vector<const char*> Atlas::Renderer::validationLayers = {
@@ -751,9 +771,16 @@ void Renderer::createSwapChain() {
         throw std::runtime_error("failed to create swap chain!");
     }
 
+    setDebugName(m_Device, VK_OBJECT_TYPE_SWAPCHAIN_KHR, reinterpret_cast<uint64_t>(m_SwapChain), "Swapchain");
+
     vkGetSwapchainImagesKHR(m_Device, m_SwapChain, &imageCount, nullptr);
     m_SwapChainImages.resize(imageCount);
     vkGetSwapchainImagesKHR(m_Device, m_SwapChain, &imageCount, m_SwapChainImages.data());
+
+    for (size_t i = 0; i < m_SwapChainImages.size(); i++) {
+        std::string name = std::string("SwapchainImage[") + std::to_string(i) + "]";
+        setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_SwapChainImages[i]), name.c_str());
+    }
 
     m_SwapChainImageFormat = surfaceFormat.format;
     m_SwapChainExtent = extent;
@@ -780,6 +807,11 @@ void Renderer::createImageViews() {
 
         if (vkCreateImageView(m_Device, &createInfo, nullptr, &m_SwapChainImageViews[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create image views!");
+        }
+
+        {
+            std::string name = std::string("SwapchainImageView[") + std::to_string(i) + "]";
+            setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE_VIEW, reinterpret_cast<uint64_t>(m_SwapChainImageViews[i]), name.c_str());
         }
     }
 }
@@ -840,6 +872,8 @@ void Renderer::createRenderPass() {
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_RenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_RENDER_PASS, reinterpret_cast<uint64_t>(m_RenderPass), "SwapchainRenderPass");
 }
 
 VkFormat Renderer::findDepthFormat() {
@@ -869,6 +903,8 @@ void Renderer::createDepthResources() {
         throw std::runtime_error("failed to create depth image!");
     }
 
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_DepthImage), "DepthImage");
+
     VkMemoryRequirements memRequirements;
     vkGetImageMemoryRequirements(m_Device, m_DepthImage, &memRequirements);
 
@@ -897,6 +933,8 @@ void Renderer::createDepthResources() {
     if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_DepthImageView) != VK_SUCCESS) {
         throw std::runtime_error("failed to create depth image view!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE_VIEW, reinterpret_cast<uint64_t>(m_DepthImageView), "DepthImageView");
 }
 
 void Renderer::createOffscreenRenderPass() {
@@ -955,6 +993,8 @@ void Renderer::createOffscreenRenderPass() {
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_OffscreenRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create offscreen render pass!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_RENDER_PASS, reinterpret_cast<uint64_t>(m_OffscreenRenderPass), "OffscreenRenderPass");
 }
 
 void Renderer::createPickingRenderPass() {
@@ -1013,6 +1053,8 @@ void Renderer::createPickingRenderPass() {
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_PickingRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create picking render pass!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_RENDER_PASS, reinterpret_cast<uint64_t>(m_PickingRenderPass), "PickingRenderPass");
 }
 
 void Renderer::createGraphicsPipeline() {
@@ -1164,6 +1206,8 @@ void Renderer::createGraphicsPipeline() {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
 
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipeline), "PBRPipeline");
+
     // Transparent pipeline: alpha blending + depth test, but no depth writes.
     colorBlendAttachment.blendEnable = VK_TRUE;
     colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -1178,6 +1222,8 @@ void Renderer::createGraphicsPipeline() {
     if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineBlend) != VK_SUCCESS) {
         throw std::runtime_error("failed to create transparent graphics pipeline!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineBlend), "PBRPipeline_AlphaBlend");
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
@@ -1309,6 +1355,8 @@ void Renderer::createPickingPipeline() {
         vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
         throw std::runtime_error("failed to create picking pipeline!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_PickingPipeline), "PickingPipeline");
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
@@ -1442,6 +1490,8 @@ void Renderer::createOutlinePipeline() {
         throw std::runtime_error("failed to create outline pipeline!");
     }
 
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_OutlinePipeline), "OutlinePipeline");
+
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
 }
@@ -1464,6 +1514,8 @@ void Renderer::createLightBuffer() {
     if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &m_LightBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create light buffer!");
     }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(m_LightBuffer), "LightBuffer");
 
     VkMemoryRequirements memRequirements;
     vkGetBufferMemoryRequirements(m_Device, m_LightBuffer, &memRequirements);

@@ -99,17 +99,25 @@ EditorApp::EditorApp() {
 
 EditorApp::~EditorApp() {
     AsyncLoader::getInstance().shutdown();
+
+    // UI owns ImGui-created descriptor sets (e.g. thumbnails). Destroy it while ImGui backend is still alive.
+    m_UIManager.reset();
+
     m_Viewport.releaseTexture();
-    if (m_ImGuiManager) {
+
+    if (m_ImGuiManager && m_Renderer) {
         m_ImGuiManager->cleanup(m_Renderer->getDevice());
     }
+
     if (m_AssetManager) {
         m_AssetManager->shutdown();
     }
+
     if (m_Renderer) {
         m_Renderer->shutdown();
     }
 }
+
 
 void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
     if (!m_Renderer) return;
