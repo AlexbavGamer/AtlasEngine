@@ -385,14 +385,14 @@ void UIManager::render(ImTextureID viewportTexture) {
         auto& registry = m_Scene->getRegistry();
         for (size_t i = 0; i < m_SelectedEntities.size(); ) {
             Entity e = m_SelectedEntities[i];
-            if (e == entt::null || !registry.valid(e)) {
+            if (e == entt::null || !registry.valid(e) || registry.all_of<Atlas::ECS::EditorHiddenComponent>(e)) {
                 m_SelectedEntities.erase(m_SelectedEntities.begin() + static_cast<long long>(i));
             } else {
                 ++i;
             }
         }
 
-        if (m_PrimarySelected != entt::null && !registry.valid(m_PrimarySelected)) {
+        if (m_PrimarySelected != entt::null && (!registry.valid(m_PrimarySelected) || registry.all_of<Atlas::ECS::EditorHiddenComponent>(m_PrimarySelected))) {
             m_PrimarySelected = entt::null;
         }
         if (m_PrimarySelected == entt::null && !m_SelectedEntities.empty()) {
@@ -811,6 +811,10 @@ void UIManager::renderHierarchy() {
         auto& registry = m_Scene->getRegistry();
 
         const auto renderEntityRecursively = [&](auto&& self, entt::entity entity, std::vector<Entity>& pendingDelete) -> void {
+            if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(entity)) {
+                return;
+            }
+
             std::string entityName;
             if (registry.all_of<Atlas::ECS::TagComponent>(entity)) {
                 entityName = registry.get<Atlas::ECS::TagComponent>(entity).name;
@@ -838,6 +842,58 @@ void UIManager::renderHierarchy() {
                 bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(entity);
                 if (!isCameraEntity) {
                     pendingDelete.push_back(entity);
+                }
+            }
+
+            // Drag/drop reparenting
+            {
+                uint32_t id = static_cast<uint32_t>(entity);
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                    ImGui::SetDragDropPayload("ENTITY", &id, sizeof(id));
+                    ImGui::TextUnformatted(entityName.c_str());
+                    ImGui::EndDragDropSource();
+                }
+
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY")) {
+                        if (payload->DataSize == sizeof(uint32_t) && m_Scene) {
+                            uint32_t draggedId = *static_cast<const uint32_t*>(payload->Data);
+                            Entity dragged = static_cast<Entity>(draggedId);
+
+                            if (dragged != entt::null && dragged != entity && registry.valid(dragged)) {
+                                // Prevent cycles: don't parent under own descendant.
+                                bool cycle = false;
+                                Entity p = entity;
+                                while (registry.all_of<Atlas::ECS::ParentComponent>(p)) {
+                                    Entity pp = registry.get<Atlas::ECS::ParentComponent>(p).parent;
+                                    if (pp == entt::null || !registry.valid(pp)) break;
+                                    if (pp == dragged) {
+                                        cycle = true;
+                                        break;
+                                    }
+                                    p = pp;
+                                }
+
+                                if (!cycle) {
+                                    Entity beforeParent = entt::null;
+                                    if (registry.all_of<Atlas::ECS::ParentComponent>(dragged)) {
+                                        beforeParent = registry.get<Atlas::ECS::ParentComponent>(dragged).parent;
+                                    }
+
+                                    if (beforeParent != entity) {
+                                        m_Scene->setParent(dragged, entity);
+
+                                        auto cmd = std::make_unique<ReparentCommand>();
+                                        cmd->child = dragged;
+                                        cmd->beforeParent = beforeParent;
+                                        cmd->afterParent = entity;
+                                        pushCommand(std::move(cmd));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
                 }
             }
 
@@ -875,13 +931,63 @@ void UIManager::renderHierarchy() {
             clipper.End();
         }
 
-        for (auto entity : pendingDelete) {
-            if (m_Scene->getRegistry().valid(entity)) {
-                if (isSelected(entity)) {
-                    toggleSelectedEntity(entity);
+        // Drop on empty space to unparent
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY")) {
+                if (payload->DataSize == sizeof(uint32_t) && m_Scene) {
+                    uint32_t draggedId = *static_cast<const uint32_t*>(payload->Data);
+                    Entity dragged = static_cast<Entity>(draggedId);
+                    if (dragged != entt::null && registry.valid(dragged)) {
+                        Entity beforeParent = entt::null;
+                        if (registry.all_of<Atlas::ECS::ParentComponent>(dragged)) {
+                            beforeParent = registry.get<Atlas::ECS::ParentComponent>(dragged).parent;
+                        }
+
+                        if (beforeParent != entt::null) {
+                            m_Scene->setParent(dragged, entt::null);
+
+                            auto cmd = std::make_unique<ReparentCommand>();
+                            cmd->child = dragged;
+                            cmd->beforeParent = beforeParent;
+                            cmd->afterParent = entt::null;
+                            pushCommand(std::move(cmd));
+                        }
+                    }
                 }
-                m_Scene->destroyEntity(entity);
             }
+            ImGui::EndDragDropTarget();
+        }
+
+        for (auto entity : pendingDelete) {
+            if (!m_Scene->getRegistry().valid(entity)) continue;
+
+            // Soft delete: hide entity subtree (keeps GPU resources alive, supports undo).
+            std::vector<Entity> subtree;
+            subtree.reserve(32);
+
+            const auto collect = [&](auto&& self, Entity e) -> void {
+                if (e == entt::null) return;
+                if (!registry.valid(e)) return;
+
+                subtree.push_back(e);
+                for (auto c : m_Scene->getChildren(e)) {
+                    self(self, c);
+                }
+            };
+
+            collect(collect, entity);
+
+            for (Entity e : subtree) {
+                if (e == entt::null || !registry.valid(e)) continue;
+                registry.emplace_or_replace<Atlas::ECS::EditorHiddenComponent>(e, Atlas::ECS::EditorHiddenComponent{});
+                if (isSelected(e)) {
+                    toggleSelectedEntity(e);
+                }
+            }
+
+            auto cmd = std::make_unique<SoftDeleteCommand>();
+            cmd->entities = subtree;
+            pushCommand(std::move(cmd));
         }
     }
 
@@ -896,7 +1002,45 @@ void UIManager::renderProperties() {
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
         ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
 
-        bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
+        // Name / tag (undoable)
+        {
+            auto& registry = m_Scene->getRegistry();
+            if (registry.all_of<Atlas::ECS::TagComponent>(selectedEntity)) {
+                auto& tag = registry.get<Atlas::ECS::TagComponent>(selectedEntity);
+                uint32_t sid = static_cast<uint32_t>(selectedEntity);
+
+                if (m_PropNameEditEntityId != sid) {
+                    m_PropNameEditEntityId = sid;
+                    m_PropNameEditing = false;
+                    m_PropNameBefore.clear();
+                    std::memset(m_PropNameBuf, 0, sizeof(m_PropNameBuf));
+                    if (!tag.name.empty()) {
+                        std::strncpy(m_PropNameBuf, tag.name.c_str(), sizeof(m_PropNameBuf) - 1);
+                    }
+                }
+
+                bool changed = ImGui::InputText("Name##entity", m_PropNameBuf, sizeof(m_PropNameBuf));
+                if (ImGui::IsItemActivated()) {
+                    m_PropNameEditing = true;
+                    m_PropNameBefore = tag.name;
+                }
+                if (changed) {
+                    tag.name = std::string(m_PropNameBuf);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit() && m_PropNameEditing) {
+                    m_PropNameEditing = false;
+                    if (m_PropNameBefore != tag.name) {
+                        auto cmd = std::make_unique<RenameCommand>();
+                        cmd->entity = selectedEntity;
+                        cmd->before = m_PropNameBefore;
+                        cmd->after = tag.name;
+                        pushCommand(std::move(cmd));
+                    }
+                }
+            }
+        }
+
+bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
         if (isCameraEntity) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Camera entity cannot be deleted");
         }
@@ -904,7 +1048,32 @@ void UIManager::renderProperties() {
         bool deleted = false;
         ImGui::BeginDisabled(isCameraEntity);
         if (ImGui::Button("Delete Entity")) {
-            m_Scene->destroyEntity(selectedEntity);
+            auto& registry = m_Scene->getRegistry();
+
+            std::vector<Entity> subtree;
+            subtree.reserve(32);
+
+            const auto collect = [&](auto&& self, Entity e) -> void {
+                if (e == entt::null) return;
+                if (!registry.valid(e)) return;
+
+                subtree.push_back(e);
+                for (auto c : m_Scene->getChildren(e)) {
+                    self(self, c);
+                }
+            };
+
+            collect(collect, selectedEntity);
+
+            for (Entity e : subtree) {
+                if (e == entt::null || !registry.valid(e)) continue;
+                registry.emplace_or_replace<Atlas::ECS::EditorHiddenComponent>(e, Atlas::ECS::EditorHiddenComponent{});
+            }
+
+            auto cmd = std::make_unique<SoftDeleteCommand>();
+            cmd->entities = subtree;
+            pushCommand(std::move(cmd));
+
             clearSelection();
             selectedEntity = entt::null;
             deleted = true;
@@ -1124,6 +1293,8 @@ void UIManager::renderProperties() {
 
                         if (m_MaterialEditEntityId != m_MaterialInspectEntityId) {
                             m_MaterialEditEntityId = m_MaterialInspectEntityId;
+                            m_MatScalarEditing = false;
+                            m_MatScalarEntity = entt::null;
 
                             auto syncBuf = [](char* dst, size_t dstSize, const std::string& src) {
                                 std::memset(dst, 0, dstSize);
@@ -1145,12 +1316,73 @@ void UIManager::renderProperties() {
                         ImGui::SameLine();
                         ImGui::Text("Editing material on entity %u", static_cast<uint32_t>(matEntity));
 
+                        auto scalarFromMat = [&](const Atlas::ECS::MaterialComponent& m) -> MaterialScalarState {
+                            MaterialScalarState s;
+                            s.baseColor = m.baseColor;
+                            s.metallic = m.metallic;
+                            s.roughness = m.roughness;
+                            s.ambientOcclusion = m.ambientOcclusion;
+                            s.emissiveFactor = m.emissiveFactor;
+                            s.alphaMode = m.alphaMode;
+                            s.alphaCutoff = m.alphaCutoff;
+                            s.doubleSided = m.doubleSided;
+                            return s;
+                        };
+
+                        auto scalarDifferent = [&](const MaterialScalarState& a, const MaterialScalarState& b) -> bool {
+                            const float eps = 1e-4f;
+                            return glm::length(a.baseColor - b.baseColor) > eps ||
+                                   std::abs(a.metallic - b.metallic) > eps ||
+                                   std::abs(a.roughness - b.roughness) > eps ||
+                                   std::abs(a.ambientOcclusion - b.ambientOcclusion) > eps ||
+                                   glm::length(a.emissiveFactor - b.emissiveFactor) > eps ||
+                                   a.alphaMode != b.alphaMode ||
+                                   std::abs(a.alphaCutoff - b.alphaCutoff) > eps ||
+                                   a.doubleSided != b.doubleSided;
+                        };
+
+                        auto beginMatScalarEdit = [&]() {
+                            if (!m_MatScalarEditing || m_MatScalarEntity != matEntity) {
+                                m_MatScalarEditing = true;
+                                m_MatScalarEntity = matEntity;
+                                m_MatScalarBefore = scalarFromMat(mat);
+                            }
+                        };
+
+                        auto endMatScalarEdit = [&]() {
+                            if (!m_MatScalarEditing || m_MatScalarEntity != matEntity) return;
+                            MaterialScalarState after = scalarFromMat(mat);
+                            if (scalarDifferent(m_MatScalarBefore, after)) {
+                                auto cmd = std::make_unique<MaterialScalarCommand>();
+                                cmd->entity = matEntity;
+                                cmd->before = m_MatScalarBefore;
+                                cmd->after = after;
+                                pushCommand(std::move(cmd));
+                            }
+                            m_MatScalarEditing = false;
+                            m_MatScalarEntity = entt::null;
+                        };
+
                         ImGui::SeparatorText("Surface");
                         ImGui::ColorEdit4("Base Color##Mat", &mat.baseColor.x, ImGuiColorEditFlags_Float);
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
+
                         ImGui::DragFloat("Metallic##Mat", &mat.metallic, 0.01f, 0.0f, 1.0f);
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
+
                         ImGui::DragFloat("Roughness##Mat", &mat.roughness, 0.01f, 0.0f, 1.0f);
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
+
                         ImGui::DragFloat("AO##Mat", &mat.ambientOcclusion, 0.01f, 0.0f, 1.0f);
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
+
                         ImGui::ColorEdit3("Emissive Factor##Mat", &mat.emissiveFactor.x, ImGuiColorEditFlags_Float);
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
                         ImGui::SeparatorText("Alpha");
                         const char* alphaItems[] = {"Opaque", "Mask", "Blend"};
@@ -1161,10 +1393,18 @@ void UIManager::renderProperties() {
                             else if (alphaIdx == 2) mat.alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Blend;
                             else mat.alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Opaque;
                         }
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
+
                         if (mat.alphaMode == Atlas::ECS::MaterialComponent::AlphaMode::Mask) {
                             ImGui::DragFloat("Alpha Cutoff##Mat", &mat.alphaCutoff, 0.01f, 0.0f, 1.0f);
+                            if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                            if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
                         }
+
                         ImGui::Checkbox("Double Sided##Mat", &mat.doubleSided);
+                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
                         auto editTexture = [&](const char* label, const char* dialogId, const char* filter,
                                                Atlas::AssetManager::TextureColorSpace colorSpace,

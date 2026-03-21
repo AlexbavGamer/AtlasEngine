@@ -2229,6 +2229,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PickingPipeline);
 
             for (auto entity : meshView) {
+                if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
+                    continue;
+                }
+
                 auto& mesh = registry.get<Mesh>(entity);
                 if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
                     continue;
@@ -2317,6 +2321,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             std::vector<DrawItem> transparentItems;
 
             for (auto entity : meshView) {
+                if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
+                    continue;
+                }
+
                 auto& mesh = registry.get<Mesh>(entity);
                 if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
                     continue;

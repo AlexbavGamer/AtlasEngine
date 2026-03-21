@@ -200,6 +200,102 @@ bool showNewProjectDialog = false;
         void redo(Atlas::Scene* scene) override { apply(scene, after); }
     };
 
+    struct RenameCommand final : UndoCommand {
+        Entity entity = entt::null;
+        std::string before;
+        std::string after;
+
+        void apply(Atlas::Scene* scene, const std::string& name) {
+            if (!scene) return;
+            auto& registry = scene->getRegistry();
+            if (entity == entt::null || !registry.valid(entity)) return;
+
+            if (!registry.all_of<Atlas::ECS::TagComponent>(entity)) {
+                registry.emplace<Atlas::ECS::TagComponent>(entity, name);
+            } else {
+                registry.get<Atlas::ECS::TagComponent>(entity).name = name;
+            }
+        }
+
+        void undo(Atlas::Scene* scene) override { apply(scene, before); }
+        void redo(Atlas::Scene* scene) override { apply(scene, after); }
+    };
+
+    struct ReparentCommand final : UndoCommand {
+        Entity child = entt::null;
+        Entity beforeParent = entt::null;
+        Entity afterParent = entt::null;
+
+        void undo(Atlas::Scene* scene) override {
+            if (!scene) return;
+            scene->setParent(child, beforeParent);
+        }
+
+        void redo(Atlas::Scene* scene) override {
+            if (!scene) return;
+            scene->setParent(child, afterParent);
+        }
+    };
+
+    struct SoftDeleteCommand final : UndoCommand {
+        std::vector<Entity> entities;
+
+        void setHidden(Atlas::Scene* scene, bool hidden) {
+            if (!scene) return;
+            auto& registry = scene->getRegistry();
+            for (Entity e : entities) {
+                if (e == entt::null || !registry.valid(e)) continue;
+                if (hidden) {
+                    registry.emplace_or_replace<Atlas::ECS::EditorHiddenComponent>(e, Atlas::ECS::EditorHiddenComponent{});
+                } else {
+                    if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(e)) {
+                        registry.remove<Atlas::ECS::EditorHiddenComponent>(e);
+                    }
+                }
+            }
+        }
+
+        void undo(Atlas::Scene* scene) override { setHidden(scene, false); }
+        void redo(Atlas::Scene* scene) override { setHidden(scene, true); }
+    };
+
+    struct MaterialScalarState {
+        glm::vec4 baseColor{1.0f};
+        float metallic = 0.0f;
+        float roughness = 0.5f;
+        float ambientOcclusion = 1.0f;
+        glm::vec3 emissiveFactor{0.0f};
+        Atlas::ECS::MaterialComponent::AlphaMode alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Opaque;
+        float alphaCutoff = 0.5f;
+        bool doubleSided = false;
+    };
+
+    struct MaterialScalarCommand final : UndoCommand {
+        Entity entity = entt::null;
+        MaterialScalarState before;
+        MaterialScalarState after;
+
+        static void apply(Atlas::Scene* scene, Entity e, const MaterialScalarState& s) {
+            if (!scene) return;
+            auto& registry = scene->getRegistry();
+            if (e == entt::null || !registry.valid(e)) return;
+            if (!registry.all_of<Atlas::ECS::MaterialComponent>(e)) return;
+
+            auto& mat = registry.get<Atlas::ECS::MaterialComponent>(e);
+            mat.baseColor = s.baseColor;
+            mat.metallic = s.metallic;
+            mat.roughness = s.roughness;
+            mat.ambientOcclusion = s.ambientOcclusion;
+            mat.emissiveFactor = s.emissiveFactor;
+            mat.alphaMode = s.alphaMode;
+            mat.alphaCutoff = s.alphaCutoff;
+            mat.doubleSided = s.doubleSided;
+        }
+
+        void undo(Atlas::Scene* scene) override { apply(scene, entity, before); }
+        void redo(Atlas::Scene* scene) override { apply(scene, entity, after); }
+    };
+
     void pushCommand(std::unique_ptr<UndoCommand> cmd);
 
     std::vector<std::unique_ptr<UndoCommand>> m_UndoStack;
@@ -225,6 +321,16 @@ bool showNewProjectDialog = false;
     bool m_PropTransformEditing = false;
     Entity m_PropTransformEntity = entt::null;
     TransformState m_PropTransformBefore;
+
+    uint32_t m_PropNameEditEntityId = 0;
+    bool m_PropNameEditing = false;
+    std::string m_PropNameBefore;
+    char m_PropNameBuf[256] = {};
+
+    bool m_MatScalarEditing = false;
+    Entity m_MatScalarEntity = entt::null;
+    MaterialScalarState m_MatScalarBefore;
+
 
     // Selection helpers
     void setSelectionSingle(Entity entity);

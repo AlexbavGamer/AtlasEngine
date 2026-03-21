@@ -139,4 +139,9 @@ struct ChildrenComponent {
     std::vector<entt::entity> children;
 };
 
+// Editor-only state used for soft deletes/hiding entities without releasing GPU resources.
+struct EditorHiddenComponent {
+    bool hidden = true;
+};
+
 }}
