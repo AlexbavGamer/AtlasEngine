@@ -5,6 +5,7 @@
 void ProjectManager::createNewProject(const std::string& name, const std::string& path) {
     currentProject = Project(name, path);
     hasCurrentProject = true;
+    m_AssetTreeCacheValid = false;
     ensureDirectories();
 }
 
@@ -13,7 +14,8 @@ void ProjectManager::openProject(const std::string& projectPath) {
     currentProject.assetsPath = projectPath + "/assets";
     currentProject.name = fs::path(projectPath).filename().string();
     hasCurrentProject = true;
-    
+    m_AssetTreeCacheValid = false;
+
     if (!fs::exists(currentProject.assetsPath)) {
         ensureDirectories();
     }
@@ -26,6 +28,7 @@ void ProjectManager::saveProject() {
 void ProjectManager::closeProject() {
     hasCurrentProject = false;
     currentProject = Project();
+    m_AssetTreeCacheValid = false;
 }
 
 void ProjectManager::ensureDirectories() {
@@ -97,6 +100,10 @@ std::string ProjectManager::getAssetFullPath(const std::string& relativePath) {
     return currentProject.assetsPath + "/" + relativePath;
 }
 
+void ProjectManager::invalidateAssetTreeCache() {
+    m_AssetTreeCacheValid = false;
+}
+
 ProjectManager::FileEntry ProjectManager::getAssetTree(const std::string& subfolder) {
     ProjectManager::FileEntry root;
     root.name = subfolder.empty() ? "assets" : subfolder;
@@ -104,69 +111,103 @@ ProjectManager::FileEntry ProjectManager::getAssetTree(const std::string& subfol
     root.relativePath = subfolder;
     root.isFolder = true;
 
-    // std::cout << "\n[getAssetTree] level = \"" << subfolder << "\"\n";
-    // std::cout << "  assetsPath     = " << currentProject.assetsPath << "\n";
-    // std::cout << "  fullPath       = " << root.fullPath << "\n";
+    if (!hasCurrentProject) {
+        return root;
+    }
+
+    if (!m_AssetTreeCacheValid) {
+        m_AssetTreeCache = buildAssetTree("");
+        m_AssetTreeCacheValid = true;
+    }
+
+    if (subfolder.empty()) {
+        return m_AssetTreeCache;
+    }
+
+    // Find requested node in the cached tree.
+    ProjectManager::FileEntry current = m_AssetTreeCache;
+    if (subfolder.empty()) {
+        return current;
+    }
+
+    std::string token;
+    std::vector<std::string> parts;
+    for (char c : subfolder) {
+        if (c == '/' || c == '\\') {
+            if (!token.empty()) {
+                parts.push_back(token);
+                token.clear();
+            }
+        } else {
+            token.push_back(c);
+        }
+    }
+    if (!token.empty()) {
+        parts.push_back(token);
+    }
+
+    for (const auto& folderName : parts) {
+        bool found = false;
+        for (auto& child : current.children) {
+            if (child.name == folderName && child.isFolder) {
+                current = child;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return m_AssetTreeCache;
+        }
+    }
+
+    return current;
+}
+
+ProjectManager::FileEntry ProjectManager::buildAssetTree(const std::string& subfolder) {
+    ProjectManager::FileEntry root;
+    root.name = subfolder.empty() ? "assets" : subfolder;
+    root.fullPath = currentProject.assetsPath + (subfolder.empty() ? "" : "/" + subfolder);
+    root.relativePath = subfolder;
+    root.isFolder = true;
 
     if (!hasCurrentProject) {
-        // std::cout << "  → sem projeto aberto\n";
         return root;
     }
     if (!fs::exists(root.fullPath)) {
-        // std::cout << "  → caminho NÃO existe\n";
         return root;
     }
     if (!fs::is_directory(root.fullPath)) {
-        // std::cout << "  → NÃO é diretório\n";
         return root;
     }
 
     std::vector<ProjectManager::FileEntry> children;
-
-    int count_visible = 0;
-    int count_hidden  = 0;
 
     for (const auto& entry : fs::directory_iterator(root.fullPath)) {
         std::string name = entry.path().filename().string();
 
         bool hidden = name.empty() || name[0] == '.';
         if (hidden) {
-            count_hidden++;
-            // std::cout << "  Ignorando oculto: " << name << "\n";
             continue;
         }
 
-        count_visible++;
-
         ProjectManager::FileEntry child;
-        child.name         = std::move(name);
-        child.fullPath     = entry.path().string();
+        child.name = std::move(name);
+        child.fullPath = entry.path().string();
         child.relativePath = subfolder.empty() ? child.name : subfolder + "/" + child.name;
-        child.isFolder     = entry.is_directory();
-
-        // std::cout << "  +" << (child.isFolder ? "[DIR ]" : "[FILE]") 
-        //           << " " << child.name 
-        //           << "  → rel: " << child.relativePath << "\n";
+        child.isFolder = entry.is_directory();
 
         if (child.isFolder) {
-            // std::cout << "     ↓ recursão\n";
-            child = getAssetTree(child.relativePath);
+            child = buildAssetTree(child.relativePath);
         }
 
         children.push_back(std::move(child));
     }
 
-    // std::cout << "  Ocultos ignorados: " << count_hidden << "\n";
-    // std::cout << "  Itens visíveis encontrados: " << count_visible << "\n";
-
-    // sort ...
     std::sort(children.begin(), children.end(), [](const ProjectManager::FileEntry& a, const ProjectManager::FileEntry& b) {
         if (a.isFolder != b.isFolder) return a.isFolder;
         return a.name < b.name;
     });
 
     root.children = std::move(children);
-    // std::cout << "[getAssetTree] Retornando " << root.children.size() << " filhos\n\n";
-
     return root;
 }

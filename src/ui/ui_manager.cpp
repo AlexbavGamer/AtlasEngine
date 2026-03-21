@@ -1387,6 +1387,10 @@ void UIManager::renderContentExplorer() {
                 std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, ec);
             }
         }
+
+        if (!ec && projectManager) {
+            projectManager->invalidateAssetTreeCache();
+        }
     };
 
     auto drawCtxMenu = [&](bool hasTarget) {
@@ -1453,6 +1457,9 @@ void UIManager::renderContentExplorer() {
             std::filesystem::path p = dstDir / "New Folder";
             p = makeUniquePath(p);
             std::filesystem::create_directory(p, ec);
+            if (!ec && projectManager) {
+                projectManager->invalidateAssetTreeCache();
+            }
         }
     };
 
@@ -1633,6 +1640,9 @@ void UIManager::renderContentExplorer() {
             std::filesystem::path src(m_ContentCtxTarget.fullPath);
             std::filesystem::path dst = src.parent_path() / std::string(m_RenameAssetBuf);
             std::filesystem::rename(src, dst, ec);
+            if (!ec && projectManager) {
+                projectManager->invalidateAssetTreeCache();
+            }
             m_ShowRenameAssetPopup = false;
             ImGui::CloseCurrentPopup();
         }
@@ -1656,6 +1666,9 @@ void UIManager::renderContentExplorer() {
                 std::filesystem::remove_all(p, ec);
             } else {
                 std::filesystem::remove(p, ec);
+            }
+            if (!ec && projectManager) {
+                projectManager->invalidateAssetTreeCache();
             }
             m_ShowDeleteAssetPopup = false;
             ImGui::CloseCurrentPopup();

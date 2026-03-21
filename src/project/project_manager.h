@@ -44,12 +44,20 @@ public:
         bool isFolder;
         std::vector<FileEntry> children;
     };
+
+    // Returns a cached snapshot of the assets tree.
+    // Call invalidateAssetTreeCache() after filesystem changes.
     FileEntry getAssetTree(const std::string& subfolder = "");
+    void invalidateAssetTreeCache();
     
 private:
     Project currentProject;
     bool hasCurrentProject = false;
-    
+
+    FileEntry buildAssetTree(const std::string& subfolder);
+    FileEntry m_AssetTreeCache{};
+    bool m_AssetTreeCacheValid = false;
+
     void ensureDirectories();
     std::vector<std::string> filterFilesByExtension(const std::vector<fs::path>& files, const std::vector<std::string>& extensions);
 };
