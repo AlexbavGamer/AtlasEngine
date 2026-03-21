@@ -427,7 +427,7 @@ void EditorApp::run() {
             m_Renderer->beginFrame();
         }
 
-        if (m_CameraController && !m_UIManager->isGizmoUsing()) {
+        if (m_CameraController && !m_UIManager->isGizmoUsing() && m_UIManager->allowViewportCameraInput()) {
             m_CameraController->update(deltaTime);
         }
 

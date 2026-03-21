@@ -47,8 +47,9 @@ public:
 
     TransformMode getTransformMode() const { return m_TransformMode; }
     bool isGizmoUsing() const { return m_GizmoUsing; }
+    bool allowViewportCameraInput() const { return m_ViewportAllowCameraInput; }
 
-    void updateProfiler(float deltaTime);
+void updateProfiler(float deltaTime);
     void renderProfilerWindow();
     void renderCameraWindow();
 
@@ -140,7 +141,9 @@ private:
     uint32_t m_ViewportPickY = 0;
     bool m_ViewportPickAdditive = false;
 
-    bool showNewProjectDialog = false;
+    // Cached from last frame's Viewport window.
+    bool m_ViewportAllowCameraInput = false;
+bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
     char newProjectName[256] = "MyProject";
     char newProjectPath[512] = ".";

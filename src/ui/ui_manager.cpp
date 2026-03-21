@@ -562,6 +562,13 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImVec2 imageMin = ImGui::GetCursorScreenPos();
     ImGui::Image(viewportTexture, contentSize);
 
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const bool viewportHovered = ImGui::IsItemHovered();
+        const bool viewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        m_ViewportAllowCameraInput = viewportHovered && viewportFocused && !io.WantTextInput;
+    }
+
     // Scroll-wheel speed adjustment while hovering viewport
     {
         ImGuiIO& io = ImGui::GetIO();
@@ -847,13 +854,25 @@ void UIManager::renderHierarchy() {
 
         auto roots = m_Scene->getRootEntities();
         if (roots.empty()) {
-            for (auto entity : m_Scene->getAllEntities()) {
-                renderEntityRecursively(renderEntityRecursively, entity, pendingDelete);
+            auto all = m_Scene->getAllEntities();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(all.size()));
+            while (clipper.Step()) {
+                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                    renderEntityRecursively(renderEntityRecursively, all[static_cast<size_t>(i)], pendingDelete);
+                }
             }
+            clipper.End();
         } else {
-            for (auto root : roots) {
-                renderEntityRecursively(renderEntityRecursively, root, pendingDelete);
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(roots.size()));
+            while (clipper.Step()) {
+                for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                    renderEntityRecursively(renderEntityRecursively, roots[static_cast<size_t>(i)], pendingDelete);
+                }
             }
+            clipper.End();
         }
 
         for (auto entity : pendingDelete) {
@@ -1475,12 +1494,9 @@ void UIManager::renderContentExplorer() {
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(gap * 0.5f, gap * 0.5f));
 
     if (ImGui::BeginTable("##content_grid", cols, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX)) {
-        bool hasItems = false;
+        bool hasItems = !currentFolder.children.empty();
 
-        for (const auto& child : currentFolder.children) {
-            hasItems = true;
-
-            ImGui::TableNextColumn();
+        auto drawTile = [&](const ::ProjectManager::FileEntry& child) {
             ImGui::PushID(child.relativePath.c_str());
 
             ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1605,6 +1621,28 @@ void UIManager::renderContentExplorer() {
             }
 
             ImGui::PopID();
+        };
+
+        if (hasItems) {
+            const int itemCount = static_cast<int>(currentFolder.children.size());
+            const int rows = (itemCount + cols - 1) / cols;
+
+            ImGuiListClipper clipper;
+            clipper.Begin(rows);
+            while (clipper.Step()) {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                    ImGui::TableNextRow();
+                    for (int col = 0; col < cols; ++col) {
+                        const int idx = row * cols + col;
+                        ImGui::TableSetColumnIndex(col);
+                        if (idx >= itemCount) {
+                            continue;
+                        }
+                        drawTile(currentFolder.children[static_cast<size_t>(idx)]);
+                    }
+                }
+            }
+            clipper.End();
         }
 
         if (!hasItems) {
