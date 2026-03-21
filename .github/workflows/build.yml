@@ -54,7 +54,9 @@ jobs:
         run: |
           mkdir -p dist/linux
           cp build/AtlasEngine dist/linux/
-
+          if [ -d build/shaders ]; then
+            cp -r build/shaders dist/linux/
+          fi
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
