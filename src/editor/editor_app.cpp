@@ -563,8 +563,10 @@ void EditorApp::run() {
             m_Renderer->beginFrame();
         }
 
-        if (m_CameraController && !m_UIManager->isGizmoUsing() && m_UIManager->allowViewportCameraInput()) {
-            m_CameraController->update(deltaTime);
+        if (m_CameraController && !m_UIManager->isGizmoUsing()) {
+            bool uiAllow = (m_UIManager && m_UIManager->allowViewportCameraInput());
+            bool allow = uiAllow || m_CameraController->isCapturing();
+            m_CameraController->update(deltaTime, allow);
         }
 
         m_ImGuiManager->newFrame();

@@ -8,7 +8,10 @@ class CameraController {
 public:
     CameraController(GLFWwindow* window, glm::vec3& cameraPosition, glm::vec3& cameraTarget, glm::vec3& cameraUp);
 
-    void update(float deltaTime);
+    void update(float deltaTime, bool allowInput);
+
+    bool isCapturing() const { return isRightMouseDown; }
+
 
     // Movement
     void setSpeed(float speed) { moveSpeed = speed; }
@@ -57,6 +60,7 @@ private:
     bool m_Enabled = true;
 
     bool isRightMouseDown = false;
+    bool m_RmbWasDown = false;
     float lastMouseX = 0.0f;
     float lastMouseY = 0.0f;
 

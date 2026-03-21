@@ -11,15 +11,32 @@ glm::vec3 CameraController::getCameraRight() const {
     return glm::normalize(glm::cross(getCameraForward(), up));
 }
 
-void CameraController::update(float deltaTime) {
+void CameraController::update(float deltaTime, bool allowInput) {
     if (!window || !m_Enabled) return;
 
-    double mouseX, mouseY;
+    double mouseX = 0.0;
+    double mouseY = 0.0;
     glfwGetCursorPos(window, &mouseX, &mouseY);
 
-    const bool rightMouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    const bool rawRmbDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 
-    if (rightMouseDown && !isRightMouseDown) {
+    if (!allowInput) {
+        // If we were capturing the cursor, always release it.
+        if (isRightMouseDown) {
+            isRightMouseDown = false;
+            if (lockCursorOnLook) {
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            }
+        }
+
+        // Track raw state so entering the viewport with RMB already held
+        // doesn't start capture until the next fresh click.
+        m_RmbWasDown = rawRmbDown;
+        return;
+    }
+
+    // Capture/release transitions.
+    if (rawRmbDown && !m_RmbWasDown) {
         isRightMouseDown = true;
         lastMouseX = static_cast<float>(mouseX);
         lastMouseY = static_cast<float>(mouseY);
@@ -31,12 +48,14 @@ void CameraController::update(float deltaTime) {
             lastMouseX = static_cast<float>(mouseX);
             lastMouseY = static_cast<float>(mouseY);
         }
-    } else if (!rightMouseDown && isRightMouseDown) {
+    } else if (!rawRmbDown && isRightMouseDown) {
         isRightMouseDown = false;
         if (lockCursorOnLook) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         }
     }
+
+    m_RmbWasDown = rawRmbDown;
 
     if (isRightMouseDown) {
         float deltaX = static_cast<float>(mouseX) - lastMouseX;
