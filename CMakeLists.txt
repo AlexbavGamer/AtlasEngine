@@ -292,13 +292,17 @@ target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 # ============================================================================
 # Shader compilation
 # ============================================================================
+# Prefer Vulkan SDK glslc, but fall back to PATH.
 find_program(GLSLC_EXECUTABLE NAMES glslc PATHS
     "$ENV{VULKAN_SDK}/Bin"
     "$ENV{VULKAN_SDK}/bin"
     "/usr/bin"
     "/usr/local/bin"
-    NO_DEFAULT_PATH
 )
+
+if(NOT GLSLC_EXECUTABLE)
+    find_program(GLSLC_EXECUTABLE NAMES glslc)
+endif()
 
 set(SHADER_SOURCE_DIR "${CMAKE_SOURCE_DIR}/shaders")
 set(SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
