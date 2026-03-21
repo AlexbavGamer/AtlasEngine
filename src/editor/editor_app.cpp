@@ -4,6 +4,7 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 
 #include <ImGuizmo.h>
 #include <imgui.h>
@@ -175,6 +176,23 @@ void EditorApp::run() {
         m_UIManager->render(m_Viewport.getTextureId());
         processPendingModels();
         m_Renderer->renderScene(m_Scene.get());
+
+        uint32_t pickX = 0;
+        uint32_t pickY = 0;
+        if (m_UIManager && m_Renderer && m_UIManager->popViewportPickRequest(pickX, pickY)) {
+            uint32_t pickedId = m_Renderer->pickEntityId(pickX, pickY);
+            if (pickedId == UINT32_MAX) {
+                m_UIManager->setSelectedEntity(entt::null);
+            } else {
+                Entity pickedEntity = static_cast<Entity>(pickedId);
+                if (m_Scene && m_Scene->getRegistry().valid(pickedEntity)) {
+                    m_UIManager->setSelectedEntity(pickedEntity);
+                } else {
+                    m_UIManager->setSelectedEntity(entt::null);
+                }
+            }
+        }
+
         m_Renderer->endFrame();
 
         int maxFps = m_UIManager ? m_UIManager->getMaxFps() : 0;
@@ -216,6 +234,8 @@ void EditorApp::processPendingModels() {
             m_Scene->getRegistry().emplace<Transform>(rootEntity);
         }
 
+        std::unordered_map<std::string, int> childNameCounts;
+
         for (auto& meshData : item.modelData->meshes) {
             if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
                 ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(),
@@ -229,7 +249,21 @@ void EditorApp::processPendingModels() {
                     });
             }
 
-            auto entity = m_Scene->createEntity(item.modelName + "_" + meshData.name);
+            std::string baseName = meshData.name.empty() ? std::string("Mesh") : meshData.name;
+            int& nameCount = childNameCounts[baseName];
+            std::string entityName = baseName;
+            if (nameCount > 0) {
+                entityName = baseName + "_" + std::to_string(nameCount + 1);
+            }
+            nameCount++;
+
+            auto entity = m_Scene->createEntity(entityName);
+
+            // Set initial transform pivot so gizmo starts at mesh location.
+            if (m_Scene->getRegistry().all_of<Transform>(entity)) {
+                m_Scene->getRegistry().get<Transform>(entity).position = meshData.pivotPosition;
+            }
+
             auto& mesh = m_Scene->getRegistry().emplace<::Mesh>(entity);
             mesh.meshPath = item.basePath + "#" + meshData.name;
             mesh.vertexBuffer = meshData.vertexBuffer;
@@ -275,7 +309,58 @@ void EditorApp::processPendingModels() {
                 } else {
                     texPath = (modelDir / candidate).lexically_normal();
                 }
-                std::string texFullPath = texPath.string();
+                std::string texFullPath = texPath.lexically_normal().string();
+
+                // If the texture comes from MyProject/assets/models/textures, copy it into MyProject/assets/textures
+                // and load from there.
+                {
+                    std::error_code fsEc;
+                    std::filesystem::path srcPath(texFullPath);
+                    if (std::filesystem::exists(srcPath, fsEc) && std::filesystem::is_regular_file(srcPath, fsEc)) {
+                        auto p = srcPath.parent_path();
+                        if (p.filename() == "textures") {
+                            auto models = p.parent_path();
+                            if (models.filename() == "models") {
+                                auto assets = models.parent_path();
+                                if (assets.filename() == "assets") {
+                                    std::filesystem::path dstDir = assets / "textures";
+                                    std::filesystem::create_directories(dstDir, fsEc);
+
+                                    std::string modelStem = std::filesystem::path(item.basePath).stem().string();
+                                    std::filesystem::path dstBase = dstDir / (modelStem + "_" + srcPath.filename().string());
+
+                                    auto sameSize = [&](const std::filesystem::path& a, const std::filesystem::path& b) -> bool {
+                                        std::error_code ecA;
+                                        std::error_code ecB;
+                                        auto sa = std::filesystem::file_size(a, ecA);
+                                        auto sb = std::filesystem::file_size(b, ecB);
+                                        return !ecA && !ecB && sa == sb;
+                                    };
+
+                                    std::filesystem::path dst = dstBase;
+                                    if (std::filesystem::exists(dst) && !sameSize(srcPath, dst)) {
+                                        for (int v = 2; v < 1000; ++v) {
+                                            std::filesystem::path cand = dstDir / (modelStem + "_" + srcPath.stem().string() + "_v" + std::to_string(v) + srcPath.extension().string());
+                                            if (!std::filesystem::exists(cand) || sameSize(srcPath, cand)) {
+                                                dst = cand;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    if (!std::filesystem::exists(dst)) {
+                                        std::error_code copyEc;
+                                        std::filesystem::copy_file(srcPath, dst, std::filesystem::copy_options::skip_existing, copyEc);
+                                    }
+
+                                    if (std::filesystem::exists(dst)) {
+                                        texFullPath = dst.lexically_normal().string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 std::string cacheKey = texFullPath + ((colorSpace == AssetManager::TextureColorSpace::Linear) ? "#linear" : "#srgb");
 

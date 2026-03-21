@@ -126,6 +126,16 @@ Entity UIManager::getSelectedEntity() const {
     return selectedEntity;
 }
 
+bool UIManager::popViewportPickRequest(uint32_t& outX, uint32_t& outY) {
+    if (!m_HasViewportPickRequest) {
+        return false;
+    }
+    m_HasViewportPickRequest = false;
+    outX = m_ViewportPickX;
+    outY = m_ViewportPickY;
+    return true;
+}
+
 void UIManager::setOnAssetDropped(std::function<void(const std::string&)> callback) {
     onAssetDropped = callback;
 }
@@ -166,10 +176,34 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
     ImVec2 windowPos = ImGui::GetWindowPos();
-    
+
+    ImVec2 imageMin = ImGui::GetCursorScreenPos();
     ImGui::Image(viewportTexture, contentSize);
-    
-    ImVec2 imageEndPos = ImGui::GetCursorPos();
+
+    if (renderer && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !m_GizmoUsing) {
+        ImVec2 mousePos = ImGui::GetMousePos();
+        float localX = mousePos.x - imageMin.x;
+        float localY = mousePos.y - imageMin.y;
+
+        if (contentSize.x > 0.0f && contentSize.y > 0.0f && localX >= 0.0f && localY >= 0.0f && localX < contentSize.x && localY < contentSize.y) {
+            VkExtent2D extent = renderer->getSwapChainExtent();
+
+            float u = localX / contentSize.x;
+            float v = localY / contentSize.y;
+
+            uint32_t px = static_cast<uint32_t>(u * static_cast<float>(extent.width));
+            uint32_t py = static_cast<uint32_t>(v * static_cast<float>(extent.height));
+
+            if (extent.width > 0 && extent.height > 0) {
+                if (px >= extent.width) px = extent.width - 1;
+                if (py >= extent.height) py = extent.height - 1;
+            }
+
+            m_ViewportPickX = px;
+            m_ViewportPickY = py;
+            m_HasViewportPickRequest = true;
+        }
+    }
     
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
         auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);

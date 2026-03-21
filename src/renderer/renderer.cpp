@@ -47,8 +47,10 @@ void Renderer::init() {
     createImageViews();
     createRenderPass();
     createOffscreenRenderPass();
+    createPickingRenderPass();
     createDepthResources();
     createGraphicsPipeline();
+    createPickingPipeline();
     createFramebuffers();
     createOffscreenResources();
     createCommandPool();
@@ -98,17 +100,12 @@ void Renderer::shutdown() {
     if (m_PlaceholderImage) vkDestroyImage(m_Device, m_PlaceholderImage, nullptr);
     if (m_PlaceholderImageMemory) vkFreeMemory(m_Device, m_PlaceholderImageMemory, nullptr);
 
-    if (m_DescriptorPool) vkDestroyDescriptorPool(m_Device, m_DescriptorPool, nullptr);
-    if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_DescriptorSetLayout, nullptr);
-
     for (uint32_t i = 0; i < m_TextureCount; i++) {
         if (m_TextureSamplers[i]) vkDestroySampler(m_Device, m_TextureSamplers[i], nullptr);
         if (m_TextureImageViews[i]) vkDestroyImageView(m_Device, m_TextureImageViews[i], nullptr);
         if (m_TextureImages[i]) vkDestroyImage(m_Device, m_TextureImages[i], nullptr);
         if (m_TextureImageMemory[i]) vkFreeMemory(m_Device, m_TextureImageMemory[i], nullptr);
     }
-    
-    destroyPipelineResources();
 
     for (auto semaphore : m_RenderFinishedSemaphores) {
         if (semaphore) vkDestroySemaphore(m_Device, semaphore, nullptr);
@@ -124,6 +121,10 @@ void Renderer::shutdown() {
 
     destroyOffscreenResources();
     destroySwapchainResources();
+    destroyPipelineResources();
+
+    if (m_DescriptorPool) vkDestroyDescriptorPool(m_Device, m_DescriptorPool, nullptr);
+    if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_DescriptorSetLayout, nullptr);
 
     m_MemoryManager.reset();
 
@@ -248,8 +249,10 @@ void Renderer::recreateSwapChain() {
     createImageViews();
     createRenderPass();
     createOffscreenRenderPass();
+    createPickingRenderPass();
     createDepthResources();
     createGraphicsPipeline();
+    createPickingPipeline();
     createFramebuffers();
     createOffscreenResources();
     createCommandBuffers();
@@ -411,6 +414,112 @@ void Renderer::updateTexture(uint32_t index, VkImageView imageView, VkSampler sa
     write.pImageInfo = &imageInfo;
 
     vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+}
+
+uint32_t Renderer::pickEntityId(uint32_t x, uint32_t y) {
+    if (m_PickingImage == VK_NULL_HANDLE || m_PickingImageMemory == VK_NULL_HANDLE) {
+        return UINT32_MAX;
+    }
+
+    if (x >= m_SwapChainExtent.width || y >= m_SwapChainExtent.height) {
+        return UINT32_MAX;
+    }
+
+    VkBuffer stagingBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = sizeof(uint32_t);
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) {
+        return UINT32_MAX;
+    }
+
+    VkMemoryRequirements memRequirements{};
+    vkGetBufferMemoryRequirements(m_Device, stagingBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+        return UINT32_MAX;
+    }
+
+    vkBindBufferMemory(m_Device, stagingBuffer, stagingMemory, 0);
+
+    immediateSubmit([&](VkCommandBuffer commandBuffer) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = m_PickingImageLayout;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = m_PickingImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        barrier.srcAccessMask = 0;
+        if (m_PickingImageLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+            srcStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        }
+
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer, srcStage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+            0, nullptr, 0, nullptr, 1, &barrier);
+
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {static_cast<int32_t>(x), static_cast<int32_t>(y), 0};
+        region.imageExtent = {1, 1, 1};
+
+        vkCmdCopyImageToBuffer(commandBuffer, m_PickingImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            stagingBuffer, 1, &region);
+
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    });
+
+    m_PickingImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    uint32_t picked = 0;
+    void* data = nullptr;
+    if (vkMapMemory(m_Device, stagingMemory, 0, sizeof(uint32_t), 0, &data) == VK_SUCCESS && data) {
+        picked = *reinterpret_cast<uint32_t*>(data);
+        vkUnmapMemory(m_Device, stagingMemory);
+    }
+
+    vkFreeMemory(m_Device, stagingMemory, nullptr);
+    vkDestroyBuffer(m_Device, stagingBuffer, nullptr);
+
+    if (picked == 0) {
+        return UINT32_MAX;
+    }
+
+    return picked - 1u;
 }
 
 void Renderer::createInstance() {
@@ -799,6 +908,64 @@ void Renderer::createOffscreenRenderPass() {
     }
 }
 
+void Renderer::createPickingRenderPass() {
+    VkAttachmentDescription pickingAttachment{};
+    pickingAttachment.format = VK_FORMAT_R32_UINT;
+    pickingAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    pickingAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    pickingAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    pickingAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    pickingAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    pickingAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    pickingAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthRef{};
+    depthRef.attachment = 1;
+    depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    VkAttachmentDescription attachments[] = {pickingAttachment, depthAttachment};
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 2;
+    renderPassInfo.pAttachments = attachments;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
+
+    if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_PickingRenderPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create picking render pass!");
+    }
+}
+
 void Renderer::createGraphicsPipeline() {
     auto vertShaderCode = readFile("shaders/pbr_vert.spv");
     auto fragShaderCode = readFile("shaders/pbr_frag.spv");
@@ -961,6 +1128,137 @@ void Renderer::createGraphicsPipeline() {
 
     if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineBlend) != VK_SUCCESS) {
         throw std::runtime_error("failed to create transparent graphics pipeline!");
+    }
+
+    vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+    vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+}
+
+void Renderer::createPickingPipeline() {
+    auto vertShaderCode = readFile("shaders/picking_vert.spv");
+    auto fragShaderCode = readFile("shaders/picking_frag.spv");
+
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    const auto bindingDescription = Vertex::getBindingDescription();
+    const auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 4;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(m_SwapChainExtent.width);
+    viewport.height = static_cast<float>(m_SwapChainExtent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = m_SwapChainExtent;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(PickingPushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_PickingPipelineLayout) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create picking pipeline layout!");
+    }
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = m_PickingPipelineLayout;
+    pipelineInfo.renderPass = m_PickingRenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_PickingPipeline) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create picking pipeline!");
     }
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
@@ -1405,6 +1703,70 @@ void Renderer::createOffscreenResources() {
         throw std::runtime_error("failed to create offscreen depth image view!");
     }
 
+    // Picking image
+    VkImageCreateInfo pickingImageInfo{};
+    pickingImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    pickingImageInfo.imageType = VK_IMAGE_TYPE_2D;
+    pickingImageInfo.extent.width = m_SwapChainExtent.width;
+    pickingImageInfo.extent.height = m_SwapChainExtent.height;
+    pickingImageInfo.extent.depth = 1;
+    pickingImageInfo.mipLevels = 1;
+    pickingImageInfo.arrayLayers = 1;
+    pickingImageInfo.format = VK_FORMAT_R32_UINT;
+    pickingImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    pickingImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    pickingImageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    pickingImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(m_Device, &pickingImageInfo, nullptr, &m_PickingImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create picking image!");
+    }
+
+    VkMemoryRequirements pickingMemRequirements;
+    vkGetImageMemoryRequirements(m_Device, m_PickingImage, &pickingMemRequirements);
+
+    VkMemoryAllocateInfo pickingAllocInfo{};
+    pickingAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    pickingAllocInfo.allocationSize = pickingMemRequirements.size;
+    pickingAllocInfo.memoryTypeIndex = findMemoryType(pickingMemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &pickingAllocInfo, nullptr, &m_PickingImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate picking image memory!");
+    }
+
+    vkBindImageMemory(m_Device, m_PickingImage, m_PickingImageMemory, 0);
+
+    VkImageViewCreateInfo pickingViewInfo{};
+    pickingViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    pickingViewInfo.image = m_PickingImage;
+    pickingViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    pickingViewInfo.format = VK_FORMAT_R32_UINT;
+    pickingViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pickingViewInfo.subresourceRange.baseMipLevel = 0;
+    pickingViewInfo.subresourceRange.levelCount = 1;
+    pickingViewInfo.subresourceRange.baseArrayLayer = 0;
+    pickingViewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(m_Device, &pickingViewInfo, nullptr, &m_PickingImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create picking image view!");
+    }
+
+    VkImageView pickingAttachments[] = {m_PickingImageView, m_OffscreenDepthImageView};
+    VkFramebufferCreateInfo pickingFramebufferInfo{};
+    pickingFramebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    pickingFramebufferInfo.renderPass = m_PickingRenderPass;
+    pickingFramebufferInfo.attachmentCount = 2;
+    pickingFramebufferInfo.pAttachments = pickingAttachments;
+    pickingFramebufferInfo.width = m_SwapChainExtent.width;
+    pickingFramebufferInfo.height = m_SwapChainExtent.height;
+    pickingFramebufferInfo.layers = 1;
+
+    if (vkCreateFramebuffer(m_Device, &pickingFramebufferInfo, nullptr, &m_PickingFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create picking framebuffer!");
+    }
+
+    m_PickingImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
     VkImageView offscreenAttachments[] = {m_OffscreenImageView, m_OffscreenDepthImageView};
     VkFramebufferCreateInfo framebufferInfo{};
     framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -1422,9 +1784,14 @@ void Renderer::createOffscreenResources() {
 
 
 void Renderer::destroyPipelineResources() {
+    if (m_PickingPipeline) { vkDestroyPipeline(m_Device, m_PickingPipeline, nullptr); m_PickingPipeline = VK_NULL_HANDLE; }
+    if (m_PickingPipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PickingPipelineLayout, nullptr); m_PickingPipelineLayout = VK_NULL_HANDLE; }
+
     if (m_GraphicsPipelineBlend) { vkDestroyPipeline(m_Device, m_GraphicsPipelineBlend, nullptr); m_GraphicsPipelineBlend = VK_NULL_HANDLE; }
     if (m_GraphicsPipeline) { vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr); m_GraphicsPipeline = VK_NULL_HANDLE; }
     if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
+
+    if (m_PickingRenderPass) { vkDestroyRenderPass(m_Device, m_PickingRenderPass, nullptr); m_PickingRenderPass = VK_NULL_HANDLE; }
     if (m_RenderPass) { vkDestroyRenderPass(m_Device, m_RenderPass, nullptr); m_RenderPass = VK_NULL_HANDLE; }
     if (m_OffscreenRenderPass) { vkDestroyRenderPass(m_Device, m_OffscreenRenderPass, nullptr); m_OffscreenRenderPass = VK_NULL_HANDLE; }
 }
@@ -1449,6 +1816,11 @@ void Renderer::destroySwapchainResources() {
 }
 
 void Renderer::destroyOffscreenResources() {
+    if (m_PickingFramebuffer) vkDestroyFramebuffer(m_Device, m_PickingFramebuffer, nullptr);
+    if (m_PickingImageView) vkDestroyImageView(m_Device, m_PickingImageView, nullptr);
+    if (m_PickingImage) vkDestroyImage(m_Device, m_PickingImage, nullptr);
+    if (m_PickingImageMemory) vkFreeMemory(m_Device, m_PickingImageMemory, nullptr);
+
     if (m_OffscreenFramebuffer) vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
     if (m_OffscreenSampler) vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
     if (m_OffscreenImageView) vkDestroyImageView(m_Device, m_OffscreenImageView, nullptr);
@@ -1467,6 +1839,12 @@ void Renderer::destroyOffscreenResources() {
     m_OffscreenDepthImageView = VK_NULL_HANDLE;
     m_OffscreenDepthImage = VK_NULL_HANDLE;
     m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
+
+    m_PickingFramebuffer = VK_NULL_HANDLE;
+    m_PickingImageView = VK_NULL_HANDLE;
+    m_PickingImage = VK_NULL_HANDLE;
+    m_PickingImageMemory = VK_NULL_HANDLE;
+    m_PickingImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Scene* scene) {
@@ -1487,6 +1865,114 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 #endif
 
     // Offscreen image layout is defined by the offscreen render pass itself.
+
+    // Render scene IDs to picking buffer
+    if (scene && m_PickingRenderPass != VK_NULL_HANDLE && m_PickingFramebuffer != VK_NULL_HANDLE && m_PickingPipeline != VK_NULL_HANDLE) {
+        if (m_PickingImageLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+            VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkAccessFlags srcAccess = 0;
+            if (m_PickingImageLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+                srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                srcAccess = VK_ACCESS_TRANSFER_READ_BIT;
+            }
+
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = m_PickingImageLayout;
+            barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = m_PickingImage;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = srcAccess;
+            barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+            vkCmdPipelineBarrier(commandBuffer, srcStage, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                0, nullptr, 0, nullptr, 1, &barrier);
+
+            m_PickingImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+
+        VkRenderPassBeginInfo pickingPassInfo{};
+        pickingPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        pickingPassInfo.renderPass = m_PickingRenderPass;
+        pickingPassInfo.framebuffer = m_PickingFramebuffer;
+        pickingPassInfo.renderArea.offset = {0, 0};
+        pickingPassInfo.renderArea.extent = m_SwapChainExtent;
+
+        VkClearValue pickingClearValues[2];
+        pickingClearValues[0].color.uint32[0] = 0;
+        pickingClearValues[0].color.uint32[1] = 0;
+        pickingClearValues[0].color.uint32[2] = 0;
+        pickingClearValues[0].color.uint32[3] = 0;
+        pickingClearValues[1].depthStencil = {1.0f, 0};
+        pickingPassInfo.clearValueCount = 2;
+        pickingPassInfo.pClearValues = pickingClearValues;
+
+        vkCmdBeginRenderPass(commandBuffer, &pickingPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        // Render scene entities (ID only)
+        auto& registry = scene->getRegistry();
+        auto meshView = registry.view<Mesh>();
+
+        if (!meshView.empty()) {
+            glm::mat4 view = glm::mat4(1.0f);
+            glm::mat4 proj = glm::mat4(1.0f);
+
+            auto cameraView = registry.view<Camera>();
+            if (!cameraView.empty()) {
+                auto cameraEntity = cameraView[0];
+                auto& camera = registry.get<Camera>(cameraEntity);
+                camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+
+                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, 0.1f, 1000.0f);
+                proj[1][1] = -proj[1][1];
+
+                view = camera.getViewMatrix();
+            }
+
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PickingPipeline);
+
+            for (auto entity : meshView) {
+                auto& mesh = registry.get<Mesh>(entity);
+                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+                    continue;
+                }
+
+                if (registry.all_of<Renderable>(entity)) {
+                    auto& renderable = registry.get<Renderable>(entity);
+                    if (!renderable.visible) continue;
+                }
+
+                glm::mat4 model = glm::mat4(1.0f);
+                if (scene->hasTransform(entity)) {
+                    model = scene->getWorldTransform(entity);
+                }
+
+                PickingPushConstants pc{};
+                pc.model = model;
+                pc.view = view;
+                pc.proj = proj;
+                pc.entityIdPlusOne = static_cast<uint32_t>(entity) + 1u;
+
+                vkCmdPushConstants(commandBuffer, m_PickingPipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PickingPushConstants), &pc);
+
+                VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
+                VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+            }
+        }
+
+        vkCmdEndRenderPass(commandBuffer);
+        m_PickingImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     // Render scene to offscreen
     VkRenderPassBeginInfo renderPassInfo{};

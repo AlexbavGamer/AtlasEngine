@@ -41,6 +41,8 @@ public:
 
     int getMaxFps() const { return m_MaxFps; }
 
+    bool popViewportPickRequest(uint32_t& outX, uint32_t& outY);
+
 private:
     Atlas::Scene* m_Scene = nullptr;
     Entity selectedEntity = entt::null;
@@ -71,6 +73,10 @@ private:
     glm::mat4 m_ProjMatrix = glm::mat4(1.0f);
     void* m_CameraController = nullptr;
     bool m_GizmoUsing = false;
+
+    bool m_HasViewportPickRequest = false;
+    uint32_t m_ViewportPickX = 0;
+    uint32_t m_ViewportPickY = 0;
 
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;

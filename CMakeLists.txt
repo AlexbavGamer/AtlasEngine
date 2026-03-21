@@ -310,6 +310,8 @@ if(GLSLC_EXECUTABLE)
     set(ATLAS_SHADER_SOURCES
         pbr_vert.glsl
         pbr_frag.glsl
+        picking_vert.glsl
+        picking_frag.glsl
     )
     set(ATLAS_SHADER_OUTPUTS)
 
@@ -345,7 +347,7 @@ if(GLSLC_EXECUTABLE)
         file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
         set(ATLAS_EMBEDDED_SHADERS_CPP "${CMAKE_BINARY_DIR}/generated/embedded_shaders.cpp")
 
-        set(ATLAS_EMBED_SHADER_NAMES "pbr_vert;pbr_frag")
+        set(ATLAS_EMBED_SHADER_NAMES "pbr_vert;pbr_frag;picking_vert;picking_frag")
         string(REPLACE ";" "\\;" ATLAS_SHADER_OUTPUTS_ESCAPED "${ATLAS_SHADER_OUTPUTS}")
         string(REPLACE ";" "\\;" ATLAS_EMBED_SHADER_NAMES_ESCAPED "${ATLAS_EMBED_SHADER_NAMES}")
 

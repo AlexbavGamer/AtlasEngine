@@ -47,6 +47,16 @@ struct PushConstants {
     int32_t flags;
 };
 
+struct PickingPushConstants {
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+    uint32_t entityIdPlusOne;
+    uint32_t _pad0;
+    uint32_t _pad1;
+    uint32_t _pad2;
+};
+
 class Window;
 class Scene;
 
@@ -98,6 +108,9 @@ public:
     void setVSyncEnabled(bool enabled);
     bool isVSyncEnabled() const { return m_VSyncEnabled; }
 
+    // Returns UINT32_MAX when nothing is hit.
+    uint32_t pickEntityId(uint32_t x, uint32_t y);
+
     glm::vec4 getClearColor() const { return m_ClearColor; }
     void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
 
@@ -118,6 +131,8 @@ private:
     void createSyncObjects();
     void createOffscreenResources();
     void createOffscreenRenderPass();
+    void createPickingRenderPass();
+    void createPickingPipeline();
     void createLightBuffer();
     void createDescriptorSet();
 
@@ -175,9 +190,13 @@ private:
 
     VkRenderPass m_RenderPass = VK_NULL_HANDLE;
     VkRenderPass m_OffscreenRenderPass = VK_NULL_HANDLE;
+    VkRenderPass m_PickingRenderPass = VK_NULL_HANDLE;
     VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipelineBlend = VK_NULL_HANDLE;
+
+    VkPipelineLayout m_PickingPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_PickingPipeline = VK_NULL_HANDLE;
 
     VkCommandPool m_CommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_CommandBuffers;
@@ -198,6 +217,12 @@ private:
     VkImage m_OffscreenDepthImage = VK_NULL_HANDLE;
     VkDeviceMemory m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
     VkImageView m_OffscreenDepthImageView = VK_NULL_HANDLE;
+
+    VkImage m_PickingImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_PickingImageMemory = VK_NULL_HANDLE;
+    VkImageView m_PickingImageView = VK_NULL_HANDLE;
+    VkFramebuffer m_PickingFramebuffer = VK_NULL_HANDLE;
+    VkImageLayout m_PickingImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     LightBuffer m_LightBufferData{};
     VkBuffer m_LightBuffer = VK_NULL_HANDLE;
