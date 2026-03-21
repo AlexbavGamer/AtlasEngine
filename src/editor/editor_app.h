@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <filesystem>
 
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
@@ -55,6 +56,11 @@ private:
 
     void updateWorldStreaming();
     void onMeshDestroyed(entt::registry& registry, entt::entity entity);
+
+    void onExternalFileDrop(const std::vector<std::string>& paths);
+    glm::vec3 getDefaultSpawnPosition() const;
+    std::string importExternalModelToProjectAssets(const std::string& srcPathStr);
+
 
     static uint64_t makeCellKey(int x, int z);
     static void decodeCellKey(uint64_t key, int& outX, int& outZ);

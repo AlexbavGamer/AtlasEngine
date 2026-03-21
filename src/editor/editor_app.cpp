@@ -95,6 +95,10 @@ EditorApp::EditorApp() {
     m_Renderer->setResizeCallback([this](int, int) { m_Viewport.refreshTexture(); });
     m_Window->setResizeCallback([this](int, int) { m_Renderer->recreateSwapChain(); });
     m_Renderer->setRenderCallback([this](VkCommandBuffer commandBuffer) { m_ImGuiManager->render(commandBuffer); });
+
+    m_Window->setFileDropCallback([this](const std::vector<std::string>& paths) {
+        onExternalFileDrop(paths);
+    });
 }
 
 EditorApp::~EditorApp() {
@@ -247,6 +251,138 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
 
             m_PendingModels.push_back(std::move(p));
         });
+}
+
+glm::vec3 EditorApp::getDefaultSpawnPosition() const {
+    if (!m_Scene) return glm::vec3(0.0f);
+
+    auto& registry = m_Scene->getRegistry();
+    auto camView = registry.view<Camera>();
+    if (!camView.empty()) {
+        auto camEnt = camView[0];
+        auto& cam = registry.get<Camera>(camEnt);
+        return cam.target;
+    }
+
+    return glm::vec3(0.0f);
+}
+
+static bool isModelExt(const std::string& ext) {
+    return ext == ".fbx" || ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".dae";
+}
+
+static void copyIfExists(const std::filesystem::path& src, const std::filesystem::path& dst, bool recursive) {
+    std::error_code ec;
+    if (!std::filesystem::exists(src, ec)) return;
+
+    if (recursive && std::filesystem::is_directory(src, ec)) {
+        std::filesystem::create_directories(dst, ec);
+        std::filesystem::copy(src, dst, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+        return;
+    }
+
+    if (std::filesystem::is_regular_file(src, ec)) {
+        std::filesystem::create_directories(dst.parent_path(), ec);
+        std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+    }
+}
+
+std::string EditorApp::importExternalModelToProjectAssets(const std::string& srcPathStr) {
+    if (!m_ProjectManager || !m_ProjectManager->hasProject()) {
+        return srcPathStr;
+    }
+
+    std::error_code ec;
+    std::filesystem::path src(srcPathStr);
+    if (!std::filesystem::exists(src, ec) || !std::filesystem::is_regular_file(src, ec)) {
+        return {};
+    }
+
+    std::string ext = src.extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (!isModelExt(ext)) {
+        return {};
+    }
+
+    // Place under assets/models/Imported/<stem>/
+    std::filesystem::path assetsRoot(m_ProjectManager->getAssetsPath());
+    std::filesystem::path importRoot = assetsRoot / "models" / "Imported";
+
+    std::filesystem::path dstFolder = importRoot / src.stem();
+    std::filesystem::create_directories(dstFolder, ec);
+
+    auto uniquePath = [&](std::filesystem::path p) -> std::filesystem::path {
+        if (!std::filesystem::exists(p, ec)) return p;
+        std::filesystem::path dir = p.parent_path();
+        std::string stem = p.stem().string();
+        std::string e = p.extension().string();
+        for (int v = 2; v < 1000; ++v) {
+            std::filesystem::path cand = dir / (stem + "_v" + std::to_string(v) + e);
+            if (!std::filesystem::exists(cand, ec)) return cand;
+        }
+        return p;
+    };
+
+    std::filesystem::path dstModel = uniquePath(dstFolder / src.filename());
+    copyIfExists(src, dstModel, false);
+
+    // Best-effort dependency copy
+    std::filesystem::path srcDir = src.parent_path();
+
+    auto copySidecarsInDir = [&](const std::vector<std::string>& exts) {
+        for (auto& it : std::filesystem::directory_iterator(srcDir, ec)) {
+            if (ec) break;
+            if (!it.is_regular_file(ec)) continue;
+            std::string e = it.path().extension().string();
+            for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            for (const auto& want : exts) {
+                if (e == want) {
+                    copyIfExists(it.path(), dstFolder / it.path().filename(), false);
+                    break;
+                }
+            }
+        }
+    };
+
+    if (ext == ".gltf") {
+        copySidecarsInDir({".bin", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"});
+        copyIfExists(srcDir / "textures", dstFolder / "textures", true);
+    } else if (ext == ".obj") {
+        copySidecarsInDir({".mtl", ".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"});
+        copyIfExists(srcDir / "textures", dstFolder / "textures", true);
+    } else if (ext == ".fbx" || ext == ".dae") {
+        copySidecarsInDir({".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"});
+        copyIfExists(srcDir / "textures", dstFolder / "textures", true);
+    }
+
+    if (m_ProjectManager) {
+        m_ProjectManager->invalidateAssetTreeCache();
+    }
+
+    return dstModel.lexically_normal().string();
+}
+
+void EditorApp::onExternalFileDrop(const std::vector<std::string>& paths) {
+    if (paths.empty()) return;
+
+    const glm::vec3 spawnPos = getDefaultSpawnPosition();
+
+    for (const auto& p : paths) {
+        std::filesystem::path fp(p);
+        std::string ext = fp.extension().string();
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        if (!isModelExt(ext)) {
+            continue;
+        }
+
+        std::string imported = importExternalModelToProjectAssets(p);
+        if (imported.empty()) {
+            continue;
+        }
+
+        queueModelImportAt(imported, spawnPos, false, 0);
+    }
 }
 
 void EditorApp::updateWorldStreaming() {

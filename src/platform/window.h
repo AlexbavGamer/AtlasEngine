@@ -4,6 +4,7 @@
 #include <GLFW/glfw3.h>
 #include <string>
 #include <functional>
+#include <vector>
 
 namespace Atlas {
 
@@ -14,6 +15,7 @@ public:
     using MouseButtonCallback = std::function<void(int button, int action, int mods)>;
     using MouseMoveCallback = std::function<void(double x, double y)>;
     using ScrollCallback = std::function<void(double xoffset, double yoffset)>;
+    using FileDropCallback = std::function<void(const std::vector<std::string>& paths)>;
 
     Window(int width, int height, const std::string& title);
     ~Window();
@@ -39,8 +41,9 @@ public:
     void setMouseButtonCallback(MouseButtonCallback callback) { m_MouseButtonCallback = std::move(callback); }
     void setMouseMoveCallback(MouseMoveCallback callback) { m_MouseMoveCallback = std::move(callback); }
     void setScrollCallback(ScrollCallback callback) { m_ScrollCallback = std::move(callback); }
+    void setFileDropCallback(FileDropCallback callback) { m_FileDropCallback = std::move(callback); }
 
-    void setTitle(const std::string& title);
+void setTitle(const std::string& title);
     void setCursorPos(double x, double y);
     void hideCursor();
     void showCursor();
@@ -62,12 +65,14 @@ private:
     MouseButtonCallback m_MouseButtonCallback;
     MouseMoveCallback m_MouseMoveCallback;
     ScrollCallback m_ScrollCallback;
+    FileDropCallback m_FileDropCallback;
 
     static void glfwResizeCallback(GLFWwindow* window, int width, int height);
     static void glfwKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void glfwMouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
     static void glfwMouseMoveCallback(GLFWwindow* window, double xpos, double ypos);
     static void glfwScrollCallback(GLFWwindow* window, double xoffset, double yoffset);
+    static void glfwDropCallback(GLFWwindow* window, int count, const char** paths);
 };
 
 }

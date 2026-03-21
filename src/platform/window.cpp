@@ -27,6 +27,7 @@ Window::Window(int width, int height, const std::string& title)
     glfwSetMouseButtonCallback(m_Window, glfwMouseButtonCallback);
     glfwSetCursorPosCallback(m_Window, glfwMouseMoveCallback);
     glfwSetScrollCallback(m_Window, glfwScrollCallback);
+    glfwSetDropCallback(m_Window, glfwDropCallback);
 
     // Ensure we start maximized (and capture the real framebuffer size immediately).
     glfwMaximizeWindow(m_Window);
@@ -144,6 +145,23 @@ void Window::glfwScrollCallback(GLFWwindow* window, double xoffset, double yoffs
     Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
     if (win->m_ScrollCallback) {
         win->m_ScrollCallback(xoffset, yoffset);
+    }
+}
+
+void Window::glfwDropCallback(GLFWwindow* window, int count, const char** paths) {
+    Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (!win || !win->m_FileDropCallback) return;
+
+    std::vector<std::string> out;
+    out.reserve(static_cast<size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        if (paths[i]) {
+            out.emplace_back(paths[i]);
+        }
+    }
+
+    if (!out.empty()) {
+        win->m_FileDropCallback(out);
     }
 }
 
