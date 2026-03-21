@@ -16,7 +16,7 @@
 #include <assimp/postprocess.h>
 #include <assimp/material.h>
 #include <assimp/GltfMaterial.h>
-#include <assimp/pbrmaterial.h>
+
 #include "../ecs/vertex.h"
 
 struct MeshData {
@@ -38,6 +38,11 @@ struct MeshData {
     glm::vec3 emissiveFactor = glm::vec3(0.0f);
     float metallic = 0.0f;
     float roughness = 0.5f;
+
+    // Since we import with aiProcess_PreTransformVertices, vertex positions are baked into a common space.
+    // Keep a per-mesh pivot so editor gizmos start at the mesh location.
+    glm::vec3 pivotPosition = glm::vec3(0.0f);
+
     std::string baseColorTexturePath;
     std::string normalTexturePath;
     std::string metallicRoughnessTexturePath;
@@ -67,6 +72,7 @@ struct MeshData {
           name(std::move(other.name)),
           baseColor(other.baseColor),
           emissiveFactor(other.emissiveFactor),
+          pivotPosition(other.pivotPosition),
           metallic(other.metallic),
           roughness(other.roughness),
           baseColorTexturePath(std::move(other.baseColorTexturePath)),
@@ -88,6 +94,7 @@ struct MeshData {
         other.ownerDevice = VK_NULL_HANDLE;
         other.baseColor = glm::vec4(1.0f);
         other.emissiveFactor = glm::vec3(0.0f);
+        other.pivotPosition = glm::vec3(0.0f);
         other.metallic = 0.0f;
         other.roughness = 0.5f;
         other.baseColorTexturePath.clear();
@@ -118,6 +125,7 @@ struct MeshData {
             name = std::move(other.name);
             baseColor = other.baseColor;
             emissiveFactor = other.emissiveFactor;
+            pivotPosition = other.pivotPosition;
             metallic = other.metallic;
             roughness = other.roughness;
             baseColorTexturePath = std::move(other.baseColorTexturePath);
@@ -139,6 +147,7 @@ struct MeshData {
             other.ownerDevice = VK_NULL_HANDLE;
             other.baseColor = glm::vec4(1.0f);
             other.emissiveFactor = glm::vec3(0.0f);
+            other.pivotPosition = glm::vec3(0.0f);
             other.metallic = 0.0f;
             other.roughness = 0.5f;
             other.baseColorTexturePath.clear();
@@ -410,9 +419,13 @@ public:
 
         std::filesystem::path modelPath(path);
         std::filesystem::path modelDir = modelPath.parent_path();
-        // Prefer extracting into the project's assets folder next to /models.
-        std::filesystem::path extractedDir = modelDir.parent_path() / "textures";
+
+        // Prefer extracting/copying textures into MyProject/assets/textures when available.
+        std::filesystem::path extractedDir = std::filesystem::path("MyProject") / "assets" / "textures";
         std::error_code ec;
+        if (!std::filesystem::exists(extractedDir, ec)) {
+            extractedDir = modelDir.parent_path() / "textures";
+        }
         std::filesystem::create_directories(extractedDir, ec);
 
         auto extractEmbeddedTexture = [&](int index) -> std::string {
@@ -502,8 +515,27 @@ public:
                 return rawPath;
             }
 
-            // If the texture is already in the extracted folder, keep it.
-            if (src.parent_path() == extractedDir) {
+            auto computeTargetDir = [&](const std::filesystem::path& resolvedSrc) -> std::filesystem::path {
+                // If the source is under .../assets/models/textures, redirect to .../assets/textures.
+                std::filesystem::path p = resolvedSrc.parent_path();
+                if (p.filename() == "textures") {
+                    std::filesystem::path models = p.parent_path();
+                    if (models.filename() == "models") {
+                        std::filesystem::path assets = models.parent_path();
+                        if (assets.filename() == "assets") {
+                            return assets / "textures";
+                        }
+                    }
+                }
+                return extractedDir;
+            };
+
+            std::filesystem::path targetDir = computeTargetDir(src);
+            fsEc.clear();
+            std::filesystem::create_directories(targetDir, fsEc);
+
+            // If the texture is already in the target folder, keep it.
+            if (src.parent_path() == targetDir) {
                 return src.lexically_normal().string();
             }
 
@@ -515,7 +547,7 @@ public:
             std::string fileStem = modelPath.stem().string() + "_" + src.stem().string();
 
             auto pickUniquePath = [&](uintmax_t expectedSize) -> std::filesystem::path {
-                std::filesystem::path base = extractedDir / (fileStem + ext);
+                std::filesystem::path base = targetDir / (fileStem + ext);
                 if (!std::filesystem::exists(base)) return base;
 
                 if (expectedSize > 0) {
@@ -527,7 +559,7 @@ public:
                 }
 
                 for (int v = 2; v < 1000; ++v) {
-                    std::filesystem::path cand = extractedDir / (fileStem + "_v" + std::to_string(v) + ext);
+                    std::filesystem::path cand = targetDir / (fileStem + "_v" + std::to_string(v) + ext);
                     if (!std::filesystem::exists(cand)) return cand;
 
                     if (expectedSize > 0) {
@@ -554,7 +586,6 @@ public:
             if (!std::filesystem::exists(dst)) {
                 std::error_code copyEc;
                 std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, copyEc);
-                // If copy fails, fall back to original path.
                 if (copyEc) {
                     return rawPath;
                 }
@@ -574,10 +605,29 @@ public:
             return copyExternalTexture(std::string(cstr));
         };
 
+        auto recenterVertices = [&](std::vector<Vertex>& verts, glm::vec3& outPivot) {
+            if (verts.empty()) {
+                outPivot = glm::vec3(0.0f);
+                return;
+            }
+
+            glm::vec3 minP = verts[0].pos;
+            glm::vec3 maxP = verts[0].pos;
+            for (const auto& v : verts) {
+                minP = glm::min(minP, v.pos);
+                maxP = glm::max(maxP, v.pos);
+            }
+
+            outPivot = (minP + maxP) * 0.5f;
+            for (auto& v : verts) {
+                v.pos -= outPivot;
+            }
+        };
+
         ModelData modelData(device);
 
-        if (mergeAll || scene->mNumMeshes > 32) {
-            // Chunk by material so textures still work for large models.
+        if (mergeAll) {
+            // Chunk by material (opt-in) to reduce entity count.
             struct ChunkBuild {
                 std::vector<Vertex> vertices;
                 std::vector<uint32_t> indices;
@@ -690,6 +740,8 @@ public:
                 chunk.vertexCount = static_cast<uint32_t>(chunk.vertices.size());
                 chunk.indexCount = static_cast<uint32_t>(chunk.indices.size());
 
+                recenterVertices(chunk.vertices, chunk.pivotPosition);
+
                 chunk.baseColor = build.baseColor;
                 chunk.emissiveFactor = build.emissiveFactor;
                 chunk.metallic = build.metallic;
@@ -776,6 +828,9 @@ public:
                 aiMesh* mesh = scene->mMeshes[i];
                 MeshData meshData;
                 meshData.name = mesh->mName.C_Str();
+                if (meshData.name.empty()) {
+                    meshData.name = std::string("Mesh_") + std::to_string(i);
+                }
 
                 if (mesh->mMaterialIndex < scene->mNumMaterials) {
                     aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
@@ -887,6 +942,8 @@ public:
 
                 meshData.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
                 meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
+
+                recenterVertices(meshData.vertices, meshData.pivotPosition);
 
                 if (device != VK_NULL_HANDLE && physicalDevice != VK_NULL_HANDLE && findMemoryType != nullptr) {
                     createBuffers(meshData, device, physicalDevice, findMemoryType);

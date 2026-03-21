@@ -5,6 +5,7 @@
 #include "../renderer/renderer.h"
 #include <stdexcept>
 #include <iostream>
+#include <filesystem>
 
 namespace Atlas {
 
@@ -56,10 +57,61 @@ void AssetManager::unloadAllMeshes() {
 }
 
 std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std::string& path, TextureColorSpace colorSpace) {
-    std::cout << "[AssetManager] loadTexture path=" << path << " id=" << id.getID() << std::endl;
+    std::string finalPath = path;
+
+    // Normalize/copy imported textures so runtime always loads from MyProject/assets/textures
+    // when the source is under MyProject/assets/models/textures.
+    {
+        std::error_code ec;
+        std::filesystem::path src(path);
+        if (std::filesystem::exists(src, ec) && std::filesystem::is_regular_file(src, ec)) {
+            auto p = src.parent_path();
+            if (p.filename() == "textures") {
+                auto models = p.parent_path();
+                if (models.filename() == "models") {
+                    auto assets = models.parent_path();
+                    if (assets.filename() == "assets") {
+                        std::filesystem::path dstDir = assets / "textures";
+                        std::filesystem::create_directories(dstDir, ec);
+
+                        std::filesystem::path dst = dstDir / src.filename();
+
+                        auto sameSize = [&](const std::filesystem::path& a, const std::filesystem::path& b) -> bool {
+                            std::error_code ea;
+                            std::error_code eb;
+                            auto sa = std::filesystem::file_size(a, ea);
+                            auto sb = std::filesystem::file_size(b, eb);
+                            return !ea && !eb && sa == sb;
+                        };
+
+                        if (std::filesystem::exists(dst) && !sameSize(src, dst)) {
+                            for (int v = 2; v < 1000; ++v) {
+                                std::filesystem::path cand = dstDir / (src.stem().string() + "_v" + std::to_string(v) + src.extension().string());
+                                if (!std::filesystem::exists(cand) || sameSize(src, cand)) {
+                                    dst = cand;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!std::filesystem::exists(dst)) {
+                            std::error_code copyEc;
+                            std::filesystem::copy_file(src, dst, std::filesystem::copy_options::skip_existing, copyEc);
+                        }
+
+                        if (std::filesystem::exists(dst)) {
+                            finalPath = dst.lexically_normal().string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::cout << "[AssetManager] loadTexture path=" << finalPath << " id=" << id.getID() << std::endl;
 
     if (auto it = m_Textures.find(id); it != m_Textures.end()) {
-        std::cout << "[AssetManager] loadTexture cache hit path=" << path << std::endl;
+        std::cout << "[AssetManager] loadTexture cache hit path=" << finalPath << std::endl;
         return it->second;
     }
 
@@ -68,7 +120,7 @@ std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std
     }
 
     int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load(finalPath.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
     
     if (!pixels) {
         return nullptr;
@@ -76,7 +128,7 @@ std::shared_ptr<Texture> AssetManager::loadTexture(const StringID& id, const std
 
     auto texture = std::make_shared<Texture>();
     texture->setMemoryManager(m_MemoryManager);
-    texture->m_Path = path;
+    texture->m_Path = finalPath;
     texture->m_Width = static_cast<uint32_t>(texWidth);
     texture->m_Height = static_cast<uint32_t>(texHeight);
     VkFormat format = (colorSpace == TextureColorSpace::Linear) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB;

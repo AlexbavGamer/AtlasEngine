@@ -17,21 +17,32 @@ void CameraController::update(float deltaTime) {
     double mouseX, mouseY;
     glfwGetCursorPos(window, &mouseX, &mouseY);
 
-    bool rightMouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    const bool rightMouseDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 
     if (rightMouseDown && !isRightMouseDown) {
         isRightMouseDown = true;
         lastMouseX = static_cast<float>(mouseX);
         lastMouseY = static_cast<float>(mouseY);
+
+        if (lockCursorOnLook) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            // Read again after mode switch to avoid a big jump.
+            glfwGetCursorPos(window, &mouseX, &mouseY);
+            lastMouseX = static_cast<float>(mouseX);
+            lastMouseY = static_cast<float>(mouseY);
+        }
     } else if (!rightMouseDown && isRightMouseDown) {
         isRightMouseDown = false;
+        if (lockCursorOnLook) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
     }
 
     if (isRightMouseDown) {
         float deltaX = static_cast<float>(mouseX) - lastMouseX;
         float deltaY = static_cast<float>(mouseY) - lastMouseY;
 
-        float yaw = glm::radians(-deltaX * sensitivity); // Invertido para corrigir direção
+        float yaw = glm::radians(-deltaX * sensitivity);
         float pitch = glm::radians(deltaY * sensitivity);
 
         glm::vec3 forward = getCameraForward();
@@ -47,7 +58,20 @@ void CameraController::update(float deltaTime) {
         lastMouseY = static_cast<float>(mouseY);
     }
 
-    float speed = moveSpeed * deltaTime;
+    const bool allowMove = requireRmbForMove ? isRightMouseDown : true;
+    if (!allowMove) {
+        return;
+    }
+
+    float speedMul = 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+        speedMul *= boostMultiplier;
+    }
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS) {
+        speedMul *= slowMultiplier;
+    }
+
+    float speed = moveSpeed * speedMul * deltaTime;
     glm::vec3 forward = getCameraForward();
     glm::vec3 right = getCameraRight();
 

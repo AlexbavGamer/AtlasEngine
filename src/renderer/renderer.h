@@ -57,6 +57,17 @@ struct PickingPushConstants {
     uint32_t _pad2;
 };
 
+struct OutlinePushConstants {
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+    glm::vec4 color;
+    float width;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+};
+
 class Window;
 class Scene;
 
@@ -111,6 +122,19 @@ public:
     // Returns UINT32_MAX when nothing is hit.
     uint32_t pickEntityId(uint32_t x, uint32_t y);
 
+    void setSelectedEntityId(uint32_t entityId) {
+        m_SelectedEntityId = entityId;
+        m_SelectedEntityIds.clear();
+        if (entityId != UINT32_MAX) {
+            m_SelectedEntityIds.push_back(entityId);
+        }
+    }
+
+    void setSelectedEntityIds(const std::vector<uint32_t>& entityIds) {
+        m_SelectedEntityIds = entityIds;
+        m_SelectedEntityId = m_SelectedEntityIds.empty() ? UINT32_MAX : m_SelectedEntityIds[0];
+    }
+
     glm::vec4 getClearColor() const { return m_ClearColor; }
     void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
 
@@ -133,6 +157,7 @@ private:
     void createOffscreenRenderPass();
     void createPickingRenderPass();
     void createPickingPipeline();
+    void createOutlinePipeline();
     void createLightBuffer();
     void createDescriptorSet();
 
@@ -198,6 +223,9 @@ private:
     VkPipelineLayout m_PickingPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_PickingPipeline = VK_NULL_HANDLE;
 
+    VkPipelineLayout m_OutlinePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_OutlinePipeline = VK_NULL_HANDLE;
+
     VkCommandPool m_CommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_CommandBuffers;
 
@@ -224,6 +252,10 @@ private:
     VkFramebuffer m_PickingFramebuffer = VK_NULL_HANDLE;
     VkImageLayout m_PickingImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    VkImage m_PickingDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_PickingDepthImageMemory = VK_NULL_HANDLE;
+    VkImageView m_PickingDepthImageView = VK_NULL_HANDLE;
+
     LightBuffer m_LightBufferData{};
     VkBuffer m_LightBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
@@ -247,6 +279,9 @@ private:
     VkDeviceMemory m_PlaceholderImageMemory = VK_NULL_HANDLE;
     VkImageView m_PlaceholderImageView = VK_NULL_HANDLE;
     VkSampler m_PlaceholderSampler = VK_NULL_HANDLE;
+
+    uint32_t m_SelectedEntityId = UINT32_MAX;
+    std::vector<uint32_t> m_SelectedEntityIds;
 
     void createTextureDescriptorSetLayout();
     void createPlaceholderTexture();

@@ -42,6 +42,16 @@ struct Mesh {
     VkBuffer indexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
     VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+
+    // Local-space bounds (computed on import when vertex data is available).
+    bool hasBounds = false;
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+};
+
+struct WorldChunk {
+    uint64_t cellKey = 0;
+    bool isRoot = false;
 };
 
 struct Renderable {
@@ -90,12 +100,21 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         ImGui::Text("Mesh Path: %s", component.meshPath.c_str());
         ImGui::Text("Vertices: %u", component.vertexCount);
         ImGui::Text("Indices: %u", component.indexCount);
+        if (component.hasBounds) {
+            ImGui::Text("Bounds Min: %.2f %.2f %.2f", component.boundsMin.x, component.boundsMin.y, component.boundsMin.z);
+            ImGui::Text("Bounds Max: %.2f %.2f %.2f", component.boundsMax.x, component.boundsMax.y, component.boundsMax.z);
+        } else {
+            ImGui::Text("Bounds: (none)");
+        }
     } else if constexpr (std::is_same_v<T, Camera>) {
         ImGui::DragFloat3("Position##C", &component.position.x, 0.1f);
         ImGui::DragFloat3("Target##C", &component.target.x, 0.1f);
         ImGui::DragFloat("FOV##C", &component.fov, 1.0f, 1.0f, 180.0f);
         ImGui::DragFloat("Near##C", &component.nearPlane, 0.1f);
         ImGui::DragFloat("Far##C", &component.farPlane, 1.0f);
+
+        if (component.nearPlane < 0.001f) component.nearPlane = 0.001f;
+        if (component.farPlane < component.nearPlane + 0.001f) component.farPlane = component.nearPlane + 0.001f;
     }
 }
 

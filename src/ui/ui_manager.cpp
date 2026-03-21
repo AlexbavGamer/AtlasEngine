@@ -1,6 +1,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "ui_manager.h"
 #include <imgui.h>
+#include "../utils/camera_controller.h"
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
 #include <ImGuiFileDialog.h>
@@ -11,6 +12,8 @@
 #include "../ecs/components/components.h"
 #include <glm/glm.hpp>
 #include <cstring>
+#include <algorithm>
+#include <cmath>
 #include <glm/gtc/type_ptr.hpp>
 #include <cfloat>
 #define GLM_ENABLE_EXPERIMENTAL
@@ -20,6 +23,68 @@
 #include <iostream>
 
 UIManager::UIManager(Atlas::Scene* scene) : m_Scene(scene) {}
+
+void UIManager::TransformCommand::apply(Atlas::Scene* scene, const TransformState& s) {
+    if (!scene) return;
+    auto& registry = scene->getRegistry();
+    if (entity == entt::null || !registry.valid(entity)) return;
+    if (!registry.all_of<Transform>(entity)) return;
+
+    auto& t = registry.get<Transform>(entity);
+    t.position = s.position;
+    t.rotation = s.rotation;
+    t.scale = s.scale;
+}
+
+void UIManager::MultiTransformCommand::apply(Atlas::Scene* scene, const std::vector<TransformState>& states) {
+    if (!scene) return;
+    auto& registry = scene->getRegistry();
+
+    const size_t count = std::min(entities.size(), states.size());
+    for (size_t i = 0; i < count; ++i) {
+        Entity e = entities[i];
+        if (e == entt::null || !registry.valid(e)) continue;
+        if (!registry.all_of<Transform>(e)) continue;
+
+        auto& t = registry.get<Transform>(e);
+        t.position = states[i].position;
+        t.rotation = states[i].rotation;
+        t.scale = states[i].scale;
+    }
+}
+
+void UIManager::pushCommand(std::unique_ptr<UndoCommand> cmd) {
+    if (!cmd) return;
+
+    m_UndoStack.push_back(std::move(cmd));
+    m_RedoStack.clear();
+
+    if (m_UndoStack.size() > MAX_UNDO) {
+        m_UndoStack.erase(m_UndoStack.begin());
+    }
+}
+
+void UIManager::undo() {
+    if (!m_Scene) return;
+    if (m_UndoStack.empty()) return;
+
+    auto cmd = std::move(m_UndoStack.back());
+    m_UndoStack.pop_back();
+
+    cmd->undo(m_Scene);
+    m_RedoStack.push_back(std::move(cmd));
+}
+
+void UIManager::redo() {
+    if (!m_Scene) return;
+    if (m_RedoStack.empty()) return;
+
+    auto cmd = std::move(m_RedoStack.back());
+    m_RedoStack.pop_back();
+
+    cmd->redo(m_Scene);
+    m_UndoStack.push_back(std::move(cmd));
+}
 
 void UIManager::renderToolbar() {
     ImGui::Begin("Toolbar", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar);
@@ -43,8 +108,18 @@ void UIManager::renderToolbar() {
     if (ImGui::Button(isScale ? "S [Active]" : "S", ImVec2(40, 25))) {
         m_TransformMode = TransformMode::Scale;
     }
+    ImGui::SameLine();
+    if (ImGui::Button(m_GizmoLocal ? "Local" : "World", ImVec2(70, 25))) {
+        m_GizmoLocal = !m_GizmoLocal;
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button(m_GizmoSnap ? "Snap On" : "Snap Off", ImVec2(80, 25))) {
+        m_GizmoSnap = !m_GizmoSnap;
+    }
+
     ImGui::PopStyleVar();
-    
+
     ImGui::End();
 }
 
@@ -85,6 +160,43 @@ void UIManager::render(ImTextureID viewportTexture) {
 
     ImGui::DockSpaceOverViewport(dockspaceID, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
+    // Prune selection (streaming/unload can delete entities).
+    if (m_Scene) {
+        auto& registry = m_Scene->getRegistry();
+        for (size_t i = 0; i < m_SelectedEntities.size(); ) {
+            Entity e = m_SelectedEntities[i];
+            if (e == entt::null || !registry.valid(e)) {
+                m_SelectedEntities.erase(m_SelectedEntities.begin() + static_cast<long long>(i));
+            } else {
+                ++i;
+            }
+        }
+
+        if (m_PrimarySelected != entt::null && !registry.valid(m_PrimarySelected)) {
+            m_PrimarySelected = entt::null;
+        }
+        if (m_PrimarySelected == entt::null && !m_SelectedEntities.empty()) {
+            m_PrimarySelected = m_SelectedEntities.back();
+        }
+    }
+
+    // Undo/redo shortcuts (global)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.KeyCtrl && !io.WantTextInput && !ImGuizmo::IsUsing()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Z)) {
+                if (io.KeyShift) {
+                    redo();
+                } else {
+                    undo();
+                }
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Y)) {
+                redo();
+            }
+        }
+    }
+
     renderToolbar();
     renderViewport(viewportTexture);
     renderHierarchy();
@@ -96,7 +208,8 @@ void UIManager::render(ImTextureID viewportTexture) {
     renderMenuBar();
 
     renderProfilerWindow();
-    
+    renderCameraWindow();
+
     if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
         if (ImGuiFileDialog::Instance()->IsOk()) {
             std::string folderPath = ImGuiFileDialog::Instance()->GetCurrentPath();
@@ -118,21 +231,64 @@ void UIManager::render(ImTextureID viewportTexture) {
     }
 }
 
+void UIManager::setSelectionSingle(Entity entity) {
+    m_SelectedEntities.clear();
+    m_PrimarySelected = entt::null;
+
+    if (entity != entt::null) {
+        m_SelectedEntities.push_back(entity);
+        m_PrimarySelected = entity;
+    }
+}
+
 void UIManager::setSelectedEntity(Entity entity) {
-    selectedEntity = entity;
+    setSelectionSingle(entity);
+}
+
+void UIManager::toggleSelectedEntity(Entity entity) {
+    if (entity == entt::null) {
+        return;
+    }
+
+    for (size_t i = 0; i < m_SelectedEntities.size(); ++i) {
+        if (m_SelectedEntities[i] == entity) {
+            m_SelectedEntities.erase(m_SelectedEntities.begin() + static_cast<long long>(i));
+            if (m_PrimarySelected == entity) {
+                m_PrimarySelected = m_SelectedEntities.empty() ? entt::null : m_SelectedEntities.back();
+            }
+            return;
+        }
+    }
+
+    m_SelectedEntities.push_back(entity);
+    m_PrimarySelected = entity;
+}
+
+void UIManager::clearSelection() {
+    m_SelectedEntities.clear();
+    m_PrimarySelected = entt::null;
+}
+
+bool UIManager::isSelected(Entity entity) const {
+    for (auto e : m_SelectedEntities) {
+        if (e == entity) return true;
+    }
+    return false;
 }
 
 Entity UIManager::getSelectedEntity() const {
-    return selectedEntity;
+    return m_PrimarySelected;
 }
 
-bool UIManager::popViewportPickRequest(uint32_t& outX, uint32_t& outY) {
+bool UIManager::popViewportPickRequest(uint32_t& outX, uint32_t& outY, bool& outAdditive) {
     if (!m_HasViewportPickRequest) {
         return false;
     }
     m_HasViewportPickRequest = false;
     outX = m_ViewportPickX;
     outY = m_ViewportPickY;
+    outAdditive = m_ViewportPickAdditive;
+    m_ViewportPickAdditive = false;
     return true;
 }
 
@@ -159,7 +315,7 @@ void UIManager::setCameraMatrices(glm::mat4 view, glm::mat4 proj) {
     m_ProjMatrix = proj;
 }
 
-void UIManager::setCameraController(void* controller) {
+void UIManager::setCameraController(CameraController* controller) {
     m_CameraController = controller;
 }
 
@@ -173,12 +329,29 @@ void UIManager::setRenderer(Atlas::Renderer* r) {
 void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar);
-    
+
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_W)) m_TransformMode = TransformMode::Translate;
+        if (ImGui::IsKeyPressed(ImGuiKey_E)) m_TransformMode = TransformMode::Rotate;
+        if (ImGui::IsKeyPressed(ImGuiKey_R)) m_TransformMode = TransformMode::Scale;
+    }
+
     ImVec2 contentSize = ImGui::GetContentRegionAvail();
-    ImVec2 windowPos = ImGui::GetWindowPos();
 
     ImVec2 imageMin = ImGui::GetCursorScreenPos();
     ImGui::Image(viewportTexture, contentSize);
+
+    // Scroll-wheel speed adjustment while hovering viewport
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (m_CameraController && ImGui::IsItemHovered() && !io.WantTextInput && io.MouseWheel != 0.0f) {
+            float s = m_CameraController->getSpeed();
+            float factor = std::pow(1.15f, io.MouseWheel);
+            s *= factor;
+            s = std::clamp(s, 0.05f, 5000.0f);
+            m_CameraController->setSpeed(s);
+        }
+    }
 
     if (renderer && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGuizmo::IsOver() && !m_GizmoUsing) {
         ImVec2 mousePos = ImGui::GetMousePos();
@@ -199,74 +372,197 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
                 if (py >= extent.height) py = extent.height - 1;
             }
 
+            ImGuiIO& io = ImGui::GetIO();
             m_ViewportPickX = px;
             m_ViewportPickY = py;
+            m_ViewportPickAdditive = io.KeyCtrl;
             m_HasViewportPickRequest = true;
         }
     }
     
-    if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
-        auto& transform = m_Scene->getRegistry().get<Transform>(selectedEntity);
-        glm::mat4 localModel = transform.getModelMatrix();
-        glm::mat4 worldModel = m_Scene->getWorldTransform(selectedEntity);
+    Entity primary = m_PrimarySelected;
 
-        // If entity has parent, keep parent matrix to compute local transform after manipulate.
-        glm::mat4 parentWorld = glm::mat4(1.0f);
-        if (m_Scene->getRegistry().all_of<Atlas::ECS::ParentComponent>(selectedEntity)) {
-            entt::entity parent = m_Scene->getRegistry().get<Atlas::ECS::ParentComponent>(selectedEntity).parent;
-            if (parent != entt::null) {
-                parentWorld = m_Scene->getWorldTransform(parent);
+    if (primary != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(primary)) {
+        // For multi-selection, move only top-level selected entities (skip selected children of selected parents)
+        auto& registry = m_Scene->getRegistry();
+        std::vector<Entity> targets;
+        targets.reserve(m_SelectedEntities.size());
+
+        auto hasSelectedAncestor = [&](Entity e) -> bool {
+            if (!registry.all_of<Atlas::ECS::ParentComponent>(e)) return false;
+            Entity p = registry.get<Atlas::ECS::ParentComponent>(e).parent;
+            while (p != entt::null) {
+                if (isSelected(p)) return true;
+                if (!registry.all_of<Atlas::ECS::ParentComponent>(p)) break;
+                p = registry.get<Atlas::ECS::ParentComponent>(p).parent;
             }
+            return false;
+        };
+
+        for (auto e : m_SelectedEntities) {
+            if (e == entt::null) continue;
+            if (!registry.valid(e)) continue;
+            if (!registry.all_of<Transform>(e)) continue;
+            if (hasSelectedAncestor(e)) continue;
+            targets.push_back(e);
         }
 
-        ImGuizmo::SetOrthographic(false);
-        ImGuizmo::SetDrawlist();
-        ImGuizmo::SetRect(windowPos.x, windowPos.y, contentSize.x, contentSize.y);
-        
-        ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
-        if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
-        if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
+        if (targets.empty()) {
+            m_GizmoUsing = false;
+            m_GizmoWasUsing = false;
+            m_GizmoEditEntities.clear();
+            m_GizmoBeforeMulti.clear();
+        } else {
+            // Gizmo pivot = centroid of targets in world space
+            glm::vec3 centroid(0.0f);
+            for (auto e : targets) {
+                glm::mat4 wm = m_Scene->getWorldTransform(e);
+                centroid += glm::vec3(wm[3]);
+            }
+            centroid /= static_cast<float>(targets.size());
 
-        glm::mat4 deltaMatrix = glm::mat4(1.0f);
-        ImGuizmo::Manipulate(
-            glm::value_ptr(m_ViewMatrix),
-            glm::value_ptr(m_ProjMatrix),
-            operation,
-            ImGuizmo::WORLD,
-            glm::value_ptr(worldModel),
-            glm::value_ptr(deltaMatrix)
-        );
+            // Gizmo matrix (we only use it as a handle)
+            glm::mat4 gizmoModel = glm::translate(glm::mat4(1.0f), centroid);
+            glm::mat4 deltaMatrix = glm::mat4(1.0f);
 
-        m_GizmoUsing = ImGuizmo::IsUsing();
+            ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetDrawlist();
+            ImGuizmo::SetRect(imageMin.x, imageMin.y, contentSize.x, contentSize.y);
 
-        if (m_GizmoUsing) {
-            glm::vec3 translation;
-            glm::vec3 skew;
-            glm::vec4 perspective;
-            glm::quat orientation;
-            glm::vec3 newScale;
-            
-            if (glm::decompose(worldModel, newScale, orientation, translation, skew, perspective)) {
-                glm::mat4 editedWorld = glm::translate(glm::mat4(1.0f), translation);
-                editedWorld *= glm::mat4_cast(orientation);
-                editedWorld = glm::scale(editedWorld, newScale);
+            ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+            if (m_TransformMode == TransformMode::Rotate) operation = ImGuizmo::ROTATE;
+            if (m_TransformMode == TransformMode::Scale) operation = ImGuizmo::SCALE;
 
-                glm::mat4 editedLocal = parentWorld == glm::mat4(1.0f) ? editedWorld : glm::inverse(parentWorld) * editedWorld;
+            const float* snap = nullptr;
+            float snapValues[3] = {0.0f, 0.0f, 0.0f};
+            if (m_GizmoSnap) {
+                if (operation == ImGuizmo::TRANSLATE) {
+                    snapValues[0] = m_GizmoSnapTranslate;
+                    snapValues[1] = m_GizmoSnapTranslate;
+                    snapValues[2] = m_GizmoSnapTranslate;
+                } else if (operation == ImGuizmo::ROTATE) {
+                    snapValues[0] = m_GizmoSnapRotate;
+                    snapValues[1] = m_GizmoSnapRotate;
+                    snapValues[2] = m_GizmoSnapRotate;
+                } else if (operation == ImGuizmo::SCALE) {
+                    snapValues[0] = m_GizmoSnapScale;
+                    snapValues[1] = m_GizmoSnapScale;
+                    snapValues[2] = m_GizmoSnapScale;
+                }
+                snap = snapValues;
+            }
 
-                glm::vec3 localPos;
-                glm::quat localOrient;
-                glm::vec3 localScale;
-                if (glm::decompose(editedLocal, localScale, localOrient, localPos, skew, perspective)) {
-                    transform.position = localPos;
-                    transform.rotation = glm::eulerAngles(localOrient);
-                    transform.scale = localScale;
+            ImGuizmo::MODE mode = m_GizmoLocal ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+
+            glm::mat4 manipMatrix = (targets.size() == 1) ? m_Scene->getWorldTransform(targets[0]) : gizmoModel;
+
+            ImGuizmo::Manipulate(
+                glm::value_ptr(m_ViewMatrix),
+                glm::value_ptr(m_ProjMatrix),
+                operation,
+                mode,
+                glm::value_ptr(manipMatrix),
+                glm::value_ptr(deltaMatrix),
+                snap
+            );
+
+            auto makeState = [&](const Transform& t) -> TransformState {
+                TransformState s;
+                s.position = t.position;
+                s.rotation = t.rotation;
+                s.scale = t.scale;
+                return s;
+            };
+
+            auto anyDifferent = [&](const std::vector<TransformState>& a, const std::vector<TransformState>& b) -> bool {
+                const float eps = 1e-4f;
+                if (a.size() != b.size()) return true;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    if (glm::length(a[i].position - b[i].position) > eps) return true;
+                    if (glm::length(a[i].rotation - b[i].rotation) > eps) return true;
+                    if (glm::length(a[i].scale - b[i].scale) > eps) return true;
+                }
+                return false;
+            };
+
+            bool usingNow = ImGuizmo::IsUsing();
+
+            if (usingNow && !m_GizmoWasUsing) {
+                m_GizmoEditEntities = targets;
+                m_GizmoBeforeMulti.clear();
+                m_GizmoBeforeMulti.reserve(m_GizmoEditEntities.size());
+                for (auto e : m_GizmoEditEntities) {
+                    m_GizmoBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
                 }
             }
+
+            m_GizmoUsing = usingNow;
+
+            if (m_GizmoUsing) {
+                glm::vec3 skew;
+                glm::vec4 perspective;
+                glm::quat orientation;
+                glm::vec3 newScale;
+                glm::vec3 translation;
+
+                for (auto e : targets) {
+                    glm::mat4 oldWorld = m_Scene->getWorldTransform(e);
+                    glm::mat4 editedWorld = deltaMatrix * oldWorld;
+
+                    glm::mat4 parentWorld = glm::mat4(1.0f);
+                    if (registry.all_of<Atlas::ECS::ParentComponent>(e)) {
+                        Entity p = registry.get<Atlas::ECS::ParentComponent>(e).parent;
+                        if (p != entt::null) {
+                            parentWorld = m_Scene->getWorldTransform(p);
+                        }
+                    }
+
+                    glm::mat4 editedLocal = parentWorld == glm::mat4(1.0f) ? editedWorld : glm::inverse(parentWorld) * editedWorld;
+
+                    glm::vec3 localPos;
+                    glm::quat localOrient;
+                    glm::vec3 localScale;
+                    if (glm::decompose(editedLocal, localScale, localOrient, localPos, skew, perspective)) {
+                        auto& t = registry.get<Transform>(e);
+                        t.position = localPos;
+                        t.rotation = glm::degrees(glm::eulerAngles(localOrient));
+                        t.scale = localScale;
+                    }
+                }
+            }
+
+            if (!usingNow && m_GizmoWasUsing && !m_GizmoEditEntities.empty()) {
+                std::vector<TransformState> after;
+                after.reserve(m_GizmoEditEntities.size());
+                for (auto e : m_GizmoEditEntities) {
+                    if (registry.valid(e) && registry.all_of<Transform>(e)) {
+                        after.push_back(makeState(registry.get<Transform>(e)));
+                    } else {
+                        after.push_back(TransformState{});
+                    }
+                }
+
+                if (anyDifferent(m_GizmoBeforeMulti, after)) {
+                    auto cmd = std::make_unique<MultiTransformCommand>();
+                    cmd->entities = m_GizmoEditEntities;
+                    cmd->before = m_GizmoBeforeMulti;
+                    cmd->after = after;
+                    pushCommand(std::move(cmd));
+                }
+
+                m_GizmoEditEntities.clear();
+                m_GizmoBeforeMulti.clear();
+            }
+
+            m_GizmoWasUsing = usingNow;
         }
     } else {
         m_GizmoUsing = false;
+        m_GizmoWasUsing = false;
+        m_GizmoEditEntities.clear();
+        m_GizmoBeforeMulti.clear();
     }
-    
+
     if (ImGui::BeginDragDropTarget()) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_DROP");
         if (payload != nullptr && onAssetDropped) {
@@ -296,14 +592,19 @@ void UIManager::renderHierarchy() {
 
             const auto children = m_Scene->getChildren(entity);
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
-            if (entity == selectedEntity) flags |= ImGuiTreeNodeFlags_Selected;
+            if (isSelected(entity)) flags |= ImGuiTreeNodeFlags_Selected;
             if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
             ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entity)));
             bool nodeOpen = ImGui::TreeNodeEx(entityName.c_str(), flags);
 
             if (ImGui::IsItemClicked()) {
-                setSelectedEntity(entity);
+                ImGuiIO& io = ImGui::GetIO();
+                if (io.KeyCtrl) {
+                    toggleSelectedEntity(entity);
+                } else {
+                    setSelectedEntity(entity);
+                }
             }
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
                 bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(entity);
@@ -336,8 +637,8 @@ void UIManager::renderHierarchy() {
 
         for (auto entity : pendingDelete) {
             if (m_Scene->getRegistry().valid(entity)) {
-                if (selectedEntity == entity) {
-                    selectedEntity = entt::null;
+                if (isSelected(entity)) {
+                    toggleSelectedEntity(entity);
                 }
                 m_Scene->destroyEntity(entity);
             }
@@ -350,6 +651,8 @@ void UIManager::renderHierarchy() {
 void UIManager::renderProperties() {
     ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
+    Entity selectedEntity = m_PrimarySelected;
+
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
         ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
 
@@ -358,21 +661,91 @@ void UIManager::renderProperties() {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Camera entity cannot be deleted");
         }
 
+        bool deleted = false;
         ImGui::BeginDisabled(isCameraEntity);
         if (ImGui::Button("Delete Entity")) {
             m_Scene->destroyEntity(selectedEntity);
+            clearSelection();
             selectedEntity = entt::null;
+            deleted = true;
         }
         ImGui::EndDisabled();
 
-        auto renderComponent = [this](auto&& component, const char* name) {
+        if (deleted) {
+            ImGui::End();
+            return;
+        }
+
+        auto renderComponent = [this, selectedEntity](auto&& component, const char* name) {
             if (ImGui::CollapsingHeader(name, ImGuiTreeNodeFlags_DefaultOpen)) {
                 ecs::renderComponentProperties(component, static_cast<uint32_t>(selectedEntity));
             }
         };
 
         if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
-            renderComponent(m_Scene->getRegistry().get<Transform>(selectedEntity), "Transform");
+            if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+                auto& t = m_Scene->getRegistry().get<Transform>(selectedEntity);
+
+                auto makeState = [&](const Transform& tr) -> TransformState {
+                    TransformState s;
+                    s.position = tr.position;
+                    s.rotation = tr.rotation;
+                    s.scale = tr.scale;
+                    return s;
+                };
+
+                auto isDifferent = [&](const TransformState& a, const TransformState& b) -> bool {
+                    const float eps = 1e-4f;
+                    return glm::length(a.position - b.position) > eps ||
+                           glm::length(a.rotation - b.rotation) > eps ||
+                           glm::length(a.scale - b.scale) > eps;
+                };
+
+                bool deactivated = false;
+
+                ImGui::DragFloat3("Position##T", &t.position.x, 0.1f);
+                if (ImGui::IsItemActivated()) {
+                    m_PropTransformEditing = true;
+                    m_PropTransformEntity = selectedEntity;
+                    m_PropTransformBefore = makeState(t);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    deactivated = true;
+                }
+
+                ImGui::DragFloat3("Rotation##T", &t.rotation.x, 1.0f);
+                if (ImGui::IsItemActivated()) {
+                    m_PropTransformEditing = true;
+                    m_PropTransformEntity = selectedEntity;
+                    m_PropTransformBefore = makeState(t);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    deactivated = true;
+                }
+
+                ImGui::DragFloat3("Scale##T", &t.scale.x, 0.1f);
+                if (ImGui::IsItemActivated()) {
+                    m_PropTransformEditing = true;
+                    m_PropTransformEntity = selectedEntity;
+                    m_PropTransformBefore = makeState(t);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    deactivated = true;
+                }
+
+                if (deactivated && m_PropTransformEditing && m_PropTransformEntity == selectedEntity) {
+                    TransformState after = makeState(t);
+                    if (isDifferent(m_PropTransformBefore, after)) {
+                        auto cmd = std::make_unique<TransformCommand>();
+                        cmd->entity = selectedEntity;
+                        cmd->before = m_PropTransformBefore;
+                        cmd->after = after;
+                        pushCommand(std::move(cmd));
+                    }
+                    m_PropTransformEditing = false;
+                    m_PropTransformEntity = entt::null;
+                }
+            }
         }
 
         if (m_Scene->getRegistry().all_of<Renderable>(selectedEntity)) {
@@ -624,6 +997,9 @@ void UIManager::renderMenuBar() {
             ImGui::MenuItem("Properties", NULL, true);
             ImGui::MenuItem("Content Explorer", NULL, true);
             ImGui::Separator();
+            ImGui::MenuItem("Profiler", NULL, &m_ShowProfilerWindow);
+            ImGui::MenuItem("Camera", NULL, &m_ShowCameraWindow);
+            ImGui::Separator();
             if (renderer) {
                 glm::vec4 color = renderer->getClearColor();
                 if (ImGui::ColorEdit3("Background", &color.x, ImGuiColorEditFlags_Float)) {
@@ -692,7 +1068,59 @@ void UIManager::renderProfilerWindow()
 #endif
 
     ImGui::Checkbox("Show Tracy Connection", &m_ShowTracyConnection);
-    ImGui::Checkbox("Show profiler window", &m_ShowProfilerWindow);
+
+    ImGui::End();
+}
+
+void UIManager::renderCameraWindow() {
+    if (!m_ShowCameraWindow) return;
+
+    ImGui::Begin("Camera", &m_ShowCameraWindow, ImGuiWindowFlags_AlwaysAutoResize);
+
+    if (m_CameraController) {
+        bool enabled = m_CameraController->isEnabled();
+        if (ImGui::Checkbox("Enabled##Cam", &enabled)) {
+            m_CameraController->setEnabled(enabled);
+        }
+
+        bool requireRmb = m_CameraController->getRequireRmbForMove();
+        if (ImGui::Checkbox("Require RMB to move", &requireRmb)) {
+            m_CameraController->setRequireRmbForMove(requireRmb);
+        }
+
+        bool lockCursor = m_CameraController->getLockCursorOnLook();
+        if (ImGui::Checkbox("Lock cursor on RMB", &lockCursor)) {
+            m_CameraController->setLockCursorOnLook(lockCursor);
+        }
+
+        float speed = m_CameraController->getSpeed();
+        if (ImGui::DragFloat("Move speed", &speed, 0.1f, 0.05f, 5000.0f, "%.2f")) {
+            m_CameraController->setSpeed(speed);
+        }
+
+        float boost = m_CameraController->getBoostMultiplier();
+        if (ImGui::DragFloat("Shift boost", &boost, 0.1f, 1.0f, 50.0f, "%.2f")) {
+            m_CameraController->setBoostMultiplier(boost);
+        }
+
+        float slow = m_CameraController->getSlowMultiplier();
+        if (ImGui::DragFloat("Ctrl slow", &slow, 0.01f, 0.01f, 1.0f, "%.2f")) {
+            m_CameraController->setSlowMultiplier(slow);
+        }
+
+        float sens = m_CameraController->getSensitivity();
+        if (ImGui::DragFloat("Mouse sensitivity", &sens, 0.01f, 0.01f, 5.0f, "%.2f")) {
+            m_CameraController->setSensitivity(sens);
+        }
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Shortcuts:");
+        ImGui::TextUnformatted("- Hold RMB to look");
+        ImGui::TextUnformatted("- Shift = boost, Ctrl = slow");
+        ImGui::TextUnformatted("- Scroll over viewport adjusts speed");
+    } else {
+        ImGui::TextUnformatted("No camera controller bound");
+    }
 
     ImGui::End();
 }

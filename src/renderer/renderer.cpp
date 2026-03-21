@@ -51,6 +51,7 @@ void Renderer::init() {
     createDepthResources();
     createGraphicsPipeline();
     createPickingPipeline();
+    createOutlinePipeline();
     createFramebuffers();
     createOffscreenResources();
     createCommandPool();
@@ -253,6 +254,7 @@ void Renderer::recreateSwapChain() {
     createDepthResources();
     createGraphicsPipeline();
     createPickingPipeline();
+    createOutlinePipeline();
     createFramebuffers();
     createOffscreenResources();
     createCommandBuffers();
@@ -916,7 +918,7 @@ void Renderer::createPickingRenderPass() {
     pickingAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     pickingAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     pickingAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    pickingAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    pickingAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     pickingAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkAttachmentDescription depthAttachment{};
@@ -1259,6 +1261,138 @@ void Renderer::createPickingPipeline() {
         vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
         vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
         throw std::runtime_error("failed to create picking pipeline!");
+    }
+
+    vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+    vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+}
+
+void Renderer::createOutlinePipeline() {
+    auto vertShaderCode = readFile("shaders/outline_vert.spv");
+    auto fragShaderCode = readFile("shaders/outline_frag.spv");
+
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    const auto bindingDescription = Vertex::getBindingDescription();
+    const auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 4;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(m_SwapChainExtent.width);
+    viewport.height = static_cast<float>(m_SwapChainExtent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = m_SwapChainExtent;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(OutlinePushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_OutlinePipelineLayout) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create outline pipeline layout!");
+    }
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = m_OutlinePipelineLayout;
+    pipelineInfo.renderPass = m_OffscreenRenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_OutlinePipeline) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create outline pipeline!");
     }
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
@@ -1751,7 +1885,55 @@ void Renderer::createOffscreenResources() {
         throw std::runtime_error("failed to create picking image view!");
     }
 
-    VkImageView pickingAttachments[] = {m_PickingImageView, m_OffscreenDepthImageView};
+        // Picking depth image
+    VkImageCreateInfo pickingDepthInfo{};
+    pickingDepthInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    pickingDepthInfo.imageType = VK_IMAGE_TYPE_2D;
+    pickingDepthInfo.extent.width = m_SwapChainExtent.width;
+    pickingDepthInfo.extent.height = m_SwapChainExtent.height;
+    pickingDepthInfo.extent.depth = 1;
+    pickingDepthInfo.mipLevels = 1;
+    pickingDepthInfo.arrayLayers = 1;
+    pickingDepthInfo.format = VK_FORMAT_D32_SFLOAT;
+    pickingDepthInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    pickingDepthInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    pickingDepthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    pickingDepthInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(m_Device, &pickingDepthInfo, nullptr, &m_PickingDepthImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create picking depth image!");
+    }
+
+    VkMemoryRequirements pickingDepthMemReq{};
+    vkGetImageMemoryRequirements(m_Device, m_PickingDepthImage, &pickingDepthMemReq);
+
+    VkMemoryAllocateInfo pickingDepthAlloc{};
+    pickingDepthAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    pickingDepthAlloc.allocationSize = pickingDepthMemReq.size;
+    pickingDepthAlloc.memoryTypeIndex = findMemoryType(pickingDepthMemReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &pickingDepthAlloc, nullptr, &m_PickingDepthImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate picking depth image memory!");
+    }
+
+    vkBindImageMemory(m_Device, m_PickingDepthImage, m_PickingDepthImageMemory, 0);
+
+    VkImageViewCreateInfo pickingDepthView{};
+    pickingDepthView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    pickingDepthView.image = m_PickingDepthImage;
+    pickingDepthView.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    pickingDepthView.format = VK_FORMAT_D32_SFLOAT;
+    pickingDepthView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    pickingDepthView.subresourceRange.baseMipLevel = 0;
+    pickingDepthView.subresourceRange.levelCount = 1;
+    pickingDepthView.subresourceRange.baseArrayLayer = 0;
+    pickingDepthView.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(m_Device, &pickingDepthView, nullptr, &m_PickingDepthImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create picking depth image view!");
+    }
+
+    VkImageView pickingAttachments[] = {m_PickingImageView, m_PickingDepthImageView};
     VkFramebufferCreateInfo pickingFramebufferInfo{};
     pickingFramebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     pickingFramebufferInfo.renderPass = m_PickingRenderPass;
@@ -1784,6 +1966,9 @@ void Renderer::createOffscreenResources() {
 
 
 void Renderer::destroyPipelineResources() {
+    if (m_OutlinePipeline) { vkDestroyPipeline(m_Device, m_OutlinePipeline, nullptr); m_OutlinePipeline = VK_NULL_HANDLE; }
+    if (m_OutlinePipelineLayout) { vkDestroyPipelineLayout(m_Device, m_OutlinePipelineLayout, nullptr); m_OutlinePipelineLayout = VK_NULL_HANDLE; }
+
     if (m_PickingPipeline) { vkDestroyPipeline(m_Device, m_PickingPipeline, nullptr); m_PickingPipeline = VK_NULL_HANDLE; }
     if (m_PickingPipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PickingPipelineLayout, nullptr); m_PickingPipelineLayout = VK_NULL_HANDLE; }
 
@@ -1820,6 +2005,9 @@ void Renderer::destroyOffscreenResources() {
     if (m_PickingImageView) vkDestroyImageView(m_Device, m_PickingImageView, nullptr);
     if (m_PickingImage) vkDestroyImage(m_Device, m_PickingImage, nullptr);
     if (m_PickingImageMemory) vkFreeMemory(m_Device, m_PickingImageMemory, nullptr);
+    if (m_PickingDepthImageView) vkDestroyImageView(m_Device, m_PickingDepthImageView, nullptr);
+    if (m_PickingDepthImage) vkDestroyImage(m_Device, m_PickingDepthImage, nullptr);
+    if (m_PickingDepthImageMemory) vkFreeMemory(m_Device, m_PickingDepthImageMemory, nullptr);
 
     if (m_OffscreenFramebuffer) vkDestroyFramebuffer(m_Device, m_OffscreenFramebuffer, nullptr);
     if (m_OffscreenSampler) vkDestroySampler(m_Device, m_OffscreenSampler, nullptr);
@@ -1845,6 +2033,9 @@ void Renderer::destroyOffscreenResources() {
     m_PickingImage = VK_NULL_HANDLE;
     m_PickingImageMemory = VK_NULL_HANDLE;
     m_PickingImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_PickingDepthImageView = VK_NULL_HANDLE;
+    m_PickingDepthImage = VK_NULL_HANDLE;
+    m_PickingDepthImageMemory = VK_NULL_HANDLE;
 }
 
 void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, Scene* scene) {
@@ -1929,7 +2120,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 auto& camera = registry.get<Camera>(cameraEntity);
                 camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
 
-                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, 0.1f, 1000.0f);
+                // Respect Near/Far from Camera component
+                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
                 proj[1][1] = -proj[1][1];
 
                 view = camera.getViewMatrix();
@@ -2009,7 +2201,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 auto& camera = registry.get<Camera>(cameraEntity);
                 camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
 
-                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, 0.1f, 1000.0f);
+                // Respect Near/Far from Camera component
+                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
                 proj[1][1] = -proj[1][1];
 
                 view = camera.getViewMatrix();
@@ -2148,6 +2341,45 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlend);
                 for (const auto& item : transparentItems) {
                     drawEntity(item.entity);
+                }
+            }
+
+            if (!m_SelectedEntityIds.empty() && m_OutlinePipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipeline);
+
+                for (uint32_t selId : m_SelectedEntityIds) {
+                    if (selId == UINT32_MAX) continue;
+
+                    entt::entity selected = static_cast<entt::entity>(selId);
+                    if (!registry.valid(selected) || !registry.all_of<Mesh>(selected)) {
+                        continue;
+                    }
+
+                    auto& selMesh = registry.get<Mesh>(selected);
+                    if (selMesh.vertexBuffer == VK_NULL_HANDLE || selMesh.indexBuffer == VK_NULL_HANDLE || selMesh.indexCount == 0) {
+                        continue;
+                    }
+
+                    glm::mat4 selModel = glm::mat4(1.0f);
+                    if (scene && scene->hasTransform(selected)) {
+                        selModel = scene->getWorldTransform(selected);
+                    }
+
+                    OutlinePushConstants pc{};
+                    pc.model = selModel;
+                    pc.view = view;
+                    pc.proj = proj;
+                    pc.color = glm::vec4(1.0f, 0.7f, 0.1f, 1.0f);
+                    pc.width = 0.015f;
+
+                    vkCmdPushConstants(commandBuffer, m_OutlinePipelineLayout,
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(OutlinePushConstants), &pc);
+
+                    VkBuffer vertexBuffers[] = {selMesh.vertexBuffer};
+                    VkDeviceSize offsets[] = {0};
+                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffer, selMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                    vkCmdDrawIndexed(commandBuffer, selMesh.indexCount, 1, 0, 0, 0);
                 }
             }
         }
