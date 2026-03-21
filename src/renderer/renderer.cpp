@@ -91,7 +91,9 @@ void Renderer::shutdown() {
     }
 #endif
 
-    m_FrameQueue.flush();
+    for (auto& q : m_DeletionQueues) {
+        q.flush();
+    }
     
     if (m_LightBuffer) vkDestroyBuffer(m_Device, m_LightBuffer, nullptr);
     if (m_LightBufferMemory) vkFreeMemory(m_Device, m_LightBufferMemory, nullptr);
@@ -144,18 +146,30 @@ void Renderer::shutdown() {
 }
 
 void Renderer::beginFrame() {
+    if (m_Device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    // Wait for the frame slot we are about to reuse.
+    vkWaitForFences(m_Device, 1, &m_InFlightFences[m_CurrentFrame], VK_TRUE, UINT64_MAX);
+
+    // Safe point: everything that referenced resources queued for this slot is done.
+    m_DeletionQueues[m_CurrentFrame].flush();
+
+    // Command buffers are reused; reset before recording.
+    if (!m_CommandBuffers.empty()) {
+        vkResetCommandBuffer(m_CommandBuffers[m_CurrentFrame], 0);
+    }
 }
 
 void Renderer::endFrame() {
+    m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    PROFILE_FRAME();
 }
 
 void Renderer::renderScene(Scene* scene) {
     PROFILE_SCOPE("RenderFrame");
     if (!scene) return;
-
-    // Wait for the current frame to complete
-    vkWaitForFences(m_Device, 1, &m_InFlightFences[m_CurrentFrame], VK_TRUE, UINT64_MAX);
-    vkResetFences(m_Device, 1, &m_InFlightFences[m_CurrentFrame]);
 
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(m_Device, m_SwapChain, UINT64_MAX, 
@@ -167,6 +181,17 @@ void Renderer::renderScene(Scene* scene) {
     } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         throw std::runtime_error("failed to acquire swap chain image!");
     }
+
+    // If this swapchain image is already being used by another in-flight frame, wait for it.
+    if (imageIndex < m_ImagesInFlight.size() && m_ImagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        vkWaitForFences(m_Device, 1, &m_ImagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+    }
+
+    if (imageIndex < m_ImagesInFlight.size()) {
+        m_ImagesInFlight[imageIndex] = m_InFlightFences[m_CurrentFrame];
+    }
+
+    vkResetFences(m_Device, 1, &m_InFlightFences[m_CurrentFrame]);
 
     recordCommandBuffer(m_CommandBuffers[m_CurrentFrame], imageIndex, scene);
 
@@ -209,8 +234,6 @@ void Renderer::renderScene(Scene* scene) {
         throw std::runtime_error("failed to present swap chain image!");
     }
 
-    m_CurrentFrame = (m_CurrentFrame + 1) % static_cast<uint32_t>(m_InFlightFences.size());
-    PROFILE_FRAME();
 }
 
 void Renderer::recreateSwapChain() {
@@ -289,6 +312,13 @@ void Renderer::setVSyncEnabled(bool enabled) {
     }
 
     recreateSwapChain();
+}
+
+void Renderer::defer(std::function<void()> fn) {
+    if (!fn) return;
+
+    // Queue for the current frame slot; it will flush when this slot is reused.
+    m_DeletionQueues[m_CurrentFrame].push(std::move(fn));
 }
 
 void Renderer::immediateSubmit(const std::function<void(VkCommandBuffer)>& fn) {
@@ -637,7 +667,11 @@ void Renderer::createLogicalDevice() {
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
+    VkPhysicalDeviceFeatures supportedFeatures{};
+    vkGetPhysicalDeviceFeatures(m_PhysicalDevice, &supportedFeatures);
+
     VkPhysicalDeviceFeatures deviceFeatures{};
+    deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1690,13 +1724,13 @@ void Renderer::createCommandPool() {
 }
 
 void Renderer::createCommandBuffers() {
-    m_CommandBuffers.resize(m_SwapChainImages.size());
+    m_CommandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = m_CommandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = static_cast<uint32_t>(m_SwapChainImages.size());
+    allocInfo.commandBufferCount = static_cast<uint32_t>(m_CommandBuffers.size());
 
     if (vkAllocateCommandBuffers(m_Device, &allocInfo, m_CommandBuffers.data()) != VK_SUCCESS) {
         throw std::runtime_error("failed to allocate command buffers!");
@@ -1704,12 +1738,12 @@ void Renderer::createCommandBuffers() {
 }
 
 void Renderer::createSyncObjects() {
-    uint32_t imageCount = static_cast<uint32_t>(m_SwapChainImages.size());
-    
-    m_ImageAvailableSemaphores.resize(imageCount);
-    m_RenderFinishedSemaphores.resize(imageCount);
-    m_InFlightFences.resize(imageCount);
-    m_ImagesInFlight.resize(imageCount, VK_NULL_HANDLE);
+    const uint32_t imageCount = static_cast<uint32_t>(m_SwapChainImages.size());
+
+    m_ImageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    m_RenderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    m_InFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+    m_ImagesInFlight.assign(imageCount, VK_NULL_HANDLE);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -1718,7 +1752,7 @@ void Renderer::createSyncObjects() {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (size_t i = 0; i < imageCount; i++) {
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         if (vkCreateSemaphore(m_Device, &semaphoreInfo, nullptr, &m_ImageAvailableSemaphores[i]) != VK_SUCCESS ||
             vkCreateSemaphore(m_Device, &semaphoreInfo, nullptr, &m_RenderFinishedSemaphores[i]) != VK_SUCCESS ||
             vkCreateFence(m_Device, &fenceInfo, nullptr, &m_InFlightFences[i]) != VK_SUCCESS) {

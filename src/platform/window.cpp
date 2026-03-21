@@ -12,6 +12,7 @@ Window::Window(int width, int height, const std::string& title)
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
 
     m_Window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
     if (!m_Window) {
@@ -26,6 +27,15 @@ Window::Window(int width, int height, const std::string& title)
     glfwSetMouseButtonCallback(m_Window, glfwMouseButtonCallback);
     glfwSetCursorPosCallback(m_Window, glfwMouseMoveCallback);
     glfwSetScrollCallback(m_Window, glfwScrollCallback);
+
+    // Ensure we start maximized (and capture the real framebuffer size immediately).
+    glfwMaximizeWindow(m_Window);
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(m_Window, &fbW, &fbH);
+    if (fbW > 0 && fbH > 0) {
+        m_Width = fbW;
+        m_Height = fbH;
+    }
 }
 
 Window::~Window() {

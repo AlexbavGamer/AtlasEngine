@@ -8,6 +8,7 @@
 #include <functional>
 #include <string>
 #include <deque>
+#include <array>
 #include <cstdint>
 
 #include "../core/base/non_copyable.h"
@@ -115,6 +116,9 @@ public:
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
     uint32_t bindTexture(VkImageView imageView, VkSampler sampler);
     void updateTexture(uint32_t index, VkImageView imageView, VkSampler sampler);
+
+    // Defer destruction until GPU is done with in-flight frames.
+    void defer(std::function<void()> fn);
 
     void setVSyncEnabled(bool enabled);
     bool isVSyncEnabled() const { return m_VSyncEnabled; }
@@ -306,8 +310,7 @@ private:
         }
     };
 
-    DeletionQueue m_MainQueue;
-    DeletionQueue m_FrameQueue;
+    std::array<DeletionQueue, MAX_FRAMES_IN_FLIGHT> m_DeletionQueues{};
 
     static const std::vector<const char*> validationLayers;
     static const std::vector<const char*> deviceExtensions;

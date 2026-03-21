@@ -4,12 +4,15 @@
 #include <vector>
 #include <iostream>
 #include <chrono>
+#include <functional>
 #include <unordered_map>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/constants.hpp>
 #include <assimp/mesh.h>
 #include <assimp/scene.h>
 #include <assimp/Importer.hpp>
@@ -192,7 +195,6 @@ struct MeshData {
         indexCount = 0;
         ownerDevice = VK_NULL_HANDLE;
     }
-
     void freeCPUMemory() {
         std::vector<Vertex>().swap(vertices);
         std::vector<uint32_t>().swap(indices);
@@ -201,6 +203,7 @@ struct MeshData {
 
 struct ModelData {
     std::vector<MeshData> meshes;
+    std::string rootName;
     uint32_t totalVertices = 0;
     uint32_t totalIndices = 0;
     VkDevice device = VK_NULL_HANDLE;
@@ -212,10 +215,12 @@ struct ModelData {
 
     ModelData(ModelData&& other) noexcept 
         : meshes(std::move(other.meshes)),
+          rootName(std::move(other.rootName)),
           totalVertices(other.totalVertices),
           totalIndices(other.totalIndices),
           device(other.device) {
         other.device = VK_NULL_HANDLE;
+        other.rootName.clear();
         other.totalVertices = 0;
         other.totalIndices = 0;
     }
@@ -226,6 +231,8 @@ struct ModelData {
             totalVertices = other.totalVertices;
             totalIndices = other.totalIndices;
             meshes = std::move(other.meshes);
+            rootName = std::move(other.rootName);
+            other.rootName.clear();
             other.device = VK_NULL_HANDLE;
             other.totalVertices = 0;
             other.totalIndices = 0;
@@ -244,6 +251,7 @@ struct ModelData {
             }
         }
         meshes.clear();
+        rootName.clear();
         totalVertices = 0;
         totalIndices = 0;
         device = VK_NULL_HANDLE;
@@ -318,11 +326,11 @@ public:
         Assimp::Importer importer;
         
         const aiScene* scene = importer.ReadFile(path, 
-            aiProcess_Triangulate | 
-            aiProcess_FixInfacingNormals | 
-            aiProcess_PreTransformVertices | 
-            aiProcess_ConvertToLeftHanded | 
-            aiProcess_FlipUVs | 
+            aiProcess_Triangulate |
+            aiProcess_FixInfacingNormals |
+            aiProcess_PreTransformVertices |
+            aiProcess_ConvertToLeftHanded |
+            aiProcess_FlipUVs |
             aiProcess_GenNormals);
         
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
@@ -406,10 +414,10 @@ public:
         
         Assimp::Importer importer;
         const aiScene* scene = importer.ReadFile(path, 
-            aiProcess_Triangulate | 
-            aiProcess_FixInfacingNormals | 
+            aiProcess_Triangulate |
+            aiProcess_FixInfacingNormals |
             aiProcess_PreTransformVertices |
-            aiProcess_ConvertToLeftHanded | 
+            aiProcess_ConvertToLeftHanded |
             aiProcess_FlipUVs |
             aiProcess_GenNormals);
         
@@ -419,6 +427,104 @@ public:
 
         std::filesystem::path modelPath(path);
         std::filesystem::path modelDir = modelPath.parent_path();
+
+        auto trimWs = [](std::string& s) {
+            auto isWs = [](unsigned char c) -> bool {
+                return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+            };
+            while (!s.empty() && isWs(static_cast<unsigned char>(s.front()))) {
+                s.erase(s.begin());
+            }
+            while (!s.empty() && isWs(static_cast<unsigned char>(s.back()))) {
+                s.pop_back();
+            }
+        };
+
+        auto prettify = [&](std::string s) -> std::string {
+            trimWs(s);
+            // FBX often prefixes names like "Model::Foo".
+            size_t pos = s.rfind("::");
+            if (pos != std::string::npos && pos + 2 < s.size()) {
+                s = s.substr(pos + 2);
+                trimWs(s);
+            }
+            return s;
+        };
+
+        auto isGeneric = [](const std::string& name) -> bool {
+            if (name.empty()) return true;
+
+            std::string n;
+            n.reserve(name.size());
+            for (unsigned char c : name) {
+                if (c >= 'A' && c <= 'Z') n.push_back(static_cast<char>(c - 'A' + 'a'));
+                else n.push_back(static_cast<char>(c));
+            }
+
+            return n == "rootnode" || n == "root" || n == "scene";
+        };
+
+        // Name for the imported object root (prefer the model's internal root node name).
+        {
+            outData->rootName.clear();
+
+            if (scene->mRootNode) {
+                outData->rootName = prettify(scene->mRootNode->mName.C_Str());
+            }
+
+            // If root node is generic, pick the first meaningful node name in the hierarchy.
+            if (scene->mRootNode && isGeneric(outData->rootName)) {
+                std::function<void(const aiNode*)> walk;
+                walk = [&](const aiNode* node) {
+                    if (!node || !outData->rootName.empty()) return;
+
+                    std::string cand = prettify(node->mName.C_Str());
+                    if (!isGeneric(cand)) {
+                        outData->rootName = std::move(cand);
+                        return;
+                    }
+
+                    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+                        walk(node->mChildren[i]);
+                        if (!outData->rootName.empty()) return;
+                    }
+                };
+
+                // Start from children to avoid immediately matching the generic root again.
+                for (unsigned int i = 0; i < scene->mRootNode->mNumChildren; ++i) {
+                    walk(scene->mRootNode->mChildren[i]);
+                    if (!outData->rootName.empty()) break;
+                }
+            }
+
+            // If root name looks like the filename, prefer a neutral group name.
+            {
+                auto toLower = [](std::string s) {
+                    for (char& c : s) {
+                        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                    }
+                    return s;
+                };
+
+                std::string fileName = modelPath.filename().string();
+                std::string stem = modelPath.stem().string();
+                std::string rn = toLower(outData->rootName);
+                if (!fileName.empty()) {
+                    std::string fn = toLower(fileName);
+                    std::string st = toLower(stem);
+                    if (!rn.empty() && (rn == fn || rn == st)) {
+                        outData->rootName.clear();
+                    }
+                }
+            }
+
+            if (isGeneric(outData->rootName)) {
+                outData->rootName.clear();
+            }
+            if (outData->rootName.empty()) {
+                outData->rootName = "Scene";
+            }
+        }
 
         // Prefer extracting/copying textures into MyProject/assets/textures when available.
         std::filesystem::path extractedDir = std::filesystem::path("MyProject") / "assets" / "textures";
@@ -625,6 +731,7 @@ public:
         };
 
         ModelData modelData(device);
+        modelData.rootName = outData->rootName;
 
         if (mergeAll) {
             // Chunk by material (opt-in) to reduce entity count.
@@ -823,11 +930,50 @@ public:
 
             std::cout << "  [CHUNK] Loaded " << modelData.meshes.size() << " material chunks" << std::endl;
         } else {
-            // Standard non-chunk path: one mesh per Assimp mesh.
+            // Standard non-chunk path: one mesh per Assimp mesh (pretransformed).
+            // Build a mapping from mesh index -> node/object name for better TagComponent names.
+            std::unordered_map<unsigned int, std::string> meshIndexToNodeName;
+            {
+                std::function<void(const aiNode*)> walkNode;
+                walkNode = [&](const aiNode* node) {
+                    if (!node) return;
+
+                    std::string base = prettify(node->mName.C_Str());
+                    if (!isGeneric(base)) {
+                        for (unsigned int m = 0; m < node->mNumMeshes; ++m) {
+                            unsigned int meshIdx = node->mMeshes[m];
+                            if (meshIdx >= scene->mNumMeshes) continue;
+                            if (meshIndexToNodeName.find(meshIdx) != meshIndexToNodeName.end()) continue;
+
+                            std::string n = base;
+                            if (node->mNumMeshes > 1) {
+                                n = base + "_" + std::to_string(m + 1);
+                            }
+                            meshIndexToNodeName[meshIdx] = std::move(n);
+                        }
+                    }
+
+                    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+                        walkNode(node->mChildren[i]);
+                    }
+                };
+
+                walkNode(scene->mRootNode);
+            }
+
             for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
                 aiMesh* mesh = scene->mMeshes[i];
                 MeshData meshData;
-                meshData.name = mesh->mName.C_Str();
+
+                if (auto it = meshIndexToNodeName.find(i); it != meshIndexToNodeName.end()) {
+                    meshData.name = it->second;
+                } else {
+                    meshData.name = prettify(mesh->mName.C_Str());
+                }
+
+                if (isGeneric(meshData.name)) {
+                    meshData.name.clear();
+                }
                 if (meshData.name.empty()) {
                     meshData.name = std::string("Mesh_") + std::to_string(i);
                 }

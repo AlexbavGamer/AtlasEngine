@@ -119,26 +119,27 @@ void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
     if (!registry.valid(entity)) return;
     if (!registry.all_of<::Mesh>(entity)) return;
 
+    VkDevice device = m_Renderer->getDevice();
+    if (device == VK_NULL_HANDLE) return;
+
     auto& mesh = registry.get<::Mesh>(entity);
 
-    VkDevice device = m_Renderer->getDevice();
+    VkBuffer vb = mesh.vertexBuffer;
+    VkDeviceMemory vm = mesh.vertexMemory;
+    VkBuffer ib = mesh.indexBuffer;
+    VkDeviceMemory im = mesh.indexMemory;
 
-    if (mesh.vertexBuffer) {
-        vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
-        mesh.vertexBuffer = VK_NULL_HANDLE;
-    }
-    if (mesh.indexBuffer) {
-        vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
-        mesh.indexBuffer = VK_NULL_HANDLE;
-    }
-    if (mesh.vertexMemory) {
-        vkFreeMemory(device, mesh.vertexMemory, nullptr);
-        mesh.vertexMemory = VK_NULL_HANDLE;
-    }
-    if (mesh.indexMemory) {
-        vkFreeMemory(device, mesh.indexMemory, nullptr);
-        mesh.indexMemory = VK_NULL_HANDLE;
-    }
+    mesh.vertexBuffer = VK_NULL_HANDLE;
+    mesh.vertexMemory = VK_NULL_HANDLE;
+    mesh.indexBuffer = VK_NULL_HANDLE;
+    mesh.indexMemory = VK_NULL_HANDLE;
+
+    m_Renderer->defer([device, vb, vm, ib, im]() {
+        if (vb) vkDestroyBuffer(device, vb, nullptr);
+        if (ib) vkDestroyBuffer(device, ib, nullptr);
+        if (vm) vkFreeMemory(device, vm, nullptr);
+        if (im) vkFreeMemory(device, im, nullptr);
+    });
 }
 
 void EditorApp::queueModelImport(const std::string& assetPath) {
@@ -147,10 +148,40 @@ void EditorApp::queueModelImport(const std::string& assetPath) {
 
 void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3& rootPosition, bool isWorldChunk, uint64_t cellKey) {
     std::string fullPath = assetPath;
-    if (m_ProjectManager && m_ProjectManager->hasProject()) {
-        std::filesystem::path p(assetPath);
-        if (!p.is_absolute()) {
-            fullPath = m_ProjectManager->getAssetFullPath(assetPath);
+
+    // Normalize "@"-prefixed paths (Content Explorer style) and handle Windows slashes.
+    if (!fullPath.empty() && fullPath[0] == '@') {
+        fullPath.erase(fullPath.begin());
+    }
+    std::replace(fullPath.begin(), fullPath.end(), '\\', '/');
+
+    // If this already resolves to an existing file, keep it.
+    {
+        std::error_code ec;
+        std::filesystem::path p(fullPath);
+        if (!p.empty() && std::filesystem::exists(p, ec)) {
+            fullPath = std::filesystem::absolute(p, ec).lexically_normal().string();
+        } else if (m_ProjectManager && m_ProjectManager->hasProject()) {
+            // Accept "MyProject/assets/..." and "assets/..." as input and map to project assets.
+            const std::string assetsPrefix = m_ProjectManager->getAssetsPath() + "/";
+
+            std::string rel = fullPath;
+            if (rel.rfind(assetsPrefix, 0) == 0) {
+                rel = rel.substr(assetsPrefix.size());
+            } else {
+                const std::string mpPrefix = "MyProject/assets/";
+                const std::string assetsPrefix2 = "assets/";
+                if (rel.rfind(mpPrefix, 0) == 0) {
+                    rel = rel.substr(mpPrefix.size());
+                } else if (rel.rfind(assetsPrefix2, 0) == 0) {
+                    rel = rel.substr(assetsPrefix2.size());
+                }
+            }
+
+            std::filesystem::path rp(rel);
+            if (!rp.is_absolute()) {
+                fullPath = m_ProjectManager->getAssetFullPath(rel);
+            }
         }
     }
     std::filesystem::path fsPath(fullPath);
@@ -168,17 +199,7 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
         }
     }
 
-    std::string modelName = fsPath.filename().string();
-    MeshData placeholderData = ModelLoader::createCube(0.1f, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(),
-        [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
-            for (uint32_t i = 0; i < memProperties->memoryTypeCount; ++i) {
-                if ((typeFilter & (1 << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
-                    return i;
-                }
-            }
-            return uint32_t(~0);
-        });
-
+    std::string modelName = fsPath.stem().string();
     auto tempEntity = m_Scene->createEntity(modelName + " [Loading...]");
     if (m_Scene->getRegistry().all_of<Transform>(tempEntity)) {
         m_Scene->getRegistry().get<Transform>(tempEntity).position = rootPosition;
@@ -188,21 +209,6 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
         m_WorldCellRoots[cellKey] = tempEntity;
         m_Scene->getRegistry().emplace_or_replace<WorldChunk>(tempEntity, WorldChunk{cellKey, true});
     }
-
-    auto& tempMesh = m_Scene->getRegistry().emplace<::Mesh>(tempEntity);
-    tempMesh.vertexBuffer = placeholderData.vertexBuffer;
-    tempMesh.indexBuffer = placeholderData.indexBuffer;
-    tempMesh.vertexMemory = placeholderData.vertexMemory;
-    tempMesh.indexMemory = placeholderData.indexMemory;
-    tempMesh.vertexCount = placeholderData.vertexCount;
-    tempMesh.indexCount = placeholderData.indexCount;
-    tempMesh.meshPath = fullPath;
-
-    placeholderData.vertexBuffer = VK_NULL_HANDLE;
-    placeholderData.indexBuffer = VK_NULL_HANDLE;
-    placeholderData.vertexMemory = VK_NULL_HANDLE;
-    placeholderData.indexMemory = VK_NULL_HANDLE;
-    placeholderData.ownerDevice = VK_NULL_HANDLE;
 
     if (isWorldChunk) {
         m_WorldLoadingCells.insert(cellKey);
@@ -412,6 +418,10 @@ void EditorApp::run() {
         m_Window->update();
         m_UIManager->updateProfiler(deltaTime);
 
+        if (m_Renderer) {
+            m_Renderer->beginFrame();
+        }
+
         if (m_CameraController && !m_UIManager->isGizmoUsing()) {
             m_CameraController->update(deltaTime);
         }
@@ -566,7 +576,12 @@ void EditorApp::processPendingModels() {
             m_Scene->destroyEntity(item.placeholderEntity);
         }
 
-        auto rootEntity = m_Scene->createEntity(item.modelName);
+        std::string rootName = item.modelName;
+        if (item.modelData && !item.modelData->rootName.empty()) {
+            rootName = item.modelData->rootName;
+        }
+
+        auto rootEntity = m_Scene->createEntity(rootName);
         if (item.hasRootPosition && m_Scene->getRegistry().all_of<Transform>(rootEntity)) {
             m_Scene->getRegistry().get<Transform>(rootEntity).position = item.rootPosition;
         }
@@ -578,9 +593,101 @@ void EditorApp::processPendingModels() {
             m_Scene->getRegistry().emplace_or_replace<WorldChunk>(rootEntity, WorldChunk{item.worldCellKey, true});
         }
 
-        std::unordered_map<std::string, int> childNameCounts;
+        auto bindMaterialTexture = [&](const std::string& relPath, AssetManager::TextureColorSpace colorSpace,
+            bool& useFlag, int32_t& outIndex, StringID& outId, std::string& outPath) {
+            useFlag = false;
+            outIndex = -1;
+            outPath.clear();
 
-        for (auto& meshData : item.modelData->meshes) {
+            if (relPath.empty() || !m_AssetManager || !m_Renderer) {
+                return;
+            }
+
+            std::filesystem::path modelDir = std::filesystem::path(item.basePath).parent_path();
+            std::filesystem::path candidate(relPath);
+            std::filesystem::path texPath;
+            if (candidate.is_absolute() || std::filesystem::exists(candidate)) {
+                texPath = candidate;
+            } else {
+                texPath = (modelDir / candidate).lexically_normal();
+            }
+            std::string texFullPath = texPath.lexically_normal().string();
+
+            // If the texture comes from MyProject/assets/models/textures, copy it into MyProject/assets/textures
+            // and load from there.
+            {
+                std::error_code fsEc;
+                std::filesystem::path srcPath(texFullPath);
+                if (std::filesystem::exists(srcPath, fsEc) && std::filesystem::is_regular_file(srcPath, fsEc)) {
+                    auto p = srcPath.parent_path();
+                    if (p.filename() == "textures") {
+                        auto models = p.parent_path();
+                        if (models.filename() == "models") {
+                            auto assets = models.parent_path();
+                            if (assets.filename() == "assets") {
+                                std::filesystem::path dstDir = assets / "textures";
+                                std::filesystem::create_directories(dstDir, fsEc);
+
+                                std::string modelStem = std::filesystem::path(item.basePath).stem().string();
+                                std::filesystem::path dstBase = dstDir / (modelStem + "_" + srcPath.filename().string());
+
+                                auto sameSize = [&](const std::filesystem::path& a, const std::filesystem::path& b) -> bool {
+                                    std::error_code ecA;
+                                    std::error_code ecB;
+                                    auto sa = std::filesystem::file_size(a, ecA);
+                                    auto sb = std::filesystem::file_size(b, ecB);
+                                    return !ecA && !ecB && sa == sb;
+                                };
+
+                                std::filesystem::path dst = dstBase;
+                                if (std::filesystem::exists(dst) && !sameSize(srcPath, dst)) {
+                                    for (int v = 2; v < 1000; ++v) {
+                                        std::filesystem::path cand = dstDir / (modelStem + "_" + srcPath.stem().string() + "_v" + std::to_string(v) + srcPath.extension().string());
+                                        if (!std::filesystem::exists(cand) || sameSize(srcPath, cand)) {
+                                            dst = cand;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (!std::filesystem::exists(dst)) {
+                                    std::error_code copyEc;
+                                    std::filesystem::copy_file(srcPath, dst, std::filesystem::copy_options::skip_existing, copyEc);
+                                }
+
+                                if (std::filesystem::exists(dst)) {
+                                    texFullPath = dst.lexically_normal().string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            std::string cacheKey = texFullPath + ((colorSpace == AssetManager::TextureColorSpace::Linear) ? "#linear" : "#srgb");
+
+            uint32_t slot = 0;
+            if (auto it = m_TextureSlots.find(cacheKey); it != m_TextureSlots.end()) {
+                slot = it->second;
+            } else {
+                auto tex = m_AssetManager->loadTexture(StringID(cacheKey), texFullPath, colorSpace);
+                if (tex && tex->isValid()) {
+                    slot = m_Renderer->bindTexture(tex->getImageView(), tex->getSampler());
+                    if (slot != 0) {
+                        m_TextureSlots[cacheKey] = slot;
+                    }
+                }
+            }
+
+            if (slot != 0) {
+                useFlag = true;
+                outIndex = static_cast<int32_t>(slot);
+                outId = StringID(texFullPath);
+                outPath = texFullPath;
+            }
+        };
+
+        auto applyMeshToEntity = [&](entt::entity entity, MeshData& meshData) {
             if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
                 ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(),
                     [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
@@ -591,25 +698,6 @@ void EditorApp::processPendingModels() {
                         }
                         return uint32_t(~0);
                     });
-            }
-
-            std::string baseName = meshData.name.empty() ? std::string("Mesh") : meshData.name;
-            int& nameCount = childNameCounts[baseName];
-            std::string entityName = baseName;
-            if (nameCount > 0) {
-                entityName = baseName + "_" + std::to_string(nameCount + 1);
-            }
-            nameCount++;
-
-            auto entity = m_Scene->createEntity(entityName);
-
-            if (item.isWorldChunk) {
-                m_Scene->getRegistry().emplace_or_replace<WorldChunk>(entity, WorldChunk{item.worldCellKey, false});
-            }
-
-            // Set initial transform pivot so gizmo starts at mesh location.
-            if (m_Scene->getRegistry().all_of<Transform>(entity)) {
-                m_Scene->getRegistry().get<Transform>(entity).position = meshData.pivotPosition;
             }
 
             auto& mesh = m_Scene->getRegistry().emplace<::Mesh>(entity);
@@ -652,100 +740,6 @@ void EditorApp::processPendingModels() {
             else if (meshData.alphaMode == 2) material.alphaMode = ECS::MaterialComponent::AlphaMode::Blend;
             else material.alphaMode = ECS::MaterialComponent::AlphaMode::Opaque;
 
-            auto bindMaterialTexture = [&](const std::string& relPath, AssetManager::TextureColorSpace colorSpace,
-                bool& useFlag, int32_t& outIndex, StringID& outId, std::string& outPath) {
-                useFlag = false;
-                outIndex = -1;
-                outPath.clear();
-
-                if (relPath.empty() || !m_AssetManager || !m_Renderer) {
-                    return;
-                }
-
-                std::filesystem::path modelDir = std::filesystem::path(item.basePath).parent_path();
-                std::filesystem::path candidate(relPath);
-                std::filesystem::path texPath;
-                if (candidate.is_absolute() || std::filesystem::exists(candidate)) {
-                    texPath = candidate;
-                } else {
-                    texPath = (modelDir / candidate).lexically_normal();
-                }
-                std::string texFullPath = texPath.lexically_normal().string();
-
-                // If the texture comes from MyProject/assets/models/textures, copy it into MyProject/assets/textures
-                // and load from there.
-                {
-                    std::error_code fsEc;
-                    std::filesystem::path srcPath(texFullPath);
-                    if (std::filesystem::exists(srcPath, fsEc) && std::filesystem::is_regular_file(srcPath, fsEc)) {
-                        auto p = srcPath.parent_path();
-                        if (p.filename() == "textures") {
-                            auto models = p.parent_path();
-                            if (models.filename() == "models") {
-                                auto assets = models.parent_path();
-                                if (assets.filename() == "assets") {
-                                    std::filesystem::path dstDir = assets / "textures";
-                                    std::filesystem::create_directories(dstDir, fsEc);
-
-                                    std::string modelStem = std::filesystem::path(item.basePath).stem().string();
-                                    std::filesystem::path dstBase = dstDir / (modelStem + "_" + srcPath.filename().string());
-
-                                    auto sameSize = [&](const std::filesystem::path& a, const std::filesystem::path& b) -> bool {
-                                        std::error_code ecA;
-                                        std::error_code ecB;
-                                        auto sa = std::filesystem::file_size(a, ecA);
-                                        auto sb = std::filesystem::file_size(b, ecB);
-                                        return !ecA && !ecB && sa == sb;
-                                    };
-
-                                    std::filesystem::path dst = dstBase;
-                                    if (std::filesystem::exists(dst) && !sameSize(srcPath, dst)) {
-                                        for (int v = 2; v < 1000; ++v) {
-                                            std::filesystem::path cand = dstDir / (modelStem + "_" + srcPath.stem().string() + "_v" + std::to_string(v) + srcPath.extension().string());
-                                            if (!std::filesystem::exists(cand) || sameSize(srcPath, cand)) {
-                                                dst = cand;
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    if (!std::filesystem::exists(dst)) {
-                                        std::error_code copyEc;
-                                        std::filesystem::copy_file(srcPath, dst, std::filesystem::copy_options::skip_existing, copyEc);
-                                    }
-
-                                    if (std::filesystem::exists(dst)) {
-                                        texFullPath = dst.lexically_normal().string();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                std::string cacheKey = texFullPath + ((colorSpace == AssetManager::TextureColorSpace::Linear) ? "#linear" : "#srgb");
-
-                uint32_t slot = 0;
-                if (auto it = m_TextureSlots.find(cacheKey); it != m_TextureSlots.end()) {
-                    slot = it->second;
-                } else {
-                    auto tex = m_AssetManager->loadTexture(StringID(cacheKey), texFullPath, colorSpace);
-                    if (tex && tex->isValid()) {
-                        slot = m_Renderer->bindTexture(tex->getImageView(), tex->getSampler());
-                        if (slot != 0) {
-                            m_TextureSlots[cacheKey] = slot;
-                        }
-                    }
-                }
-
-                if (slot != 0) {
-                    useFlag = true;
-                    outIndex = static_cast<int32_t>(slot);
-                    outId = StringID(texFullPath);
-                    outPath = texFullPath;
-                }
-            };
-
             bindMaterialTexture(meshData.baseColorTexturePath, AssetManager::TextureColorSpace::SRGB,
                 material.useAlbedoTexture, material.albedoTextureIndex, material.albedoTextureId, material.albedoTexturePath);
             bindMaterialTexture(meshData.normalTexturePath, AssetManager::TextureColorSpace::Linear,
@@ -759,9 +753,34 @@ void EditorApp::processPendingModels() {
 
             m_Scene->getRegistry().emplace<ECS::MaterialComponent>(entity, material);
             meshData.freeCPUMemory();
+        };
+
+                std::unordered_map<std::string, int> childNameCounts;
+
+        for (auto& meshData : item.modelData->meshes) {
+            std::string baseName = meshData.name.empty() ? std::string("Mesh") : meshData.name;
+            int& nameCount = childNameCounts[baseName];
+            std::string entityName = baseName;
+            if (nameCount > 0) {
+                entityName = baseName + "_" + std::to_string(nameCount + 1);
+            }
+            nameCount++;
+
+            auto entity = m_Scene->createEntity(entityName);
+
+            if (item.isWorldChunk) {
+                m_Scene->getRegistry().emplace_or_replace<WorldChunk>(entity, WorldChunk{item.worldCellKey, false});
+            }
+
+            // Restore legacy import behavior: mesh is pretransformed and recentered around a pivot.
+            if (m_Scene->getRegistry().all_of<Transform>(entity)) {
+                m_Scene->getRegistry().get<Transform>(entity).position = meshData.pivotPosition;
+            }
+
+            applyMeshToEntity(entity, meshData);
             m_Scene->setParent(entity, rootEntity);
         }
     }
 }
 
-}
+} // namespace Atlas

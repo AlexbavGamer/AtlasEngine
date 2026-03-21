@@ -252,12 +252,19 @@ bool Texture::createSampler(Renderer* renderer) {
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable = VK_TRUE;
-    
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(renderer->getPhysicalDevice(), &properties);
-    samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-    
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(renderer->getPhysicalDevice(), &features);
+
+    samplerInfo.anisotropyEnable = features.samplerAnisotropy ? VK_TRUE : VK_FALSE;
+    if (samplerInfo.anisotropyEnable) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(renderer->getPhysicalDevice(), &properties);
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+    } else {
+        samplerInfo.maxAnisotropy = 1.0f;
+    }
+
+
     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;

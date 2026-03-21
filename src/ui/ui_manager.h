@@ -6,6 +6,10 @@
 #include <GLFW/glfw3.h>
 #include <memory>
 #include <vector>
+#include <string>
+#include <unordered_map>
+#include <cstdint>
+#include <filesystem>
 #include "../ecs/ecs.h"
 #include "../scene/scene.h"
 #include "../project/project_manager.h"
@@ -21,6 +25,7 @@ enum class TransformMode { None, Translate, Rotate, Scale };
 class UIManager {
 public:
     UIManager(Atlas::Scene* scene);
+    ~UIManager();
 
     void render(ImTextureID viewportTexture);
     void setSelectedEntity(Entity entity);
@@ -55,6 +60,44 @@ public:
     void redo();
 
 private:
+    struct ContentTextureThumb {
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        std::string assetIdStr;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint64_t lastUsedFrame = 0;
+    };
+
+    ImTextureID getOrCreateContentTextureThumb(const std::string& fullPath);
+    void pruneContentTextureThumbs();
+    void clearContentTextureThumbs();
+
+    std::unordered_map<std::string, ContentTextureThumb> m_ContentTextureThumbs;
+    uint64_t m_ContentTextureThumbFrame = 0;
+    static constexpr size_t MAX_CONTENT_TEXTURE_THUMBS = 128;
+    static constexpr uint64_t CONTENT_TEXTURE_THUMB_TTL_FRAMES = 600; // ~10s @ 60fps
+
+    struct ContentContextTarget {
+        std::string name;
+        std::string fullPath;
+        std::string relativePath;
+        bool isFolder = false;
+    };
+
+    ContentContextTarget m_ContentCtxTarget;
+    bool m_ContentCtxHasTarget = false;
+
+    struct ContentClipboard {
+        std::string fullPath;
+        bool cut = false;
+    };
+
+    ContentClipboard m_ContentClipboard;
+
+    bool m_ShowRenameAssetPopup = false;
+    char m_RenameAssetBuf[256] = {};
+
+    bool m_ShowDeleteAssetPopup = false;
     Atlas::Scene* m_Scene = nullptr;
     std::vector<Entity> m_SelectedEntities;
     Entity m_PrimarySelected = entt::null;
@@ -120,9 +163,17 @@ private:
     int m_FrameTimeIndex = 0;
     bool m_ShowTracyConnection = true;
 
-    // Material editor state (selected entity)
+    // Material editor state
+    // Tracks which material entity is currently bound to the path buffers below.
     uint32_t m_MaterialEditEntityId = 0;
+    // Tracks which material entity is selected in the materials list.
+    uint32_t m_MaterialInspectEntityId = 0;
+
     char m_AlbedoTexturePathBuf[512] = {};
+    char m_NormalTexturePathBuf[512] = {};
+    char m_MetallicRoughnessTexturePathBuf[512] = {};
+    char m_AOTexturePathBuf[512] = {};
+    char m_EmissiveTexturePathBuf[512] = {};
 
     struct TransformState {
         glm::vec3 position{0.0f};
