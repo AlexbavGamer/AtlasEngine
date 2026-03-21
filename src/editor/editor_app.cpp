@@ -109,9 +109,6 @@ EditorApp::~EditorApp() {
     if (m_Renderer) {
         m_Renderer->shutdown();
     }
-    if (m_Window) {
-        glfwDestroyWindow(static_cast<GLFWwindow*>(m_Window->getNativeWindow()));
-    }
 }
 
 void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
