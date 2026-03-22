@@ -175,10 +175,11 @@ bool Scene::updateWorldTransforms() {
     }
 
     std::unordered_set<uint32_t> visited;
-    visited.reserve(static_cast<size_t>(view.size_hint()));
+    const auto approxCount = static_cast<size_t>(view.size());
+    visited.reserve(approxCount);
 
     std::vector<entt::entity> stack;
-    stack.reserve(static_cast<size_t>(view.size_hint()));
+    stack.reserve(approxCount);
 
     // Roots: entities with Transform but no valid parent.
     for (auto e : view) {
