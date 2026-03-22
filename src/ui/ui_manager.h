@@ -49,7 +49,10 @@ public:
     bool isGizmoUsing() const { return m_GizmoUsing; }
     bool allowViewportCameraInput() const { return m_ViewportAllowCameraInput; }
 
-void updateProfiler(float deltaTime);
+    // Debug panels (owned/controlled by EditorApp)
+    bool m_ShowWorldStreamingWindow = false;
+
+    void updateProfiler(float deltaTime);
     void renderProfilerWindow();
     void renderCameraWindow();
 
@@ -143,7 +146,7 @@ private:
 
     // Cached from last frame's Viewport window.
     bool m_ViewportAllowCameraInput = false;
-bool showNewProjectDialog = false;
+    bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
     char newProjectName[256] = "MyProject";
     char newProjectPath[512] = ".";
@@ -156,9 +159,15 @@ bool showNewProjectDialog = false;
     bool m_VSyncEnabled = true;
     int m_MaxFps = 0;
 
+    // Panel visibility
+    bool m_ShowViewportWindow = true;
+    bool m_ShowHierarchyWindow = true;
+    bool m_ShowPropertiesWindow = true;
+
     // Simple ImGui profiler panel data
-    bool m_ShowProfilerWindow = true;
-    bool m_ShowCameraWindow = true;
+    bool m_ShowProfilerWindow = false;
+    bool m_ShowCameraWindow = false;
+
     float m_FrameTimeMs = 0.0f;
     float m_Fps = 0.0f;
     static constexpr int PROFILER_HISTORY = 120;

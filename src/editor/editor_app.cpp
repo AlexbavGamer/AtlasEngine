@@ -521,7 +521,7 @@ void EditorApp::updateWorldStreaming() {
         // Default to visible, then cull.
         rend.visible = true;
 
-        glm::mat4 world = m_Scene->getWorldTransform(e);
+        glm::mat4 world = m_Scene->getCachedWorldTransform(e);
         glm::vec3 center = glm::vec3(world[3]);
         float radius = 1.0f;
 
@@ -591,20 +591,74 @@ void EditorApp::run() {
         m_UIManager->render(m_Viewport.getTextureId());
 
         // World streaming controls (debug)
-        ImGui::Begin("World Streaming");
-        ImGui::Checkbox("Enabled", &m_WorldStreamingEnabled);
-        ImGui::DragFloat("Cell Size", &m_WorldCellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
-        ImGui::SliderInt("Load Radius (cells)", &m_WorldLoadRadius, 0, 16);
-        ImGui::Text("Active: %zu", m_WorldActiveCells.size());
-        ImGui::Text("Loading: %zu", m_WorldLoadingCells.size());
-        ImGui::DragFloat("Fail retry (sec)", &m_WorldFailRetrySeconds, 0.1f, 0.0f, 30.0f, "%.1f");
-        ImGui::Text("Failed: %zu", m_WorldFailedCells.size());
-        if (ImGui::Button("Clear Failed")) {
-            m_WorldFailedCells.clear();
+        if(m_UIManager->m_ShowWorldStreamingWindow) {
+            ImGui::Begin("World Streaming", &m_UIManager->m_ShowWorldStreamingWindow);
+            ImGui::Checkbox("Enabled", &m_WorldStreamingEnabled);
+            ImGui::DragFloat("Cell Size", &m_WorldCellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
+            ImGui::SliderInt("Load Radius (cells)", &m_WorldLoadRadius, 0, 16);
+            ImGui::Text("Active: %zu", m_WorldActiveCells.size());
+            ImGui::Text("Loading: %zu", m_WorldLoadingCells.size());
+            ImGui::DragFloat("Fail retry (sec)", &m_WorldFailRetrySeconds, 0.1f, 0.0f, 30.0f, "%.1f");
+            ImGui::Text("Failed: %zu", m_WorldFailedCells.size());
+            if (ImGui::Button("Clear Failed")) {
+                m_WorldFailedCells.clear();
+            }
+
+            if (m_WorldPartition) {
+                auto& cfg = m_WorldPartition->config();
+                ImGui::SeparatorText("Partition Culling");
+                ImGui::Checkbox("Enabled##partition", &cfg.enabled);
+                ImGui::Checkbox("Frustum Culling##partition", &cfg.useFrustumCulling);
+                ImGui::DragFloat("Cell Size##partition", &cfg.cellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
+                ImGui::SliderInt("Load Radius##partition", &cfg.loadRadiusCells, 0, 16);
+                if (ImGui::Button("Rebuild##partition")) {
+                    m_WorldPartition->markDirty();
+                }
+            }
+
+            ImGui::End();
         }
-        ImGui::End();
 
         processPendingModels();
+
+        bool sceneXformsChanged = false;
+        if (m_Scene) {
+            sceneXformsChanged = m_Scene->updateWorldTransforms();
+        }
+        if (sceneXformsChanged && m_WorldPartition) {
+            m_WorldPartition->markDirty();
+        }
+
+        // Optional: WorldPartition culling (disabled while chunk streaming is enabled).
+        if (m_WorldPartition && !m_WorldStreamingEnabled && m_WorldPartition->config().enabled) {
+            glm::vec3 camPos(0.0f);
+            glm::mat4 view(1.0f);
+            glm::mat4 proj(1.0f);
+
+            auto& registry = m_Scene->getRegistry();
+            auto camView = registry.view<Camera>();
+            if (!camView.empty()) {
+                auto camEnt = camView[0];
+                auto& cam = registry.get<Camera>(camEnt);
+                camPos = cam.position;
+
+                VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                if (extent.width > 0 && extent.height > 0) {
+                    cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                }
+
+                view = cam.getViewMatrix();
+                proj = cam.getProjectionMatrix();
+                proj[1][1] = -proj[1][1];
+            } else if (m_CameraController) {
+                camPos = position;
+                view = m_CameraController->getViewMatrix();
+                proj = m_CameraController->getProjMatrix();
+                proj[1][1] = -proj[1][1];
+            }
+
+            m_WorldPartition->update(camPos, proj * view);
+        }
 
         if (m_UIManager && m_Renderer) {
             const auto& selected = m_UIManager->getSelectedEntities();

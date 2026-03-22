@@ -327,7 +327,6 @@ void UIManager::renderToolbar() {
 }
 
 void UIManager::render(ImTextureID viewportTexture) {
-    static bool dockspaceInitialized = false;
     static ImGuiID dockspaceID = 0;
 
     // Background behind the dockspace (helps it feel less "stock ImGui").
@@ -347,38 +346,65 @@ void UIManager::render(ImTextureID viewportTexture) {
         bg->AddRectFilled(p0, p1, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.25f)));
     }
 
-    if (!dockspaceInitialized) {
-        dockspaceID = ImGui::GetID("MyDockspace");
+    {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
-        
+        dockspaceID = ImGui::GetID("AtlasDockspace");
+
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(viewport->WorkSize);
+        ImGui::SetNextWindowViewport(viewport->ID);
+
+        ImGuiWindowFlags hostFlags = ImGuiWindowFlags_NoDocking |
+                                  ImGuiWindowFlags_NoTitleBar |
+                                  ImGuiWindowFlags_NoCollapse |
+                                  ImGuiWindowFlags_NoResize |
+                                  ImGuiWindowFlags_NoMove |
+                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                  ImGuiWindowFlags_NoNavFocus |
+                                  ImGuiWindowFlags_NoBackground;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::Begin("##dockspace_host", nullptr, hostFlags);
+        ImGui::PopStyleVar(3);
+
+        // Build the default layout only when the node is missing.
         if (ImGui::DockBuilderGetNode(dockspaceID) == nullptr) {
             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
-            ImGui::DockBuilderSetNodeSize(dockspaceID, viewport->Size);
-            
+            ImGui::DockBuilderSetNodeSize(dockspaceID, viewport->WorkSize);
+
             ImGuiID dockMain = dockspaceID;
             ImGuiID dockLeft = 0;
-            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.2f, &dockLeft, &dockMain);
-            
-            ImGuiID dockLeftTop = 0;
-            ImGuiID dockLeftBottom = 0;
-            ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.5f, &dockLeftTop, &dockLeftBottom);
-            
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.24f, &dockLeft, &dockMain);
+
             ImGuiID dockTop = 0;
             ImGuiID dockCenter = 0;
-            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Up, 0.05f, &dockTop, &dockCenter);
-            
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Up, 0.07f, &dockTop, &dockCenter);
+
+            ImGuiID dockLeftTop = 0;
+            ImGuiID dockLeftRest = 0;
+            ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.33f, &dockLeftTop, &dockLeftRest);
+
+            ImGuiID dockLeftMid = 0;
+            ImGuiID dockLeftBottom = 0;
+            ImGui::DockBuilderSplitNode(dockLeftRest, ImGuiDir_Up, 0.50f, &dockLeftMid, &dockLeftBottom);
+
             ImGui::DockBuilderDockWindow("Toolbar", dockTop);
             ImGui::DockBuilderDockWindow("Viewport", dockCenter);
-            ImGui::DockBuilderDockWindow("Hierarchy", dockLeftBottom);
             ImGui::DockBuilderDockWindow("Properties", dockLeftTop);
+            ImGui::DockBuilderDockWindow("Hierarchy", dockLeftMid);
             ImGui::DockBuilderDockWindow("Content Explorer", dockLeftBottom);
             ImGui::DockBuilderFinish(dockspaceID);
-        }
-        
-        dockspaceInitialized = true;
-    }
 
-    ImGui::DockSpaceOverViewport(dockspaceID, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+        } else {
+            // Keep the dockspace node sized to the work area.
+            ImGui::DockBuilderSetNodeSize(dockspaceID, viewport->WorkSize);
+        }
+
+        ImGui::DockSpace(dockspaceID, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+        ImGui::End();
+    }
 
     // Prune selection (streaming/unload can delete entities).
     if (m_Scene) {
@@ -417,10 +443,20 @@ void UIManager::render(ImTextureID viewportTexture) {
         }
     }
 
+    // Reset every frame; renderViewport() sets it when visible.
+    m_ViewportAllowCameraInput = false;
+
     renderToolbar();
-    renderViewport(viewportTexture);
-    renderHierarchy();
-    renderProperties();
+
+    if (m_ShowViewportWindow) {
+        renderViewport(viewportTexture);
+    }
+    if (m_ShowHierarchyWindow) {
+        renderHierarchy();
+    }
+    if (m_ShowPropertiesWindow) {
+        renderProperties();
+    }
     renderContentExplorer();
     
     renderNewProjectDialog();
@@ -549,7 +585,7 @@ void UIManager::setRenderer(Atlas::Renderer* r) {
 
 void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar);
+    ImGui::Begin("Viewport", &m_ShowViewportWindow, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar);
 
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput) {
         if (ImGui::IsKeyPressed(ImGuiKey_W)) m_TransformMode = TransformMode::Translate;
@@ -805,7 +841,7 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
 }
 
 void UIManager::renderHierarchy() {
-    ImGui::Begin("Hierarchy", nullptr, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("Hierarchy", &m_ShowHierarchyWindow, ImGuiWindowFlags_NoCollapse);
 
     if (m_Scene) {
         auto& registry = m_Scene->getRegistry();
@@ -822,7 +858,7 @@ void UIManager::renderHierarchy() {
                 entityName = "Entity " + std::to_string(static_cast<uint32_t>(entity));
             }
 
-            const auto children = m_Scene->getChildren(entity);
+            const auto& children = m_Scene->getChildren(entity);
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
             if (isSelected(entity)) flags |= ImGuiTreeNodeFlags_Selected;
             if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
@@ -995,7 +1031,7 @@ void UIManager::renderHierarchy() {
 }
 
 void UIManager::renderProperties() {
-    ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("Properties", &m_ShowPropertiesWindow, ImGuiWindowFlags_NoCollapse);
 
     Entity selectedEntity = m_PrimarySelected;
 
@@ -2008,9 +2044,9 @@ void UIManager::renderMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Viewport", NULL, true);
-            ImGui::MenuItem("Hierarchy", NULL, true);
-            ImGui::MenuItem("Properties", NULL, true);
+            ImGui::MenuItem("Viewport", NULL, &m_ShowViewportWindow);
+            ImGui::MenuItem("Hierarchy", NULL, &m_ShowHierarchyWindow);
+            ImGui::MenuItem("Properties", NULL, &m_ShowPropertiesWindow);
             ImGui::MenuItem("Content Explorer", NULL, true);
             ImGui::Separator();
             ImGui::MenuItem("Profiler", NULL, &m_ShowProfilerWindow);

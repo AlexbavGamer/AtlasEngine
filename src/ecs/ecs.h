@@ -14,6 +14,10 @@
 using Registry = entt::registry;
 using Entity = entt::entity;
 
+struct WorldTransform {
+    glm::mat4 matrix{1.0f};
+};
+
 struct Transform {
     glm::vec3 position{0.0f, 0.0f, 0.0f};
     glm::vec3 rotation{0.0f, 0.0f, 0.0f};

@@ -1,6 +1,10 @@
 #include "scene.h"
 #include "../ecs/components/components.h"
+
 #include <algorithm>
+#include <cmath>
+#include <unordered_set>
+#include <vector>
 
 namespace Atlas {
 
@@ -85,14 +89,30 @@ std::vector<entt::entity> Scene::getRootEntities() {
     return roots;
 }
 
-std::vector<entt::entity> Scene::getChildren(entt::entity parent) {
-    if (!m_Registry.valid(parent)) return {};
-    if (!m_Registry.all_of<ChildrenComponent>(parent)) return {};
+const std::vector<entt::entity>& Scene::getChildren(entt::entity parent) const {
+    static const std::vector<entt::entity> empty;
+
+    if (!m_Registry.valid(parent)) return empty;
+    if (!m_Registry.all_of<ChildrenComponent>(parent)) return empty;
     return m_Registry.get<ChildrenComponent>(parent).children;
 }
 
 void Scene::setParent(entt::entity child, entt::entity parent) {
-    if (!m_Registry.valid(child) || (parent != entt::null && !m_Registry.valid(parent))) return;
+    if (!m_Registry.valid(child)) return;
+    if (parent != entt::null && !m_Registry.valid(parent)) return;
+    if (parent == child) return;
+
+    // Prevent cycles: parent cannot be a descendant of child.
+    if (parent != entt::null) {
+        entt::entity p = parent;
+        while (p != entt::null && m_Registry.valid(p) && m_Registry.all_of<ParentComponent>(p)) {
+            entt::entity pp = m_Registry.get<ParentComponent>(p).parent;
+            if (pp == child) {
+                return;
+            }
+            p = pp;
+        }
+    }
 
     // Ensure both child and parent have transforms (needed for world-space hierarchy).
     if (!m_Registry.all_of<Transform>(child)) {
@@ -102,17 +122,27 @@ void Scene::setParent(entt::entity child, entt::entity parent) {
         m_Registry.emplace<Transform>(parent);
     }
 
-    // Remove existing from previous parent
+    entt::entity oldParent = entt::null;
     if (m_Registry.all_of<ParentComponent>(child)) {
-        auto oldParent = m_Registry.get<ParentComponent>(child).parent;
-        if (oldParent != entt::null && m_Registry.all_of<ChildrenComponent>(oldParent)) {
-            auto &children = m_Registry.get<ChildrenComponent>(oldParent).children;
-            children.erase(std::remove(children.begin(), children.end(), child), children.end());
-        }
+        oldParent = m_Registry.get<ParentComponent>(child).parent;
+    }
+
+    // No-op.
+    if (oldParent == parent) {
+        return;
+    }
+
+    // Remove from previous parent's children list.
+    if (oldParent != entt::null && m_Registry.valid(oldParent) && m_Registry.all_of<ChildrenComponent>(oldParent)) {
+        auto& children = m_Registry.get<ChildrenComponent>(oldParent).children;
+        children.erase(std::remove(children.begin(), children.end(), child), children.end());
     }
 
     if (parent == entt::null) {
-        m_Registry.remove<ParentComponent>(child);
+        if (m_Registry.all_of<ParentComponent>(child)) {
+            m_Registry.remove<ParentComponent>(child);
+        }
+        m_Dirty = true;
         return;
     }
 
@@ -125,25 +155,163 @@ void Scene::setParent(entt::entity child, entt::entity parent) {
     if (!m_Registry.all_of<ChildrenComponent>(parent)) {
         m_Registry.emplace<ChildrenComponent>(parent, ChildrenComponent{});
     }
-    m_Registry.get<ChildrenComponent>(parent).children.push_back(child);
+
+    auto& list = m_Registry.get<ChildrenComponent>(parent).children;
+    if (std::find(list.begin(), list.end(), child) == list.end()) {
+        list.push_back(child);
+    }
+
+    m_Dirty = true;
+}
+
+bool Scene::updateWorldTransforms() {
+    bool changedAny = false;
+    // Ensure WorldTransform exists for every entity that has a local Transform.
+    auto view = m_Registry.view<Transform>();
+    for (auto e : view) {
+        if (!m_Registry.all_of<WorldTransform>(e)) {
+            m_Registry.emplace<WorldTransform>(e);
+        }
+    }
+
+    std::unordered_set<uint32_t> visited;
+    visited.reserve(static_cast<size_t>(view.size_hint()));
+
+    std::vector<entt::entity> stack;
+    stack.reserve(static_cast<size_t>(view.size_hint()));
+
+    // Roots: entities with Transform but no valid parent.
+    for (auto e : view) {
+        entt::entity p = entt::null;
+        if (m_Registry.all_of<ParentComponent>(e)) {
+            p = m_Registry.get<ParentComponent>(e).parent;
+        }
+        if (p == entt::null || !m_Registry.valid(p)) {
+            stack.push_back(e);
+        }
+    }
+
+    while (!stack.empty()) {
+        entt::entity e = stack.back();
+        stack.pop_back();
+
+        uint32_t id = static_cast<uint32_t>(e);
+        if (visited.find(id) != visited.end()) {
+            continue;
+        }
+        visited.insert(id);
+
+        glm::mat4 local = m_Registry.get<Transform>(e).getModelMatrix();
+        glm::mat4 world = local;
+
+        if (m_Registry.all_of<ParentComponent>(e)) {
+            entt::entity p = m_Registry.get<ParentComponent>(e).parent;
+            if (p != entt::null && m_Registry.valid(p) && m_Registry.all_of<WorldTransform>(p)) {
+                world = m_Registry.get<WorldTransform>(p).matrix * local;
+            }
+        }
+
+        {
+            auto& wt = m_Registry.get<WorldTransform>(e);
+            const glm::mat4 before = wt.matrix;
+            wt.matrix = world;
+
+            const float eps = 1e-6f;
+            for (int r = 0; r < 4 && !changedAny; ++r) {
+                for (int c = 0; c < 4; ++c) {
+                    if (std::fabs(before[r][c] - world[r][c]) > eps) {
+                        changedAny = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (m_Registry.all_of<ChildrenComponent>(e)) {
+            const auto& children = m_Registry.get<ChildrenComponent>(e).children;
+            for (auto c : children) {
+                if (c != entt::null && m_Registry.valid(c) && m_Registry.all_of<Transform>(c)) {
+                    stack.push_back(c);
+                }
+            }
+        }
+    }
+
+    // Fallback: handle any remaining entities (corrupted/missing children lists).
+    for (auto e : view) {
+        uint32_t id = static_cast<uint32_t>(e);
+        if (visited.find(id) != visited.end()) {
+            continue;
+        }
+        {
+            auto& wt = m_Registry.get<WorldTransform>(e);
+            const glm::mat4 world = getWorldTransform(e);
+            const glm::mat4 before = wt.matrix;
+            wt.matrix = world;
+
+            const float eps = 1e-6f;
+            for (int r = 0; r < 4 && !changedAny; ++r) {
+                for (int c = 0; c < 4; ++c) {
+                    if (std::fabs(before[r][c] - world[r][c]) > eps) {
+                        changedAny = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return changedAny;
+}
+
+glm::mat4 Scene::getCachedWorldTransform(entt::entity entity) const {
+    if (!m_Registry.valid(entity)) return glm::mat4(1.0f);
+    if (m_Registry.all_of<WorldTransform>(entity)) {
+        return m_Registry.get<WorldTransform>(entity).matrix;
+    }
+    return getWorldTransform(entity);
 }
 
 glm::mat4 Scene::getWorldTransform(entt::entity entity) const {
     if (!m_Registry.valid(entity)) return glm::mat4(1.0f);
-    glm::mat4 local(1.0f);
-    if (m_Registry.all_of<Transform>(entity)) {
-        auto &t = m_Registry.get<Transform>(entity);
-        local = t.getModelMatrix();
-    }
 
-    if (m_Registry.all_of<ParentComponent>(entity)) {
-        auto parent = m_Registry.get<ParentComponent>(entity).parent;
-        if (parent != entt::null) {
-            return getWorldTransform(parent) * local;
+    // Build local transforms up the parent chain, then multiply root->leaf.
+    std::vector<glm::mat4> chain;
+    chain.reserve(16);
+
+    entt::entity e = entity;
+    int depth = 0;
+
+    while (e != entt::null && m_Registry.valid(e)) {
+        glm::mat4 local(1.0f);
+        if (m_Registry.all_of<Transform>(e)) {
+            auto& t = m_Registry.get<Transform>(e);
+            local = t.getModelMatrix();
+        }
+        chain.push_back(local);
+
+        if (!m_Registry.all_of<ParentComponent>(e)) {
+            break;
+        }
+
+        entt::entity p = m_Registry.get<ParentComponent>(e).parent;
+        if (p == entt::null || !m_Registry.valid(p)) {
+            break;
+        }
+
+        e = p;
+
+        // Defensive guard against corrupted hierarchies.
+        if (++depth > 1024) {
+            break;
         }
     }
 
-    return local;
+    glm::mat4 world(1.0f);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        world = world * (*it);
+    }
+    return world;
 }
 
 }

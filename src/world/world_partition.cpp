@@ -44,7 +44,7 @@ void WorldPartition::rebuild() {
         if (!registry.valid(e)) continue;
         if (!registry.all_of<Transform>(e)) continue;
 
-        glm::mat4 world = m_Scene->getWorldTransform(e);
+        glm::mat4 world = m_Scene->getCachedWorldTransform(e);
         glm::vec3 pos = glm::vec3(world[3]);
         WorldCellCoord cell = worldToCell(pos);
         m_Cells[cell].push_back(e);
@@ -71,11 +71,6 @@ void WorldPartition::setCellVisible(const WorldCellCoord& cell, bool visible) {
 void WorldPartition::update(const glm::vec3& cameraPos, const glm::mat4& viewProj) {
     if (!m_Scene) return;
     if (!m_Config.enabled) {
-        // If disabled, ensure everything is visible.
-        auto& registry = m_Scene->getRegistry();
-        for (auto e : registry.view<Renderable>()) {
-            registry.get<Renderable>(e).visible = true;
-        }
         return;
     }
 
@@ -135,7 +130,7 @@ void WorldPartition::update(const glm::vec3& cameraPos, const glm::mat4& viewPro
             // If we have bounds, use them, else do a cheap distance test that always passes.
             const auto& mesh = registry.get<::Mesh>(e);
 
-            glm::mat4 world = m_Scene->getWorldTransform(e);
+            glm::mat4 world = m_Scene->getCachedWorldTransform(e);
             glm::vec3 worldPos = glm::vec3(world[3]);
 
             glm::vec3 center = worldPos;

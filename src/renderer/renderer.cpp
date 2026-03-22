@@ -2245,7 +2245,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                 glm::mat4 model = glm::mat4(1.0f);
                 if (scene->hasTransform(entity)) {
-                    model = scene->getWorldTransform(entity);
+                    model = scene->getCachedWorldTransform(entity);
                 }
 
                 PickingPushConstants pc{};
@@ -2346,7 +2346,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 if (isBlend) {
                     glm::vec3 pos = glm::vec3(0.0f);
                     if (scene && scene->hasTransform(entity)) {
-                        glm::mat4 model = scene->getWorldTransform(entity);
+                        glm::mat4 model = scene->getCachedWorldTransform(entity);
                         pos = glm::vec3(model[3]);
                     }
                     glm::vec3 d = pos - cameraPos;
@@ -2376,7 +2376,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 int32_t flags = 0;
 
                 if (scene && scene->hasTransform(entity)) {
-                    model = scene->getWorldTransform(entity);
+                    model = scene->getCachedWorldTransform(entity);
                 }
 
                 if (registry.all_of<ECS::MaterialComponent>(entity)) {
@@ -2469,7 +2469,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                     glm::mat4 selModel = glm::mat4(1.0f);
                     if (scene && scene->hasTransform(selected)) {
-                        selModel = scene->getWorldTransform(selected);
+                        selModel = scene->getCachedWorldTransform(selected);
                     }
 
                     OutlinePushConstants pc{};

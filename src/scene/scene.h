@@ -39,14 +39,19 @@ public:
     // Hierarchy
     std::vector<entt::entity> getAllEntities();
     std::vector<entt::entity> getRootEntities();
-    std::vector<entt::entity> getChildren(entt::entity parent);
+    const std::vector<entt::entity>& getChildren(entt::entity parent) const;
     void setParent(entt::entity child, entt::entity parent);
 
     std::vector<entt::entity> getEntitiesWithMesh();
     std::vector<entt::entity> getEntitiesWithCamera();
     std::vector<entt::entity> getEntitiesWithLight();
 
+    // Computes world transform on demand (safe for editor manipulation).
     glm::mat4 getWorldTransform(entt::entity entity) const;
+
+    // Cached world transforms (call updateWorldTransforms() once per frame after edits).
+    bool updateWorldTransforms();
+    glm::mat4 getCachedWorldTransform(entt::entity entity) const;
 
     // Scene name
     const std::string& getName() const { return m_Name; }
