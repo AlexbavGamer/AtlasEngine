@@ -348,7 +348,7 @@ void UIManager::render(ImTextureID viewportTexture) {
 
     {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
-        dockspaceID = ImGui::GetID("AtlasDockspace");
+        dockspaceID = ImGui::GetID("AtlasDockspace_v2");
 
         ImGui::SetNextWindowPos(viewport->WorkPos);
         ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -375,7 +375,13 @@ void UIManager::render(ImTextureID viewportTexture) {
             ImGui::DockBuilderSetNodeSize(dockspaceID, viewport->WorkSize);
 
             ImGuiID dockMain = dockspaceID;
+
+            // Left: Hierarchy/Content Explorer
             ImGuiID dockLeft = 0;
+            // Right: Properties
+            ImGuiID dockRight = 0;
+
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.28f, &dockRight, &dockMain);
             ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.24f, &dockLeft, &dockMain);
 
             ImGuiID dockTop = 0;
@@ -383,18 +389,14 @@ void UIManager::render(ImTextureID viewportTexture) {
             ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Up, 0.07f, &dockTop, &dockCenter);
 
             ImGuiID dockLeftTop = 0;
-            ImGuiID dockLeftRest = 0;
-            ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Up, 0.33f, &dockLeftTop, &dockLeftRest);
-
-            ImGuiID dockLeftMid = 0;
             ImGuiID dockLeftBottom = 0;
-            ImGui::DockBuilderSplitNode(dockLeftRest, ImGuiDir_Up, 0.50f, &dockLeftMid, &dockLeftBottom);
+            ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Down, 0.45f, &dockLeftBottom, &dockLeftTop);
 
             ImGui::DockBuilderDockWindow("Toolbar", dockTop);
             ImGui::DockBuilderDockWindow("Viewport", dockCenter);
-            ImGui::DockBuilderDockWindow("Properties", dockLeftTop);
-            ImGui::DockBuilderDockWindow("Hierarchy", dockLeftMid);
+            ImGui::DockBuilderDockWindow("Hierarchy", dockLeftTop);
             ImGui::DockBuilderDockWindow("Content Explorer", dockLeftBottom);
+            ImGui::DockBuilderDockWindow("Properties", dockRight);
             ImGui::DockBuilderFinish(dockspaceID);
 
         } else {
@@ -439,6 +441,47 @@ void UIManager::render(ImTextureID viewportTexture) {
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Y)) {
                 redo();
+            }
+        }
+
+        // Delete selected entity (soft delete)
+        if (!io.WantTextInput && !ImGuizmo::IsUsing() && ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+            if (m_Scene) {
+                auto& reg = m_Scene->getRegistry();
+                Entity selected = m_PrimarySelected;
+                if (selected != entt::null && reg.valid(selected) && !reg.all_of<Atlas::ECS::EditorHiddenComponent>(selected)) {
+                    bool isCameraEntity = reg.all_of<Camera>(selected);
+                    if (!isCameraEntity) {
+                        // Reuse the same soft-delete behavior as the Hierarchy context menu.
+                        std::vector<Entity> subtree;
+                        subtree.reserve(32);
+
+                        const auto collect = [&](auto&& self, Entity e) -> void {
+                            if (e == entt::null) return;
+                            if (!reg.valid(e)) return;
+                            if (reg.all_of<Atlas::ECS::EditorHiddenComponent>(e)) return;
+
+                            subtree.push_back(e);
+                            for (auto c : m_Scene->getChildren(e)) {
+                                self(self, c);
+                            }
+                        };
+
+                        collect(collect, selected);
+
+                        for (Entity e : subtree) {
+                            if (e == entt::null || !reg.valid(e)) continue;
+                            reg.emplace_or_replace<Atlas::ECS::EditorHiddenComponent>(e, Atlas::ECS::EditorHiddenComponent{});
+                            if (isSelected(e)) {
+                                toggleSelectedEntity(e);
+                            }
+                        }
+
+                        auto cmd = std::make_unique<SoftDeleteCommand>();
+                        cmd->entities = subtree;
+                        pushCommand(std::move(cmd));
+                    }
+                }
             }
         }
     }
@@ -646,7 +689,147 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     
     Entity primary = m_PrimarySelected;
 
-    if (primary != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(primary)) {
+    bool rigEditActive = false;
+
+    if (m_Scene && m_RigEditEntity != entt::null && m_Scene->getRegistry().valid(m_RigEditEntity)) {
+        auto& registry = m_Scene->getRegistry();
+        Entity rigEntity = m_RigEditEntity;
+
+        if (registry.all_of<Atlas::ECS::SkeletonComponent>(rigEntity)) {
+            auto& skc = registry.get<Atlas::ECS::SkeletonComponent>(rigEntity);
+            const Atlas::Anim::Skeleton* skel = skc.skeleton.get();
+
+            if (skel && skel->boneCount() > 0) {
+                const Atlas::Anim::AnimationClip* clip = nullptr;
+                float tSeconds = 0.0f;
+
+                if (registry.all_of<Atlas::ECS::AnimationPlayerComponent>(rigEntity)) {
+                    const auto& ap = registry.get<Atlas::ECS::AnimationPlayerComponent>(rigEntity).player;
+                    tSeconds = ap.timeSeconds;
+                    if (ap.clipIndex >= 0 && static_cast<size_t>(ap.clipIndex) < skc.clips.size()) {
+                        clip = &skc.clips[static_cast<size_t>(ap.clipIndex)];
+                    }
+                }
+
+                Atlas::Anim::PoseOverrides overrides;
+                auto* ov = registry.try_get<Atlas::ECS::BonePoseOverrideComponent>(rigEntity);
+                const bool editPose = (ov && ov->enabled);
+                if (editPose) {
+                    // Ensure override arrays are the right size.
+                    const uint32_t bc = skel->boneCount();
+                    if (ov->hasRotation.size() != bc) ov->hasRotation.assign(bc, uint8_t(0));
+                    if (ov->rotation.size() != bc) ov->rotation.assign(bc, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+
+                    overrides.hasRotation = &ov->hasRotation;
+                    overrides.rotation = &ov->rotation;
+                }
+
+                std::vector<glm::mat4> globals;
+                Atlas::Anim::evaluateGlobals(*skel, clip, tSeconds, overrides, globals);
+
+                glm::mat4 entityWorld = glm::mat4(1.0f);
+                if (m_Scene->hasTransform(rigEntity)) {
+                    entityWorld = m_Scene->getWorldTransform(rigEntity);
+                }
+
+                auto projectToViewport = [&](const glm::vec3& worldPos, ImVec2& out) -> bool {
+                    glm::vec4 clipPos = m_ProjMatrix * m_ViewMatrix * glm::vec4(worldPos, 1.0f);
+                    if (clipPos.w <= 1e-5f) return false;
+
+                    glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
+                    if (ndc.z < -1.5f || ndc.z > 1.5f) return false;
+
+                    float sx = (ndc.x * 0.5f + 0.5f) * contentSize.x + imageMin.x;
+                    float sy = (-ndc.y * 0.5f + 0.5f) * contentSize.y + imageMin.y;
+                    out = ImVec2(sx, sy);
+                    return true;
+                };
+
+                if (m_RigShowSkeleton) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImU32 col = IM_COL32(120, 200, 255, 200);
+                    ImU32 colSel = IM_COL32(255, 200, 80, 240);
+
+                    const uint32_t bc = static_cast<uint32_t>(globals.size());
+                    for (uint32_t i = 0; i < bc; ++i) {
+                        int32_t p = (i < skel->parentIndex.size()) ? skel->parentIndex[i] : -1;
+                        if (p < 0 || static_cast<uint32_t>(p) >= bc) continue;
+
+                        glm::vec3 aM = glm::vec3(globals[static_cast<uint32_t>(p)][3]);
+                        glm::vec3 bM = glm::vec3(globals[i][3]);
+                        glm::vec3 aW = glm::vec3(entityWorld * glm::vec4(aM, 1.0f));
+                        glm::vec3 bW = glm::vec3(entityWorld * glm::vec4(bM, 1.0f));
+
+                        ImVec2 aS, bS;
+                        if (!projectToViewport(aW, aS) || !projectToViewport(bW, bS)) continue;
+
+                        bool highlight = (m_RigSelectedBone >= 0) && (static_cast<uint32_t>(m_RigSelectedBone) == i || static_cast<uint32_t>(m_RigSelectedBone) == static_cast<uint32_t>(p));
+                        dl->AddLine(aS, bS, highlight ? colSel : col, highlight ? 2.5f : 1.0f);
+                    }
+                }
+
+                if (editPose && m_RigSelectedBone >= 0 && static_cast<uint32_t>(m_RigSelectedBone) < globals.size()) {
+                    rigEditActive = true;
+
+                    const uint32_t bi = static_cast<uint32_t>(m_RigSelectedBone);
+                    glm::mat4 boneWorld = entityWorld * globals[bi];
+                    glm::mat4 oldBoneWorld = boneWorld;
+                    glm::mat4 manipMatrix = boneWorld;
+                    glm::mat4 deltaMatrix(1.0f);
+
+                    ImGuizmo::SetOrthographic(false);
+                    ImGuizmo::SetDrawlist();
+                    ImGuizmo::SetRect(imageMin.x, imageMin.y, contentSize.x, contentSize.y);
+
+                    ImGuizmo::Manipulate(
+                        glm::value_ptr(m_ViewMatrix),
+                        glm::value_ptr(m_ProjMatrix),
+                        ImGuizmo::ROTATE,
+                        ImGuizmo::LOCAL,
+                        glm::value_ptr(manipMatrix),
+                        glm::value_ptr(deltaMatrix),
+                        nullptr
+                    );
+
+                    bool usingNow = ImGuizmo::IsUsing();
+                    m_GizmoUsing = usingNow;
+
+                    if (usingNow && ov) {
+                        glm::mat4 editedWorld = deltaMatrix * oldBoneWorld;
+                        glm::mat4 editedModel = glm::inverse(entityWorld) * editedWorld;
+
+                        glm::mat4 parentGlobal = glm::mat4(1.0f);
+                        int32_t p = (bi < skel->parentIndex.size()) ? skel->parentIndex[bi] : -1;
+                        if (p >= 0 && static_cast<uint32_t>(p) < globals.size()) {
+                            parentGlobal = globals[static_cast<uint32_t>(p)];
+                        }
+
+                        glm::mat4 localM = glm::inverse(parentGlobal) * editedModel;
+
+                        glm::vec3 col0(localM[0]);
+                        glm::vec3 col1(localM[1]);
+                        glm::vec3 col2(localM[2]);
+                        float sx = glm::length(col0);
+                        float sy = glm::length(col1);
+                        float sz = glm::length(col2);
+                        if (sx > 0.0f) col0 /= sx;
+                        if (sy > 0.0f) col1 /= sy;
+                        if (sz > 0.0f) col2 /= sz;
+
+                        glm::mat3 rotM(col0, col1, col2);
+                        glm::quat localRot = glm::normalize(glm::quat_cast(rotM));
+
+                        if (bi < ov->hasRotation.size() && bi < ov->rotation.size()) {
+                            ov->hasRotation[bi] = 1;
+                            ov->rotation[bi] = localRot;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (!rigEditActive && primary != entt::null && m_Scene && m_Scene->getRegistry().all_of<Transform>(primary)) {
         // For multi-selection, move only top-level selected entities (skip selected children of selected parents)
         auto& registry = m_Scene->getRegistry();
         std::vector<Entity> targets;
@@ -846,7 +1029,74 @@ void UIManager::renderHierarchy() {
     if (m_Scene) {
         auto& registry = m_Scene->getRegistry();
 
-        const auto renderEntityRecursively = [&](auto&& self, entt::entity entity, std::vector<Entity>& pendingDelete) -> void {
+        struct PendingReparent {
+            Entity child = entt::null;
+            Entity afterParent = entt::null;
+        };
+
+        std::vector<PendingReparent> pendingReparents;
+        pendingReparents.reserve(16);
+
+        std::vector<Entity> pendingCreateChildren;
+        pendingCreateChildren.reserve(8);
+
+        bool pendingCreateRoot = false;
+
+        auto queueReparent = [&](Entity child, Entity afterParent) {
+            if (!m_Scene) return;
+            if (child == entt::null) return;
+            if (afterParent == child) return;
+            if (afterParent != entt::null && !registry.valid(afterParent)) return;
+
+            for (auto& pr : pendingReparents) {
+                if (pr.child == child) {
+                    pr.afterParent = afterParent;
+                    return;
+                }
+            }
+
+            pendingReparents.push_back(PendingReparent{child, afterParent});
+        };
+
+        auto softDeleteSubtree = [&](Entity entity) {
+            if (!m_Scene) return;
+            if (!registry.valid(entity)) return;
+
+            bool isCameraEntity = registry.all_of<Camera>(entity);
+            if (isCameraEntity) {
+                return;
+            }
+
+            // Soft delete: hide entity subtree (keeps GPU resources alive, supports undo).
+            std::vector<Entity> subtree;
+            subtree.reserve(32);
+
+            const auto collect = [&](auto&& self2, Entity e) -> void {
+                if (e == entt::null) return;
+                if (!registry.valid(e)) return;
+
+                subtree.push_back(e);
+                for (auto c : m_Scene->getChildren(e)) {
+                    self2(self2, c);
+                }
+            };
+
+            collect(collect, entity);
+
+            for (Entity e : subtree) {
+                if (e == entt::null || !registry.valid(e)) continue;
+                registry.emplace_or_replace<Atlas::ECS::EditorHiddenComponent>(e, Atlas::ECS::EditorHiddenComponent{});
+                if (isSelected(e)) {
+                    toggleSelectedEntity(e);
+                }
+            }
+
+            auto cmd = std::make_unique<SoftDeleteCommand>();
+            cmd->entities = subtree;
+            pushCommand(std::move(cmd));
+        };
+
+        const auto renderEntityRecursively = [&](auto&& self, entt::entity entity) -> void {
             if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(entity)) {
                 return;
             }
@@ -874,11 +1124,42 @@ void UIManager::renderHierarchy() {
                     setSelectedEntity(entity);
                 }
             }
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(entity);
-                if (!isCameraEntity) {
-                    pendingDelete.push_back(entity);
+            // Context menu
+            if (ImGui::BeginPopupContextItem("hierarchy_ctx")) {
+                // Right-click should select the item being operated on.
+                if (!isSelected(entity)) {
+                    setSelectedEntity(entity);
                 }
+
+                const bool isCameraEntity = registry.all_of<Camera>(entity);
+
+                if (ImGui::MenuItem("Rename...")) {
+                    m_ShowHierarchyRenamePopup = true;
+                    m_HierarchyRenameEntityId = static_cast<uint32_t>(entity);
+                    std::memset(m_HierarchyRenameBuf, 0, sizeof(m_HierarchyRenameBuf));
+                    if (registry.all_of<Atlas::ECS::TagComponent>(entity)) {
+                        const auto& tag = registry.get<Atlas::ECS::TagComponent>(entity);
+                        if (!tag.name.empty()) {
+                            std::strncpy(m_HierarchyRenameBuf, tag.name.c_str(), sizeof(m_HierarchyRenameBuf) - 1);
+                        }
+                    }
+                }
+
+                if (ImGui::MenuItem("Delete", nullptr, false, !isCameraEntity)) {
+                    softDeleteSubtree(entity);
+                }
+
+                if (registry.all_of<Atlas::ECS::ParentComponent>(entity)) {
+                    if (ImGui::MenuItem("Unparent")) {
+                        queueReparent(entity, entt::null);
+                    }
+                }
+
+                if (ImGui::MenuItem("Create Child")) {
+                    pendingCreateChildren.push_back(entity);
+                }
+
+                ImGui::EndPopup();
             }
 
             // Drag/drop reparenting
@@ -917,13 +1198,7 @@ void UIManager::renderHierarchy() {
                                     }
 
                                     if (beforeParent != entity) {
-                                        m_Scene->setParent(dragged, entity);
-
-                                        auto cmd = std::make_unique<ReparentCommand>();
-                                        cmd->child = dragged;
-                                        cmd->beforeParent = beforeParent;
-                                        cmd->afterParent = entity;
-                                        pushCommand(std::move(cmd));
+                                        queueReparent(dragged, entity);
                                     }
                                 }
                             }
@@ -935,14 +1210,13 @@ void UIManager::renderHierarchy() {
 
             if (nodeOpen && !children.empty()) {
                 for (auto child : children) {
-                    self(self, child, pendingDelete);
+                    self(self, child);
                 }
                 ImGui::TreePop();
             }
             ImGui::PopID();
         };
 
-        std::vector<Entity> pendingDelete;
 
         auto roots = m_Scene->getRootEntities();
         if (roots.empty()) {
@@ -952,7 +1226,7 @@ void UIManager::renderHierarchy() {
             clipper.Begin(static_cast<int>(all.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    renderEntityRecursively(renderEntityRecursively, all[static_cast<size_t>(i)], pendingDelete);
+                    renderEntityRecursively(renderEntityRecursively, all[static_cast<size_t>(i)]);
                 }
             }
             clipper.End();
@@ -961,10 +1235,64 @@ void UIManager::renderHierarchy() {
             clipper.Begin(static_cast<int>(roots.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    renderEntityRecursively(renderEntityRecursively, roots[static_cast<size_t>(i)], pendingDelete);
+                    renderEntityRecursively(renderEntityRecursively, roots[static_cast<size_t>(i)]);
                 }
             }
             clipper.End();
+        }
+
+        // Right-click empty area: context menu
+        if (ImGui::BeginPopupContextWindow("hierarchy_empty_ctx", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems)) {
+            const Entity selected = m_PrimarySelected;
+            const bool selectedValid = (selected != entt::null) && registry.valid(selected) && !registry.all_of<Atlas::ECS::EditorHiddenComponent>(selected);
+
+            if (ImGui::MenuItem("Create Entity")) {
+                pendingCreateRoot = true;
+            }
+
+            if (ImGui::MenuItem("Create Child", nullptr, false, selectedValid)) {
+                pendingCreateChildren.push_back(selected);
+            }
+
+            if (ImGui::MenuItem("Create Sibling", nullptr, false, selectedValid)) {
+                if (registry.all_of<Atlas::ECS::ParentComponent>(selected)) {
+                    Entity parent = registry.get<Atlas::ECS::ParentComponent>(selected).parent;
+                    if (parent != entt::null && registry.valid(parent)) {
+                        pendingCreateChildren.push_back(parent);
+                    } else {
+                        pendingCreateRoot = true;
+                    }
+                } else {
+                    pendingCreateRoot = true;
+                }
+            }
+
+            if (ImGui::MenuItem("Rename Selected...", nullptr, false, selectedValid)) {
+                m_ShowHierarchyRenamePopup = true;
+                m_HierarchyRenameEntityId = static_cast<uint32_t>(selected);
+                std::memset(m_HierarchyRenameBuf, 0, sizeof(m_HierarchyRenameBuf));
+                if (registry.all_of<Atlas::ECS::TagComponent>(selected)) {
+                    const auto& tag = registry.get<Atlas::ECS::TagComponent>(selected);
+                    if (!tag.name.empty()) {
+                        std::strncpy(m_HierarchyRenameBuf, tag.name.c_str(), sizeof(m_HierarchyRenameBuf) - 1);
+                    }
+                }
+            }
+
+            const bool canUnparent = selectedValid && registry.all_of<Atlas::ECS::ParentComponent>(selected);
+            if (ImGui::MenuItem("Unparent Selected", nullptr, false, canUnparent)) {
+                queueReparent(selected, entt::null);
+            }
+
+            if (ImGui::MenuItem("Delete Selected", nullptr, false, selectedValid)) {
+                softDeleteSubtree(selected);
+            }
+
+            if (ImGui::MenuItem("Clear Selection", nullptr, false, !m_SelectedEntities.empty())) {
+                clearSelection();
+            }
+
+            ImGui::EndPopup();
         }
 
         // Drop on empty space to unparent
@@ -980,13 +1308,7 @@ void UIManager::renderHierarchy() {
                         }
 
                         if (beforeParent != entt::null) {
-                            m_Scene->setParent(dragged, entt::null);
-
-                            auto cmd = std::make_unique<ReparentCommand>();
-                            cmd->child = dragged;
-                            cmd->beforeParent = beforeParent;
-                            cmd->afterParent = entt::null;
-                            pushCommand(std::move(cmd));
+                            queueReparent(dragged, entt::null);
                         }
                     }
                 }
@@ -994,37 +1316,96 @@ void UIManager::renderHierarchy() {
             ImGui::EndDragDropTarget();
         }
 
-        for (auto entity : pendingDelete) {
-            if (!m_Scene->getRegistry().valid(entity)) continue;
+        // Apply deferred hierarchy mutations after traversal to avoid invalidating child lists
+        // while ImGui is building the tree.
+        for (const auto& pr : pendingReparents) {
+            if (!m_Scene) break;
+            if (pr.child == entt::null) continue;
+            if (!registry.valid(pr.child)) continue;
+            if (pr.afterParent != entt::null && !registry.valid(pr.afterParent)) continue;
 
-            // Soft delete: hide entity subtree (keeps GPU resources alive, supports undo).
-            std::vector<Entity> subtree;
-            subtree.reserve(32);
-
-            const auto collect = [&](auto&& self, Entity e) -> void {
-                if (e == entt::null) return;
-                if (!registry.valid(e)) return;
-
-                subtree.push_back(e);
-                for (auto c : m_Scene->getChildren(e)) {
-                    self(self, c);
-                }
-            };
-
-            collect(collect, entity);
-
-            for (Entity e : subtree) {
-                if (e == entt::null || !registry.valid(e)) continue;
-                registry.emplace_or_replace<Atlas::ECS::EditorHiddenComponent>(e, Atlas::ECS::EditorHiddenComponent{});
-                if (isSelected(e)) {
-                    toggleSelectedEntity(e);
-                }
+            Entity beforeParent = entt::null;
+            if (registry.all_of<Atlas::ECS::ParentComponent>(pr.child)) {
+                beforeParent = registry.get<Atlas::ECS::ParentComponent>(pr.child).parent;
             }
 
-            auto cmd = std::make_unique<SoftDeleteCommand>();
-            cmd->entities = subtree;
+            if (beforeParent == pr.afterParent) {
+                continue;
+            }
+
+            m_Scene->setParent(pr.child, pr.afterParent);
+
+            auto cmd = std::make_unique<ReparentCommand>();
+            cmd->child = pr.child;
+            cmd->beforeParent = beforeParent;
+            cmd->afterParent = pr.afterParent;
             pushCommand(std::move(cmd));
         }
+
+        Entity lastCreatedChild = entt::null;
+
+        if (pendingCreateRoot) {
+            lastCreatedChild = m_Scene->createEntity("Entity");
+        }
+
+        for (Entity parent : pendingCreateChildren) {
+            if (parent == entt::null) continue;
+            if (!registry.valid(parent)) continue;
+
+            Entity child = m_Scene->createEntity("Entity");
+            m_Scene->setParent(child, parent);
+            lastCreatedChild = child;
+        }
+
+        if (lastCreatedChild != entt::null) {
+            setSelectedEntity(lastCreatedChild);
+        }
+
+    }
+
+    // Rename modal
+    if (m_ShowHierarchyRenamePopup) {
+        ImGui::OpenPopup("Rename Entity");
+    }
+
+    if (ImGui::BeginPopupModal("Rename Entity", &m_ShowHierarchyRenamePopup, ImGuiWindowFlags_AlwaysAutoResize)) {
+        Entity e = static_cast<Entity>(m_HierarchyRenameEntityId);
+        bool valid = m_Scene && m_Scene->getRegistry().valid(e);
+
+        ImGui::BeginDisabled(!valid);
+        ImGui::InputText("Name", m_HierarchyRenameBuf, sizeof(m_HierarchyRenameBuf));
+        ImGui::EndDisabled();
+
+        bool submit = ImGui::Button("OK");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            m_ShowHierarchyRenamePopup = false;
+        }
+
+        if (submit && valid) {
+            auto& reg = m_Scene->getRegistry();
+            std::string after = std::string(m_HierarchyRenameBuf);
+
+            std::string before;
+            if (reg.all_of<Atlas::ECS::TagComponent>(e)) {
+                before = reg.get<Atlas::ECS::TagComponent>(e).name;
+                reg.get<Atlas::ECS::TagComponent>(e).name = after;
+            } else {
+                reg.emplace<Atlas::ECS::TagComponent>(e, after);
+            }
+
+            if (before != after) {
+                auto cmd = std::make_unique<RenameCommand>();
+                cmd->entity = e;
+                cmd->before = before;
+                cmd->after = after;
+                pushCommand(std::move(cmd));
+            }
+
+            m_ShowHierarchyRenamePopup = false;
+        }
+
+        ImGui::EndPopup();
     }
 
     ImGui::End();
@@ -1197,6 +1578,154 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
             renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable");
         }
 
+        // Skeletal animation inspector (V1)
+        {
+            auto& registry = m_Scene->getRegistry();
+
+            Entity skelEntity = entt::null;
+            if (registry.all_of<Atlas::ECS::SkeletonComponent>(selectedEntity)) {
+                skelEntity = selectedEntity;
+            } else if (registry.all_of<Atlas::ECS::SkinnedMeshComponent>(selectedEntity)) {
+                skelEntity = registry.get<Atlas::ECS::SkinnedMeshComponent>(selectedEntity).skeletonEntity;
+            }
+
+            if (skelEntity != entt::null && registry.valid(skelEntity) && registry.all_of<Atlas::ECS::SkeletonComponent>(skelEntity)) {
+                if (ImGui::CollapsingHeader("Skeleton", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    auto& skc = registry.get<Atlas::ECS::SkeletonComponent>(skelEntity);
+                    const Atlas::Anim::Skeleton* skel = skc.skeleton.get();
+
+                    if (!skel) {
+                        ImGui::TextUnformatted("No skeleton data");
+                    } else {
+                        ImGui::Text("Bones: %u", skel->boneCount());
+                        ImGui::Text("Clips: %zu", skc.clips.size());
+
+                        if (!registry.all_of<Atlas::ECS::AnimationPlayerComponent>(skelEntity)) {
+                            registry.emplace<Atlas::ECS::AnimationPlayerComponent>(skelEntity);
+                        }
+                        auto& ap = registry.get<Atlas::ECS::AnimationPlayerComponent>(skelEntity).player;
+
+                        if (!registry.all_of<Atlas::ECS::BonePoseOverrideComponent>(skelEntity)) {
+                            registry.emplace<Atlas::ECS::BonePoseOverrideComponent>(skelEntity);
+                        }
+                        auto& ov = registry.get<Atlas::ECS::BonePoseOverrideComponent>(skelEntity);
+
+                        // Edit pose toggle (pauses playback)
+                        bool editPose = ov.enabled;
+                        if (ImGui::Checkbox("Edit Pose", &editPose)) {
+                            ov.enabled = editPose;
+                            if (ov.enabled) {
+                                ap.playing = false;
+                                const uint32_t bc = skel->boneCount();
+                                ov.hasRotation.assign(bc, uint8_t(0));
+                                ov.rotation.assign(bc, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+                                m_RigEditEntity = skelEntity;
+                                if (m_RigSelectedBone >= static_cast<int32_t>(bc)) {
+                                    m_RigSelectedBone = (bc > 0) ? 0 : -1;
+                                }
+                            }
+                        }
+
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Show Skeleton", &m_RigShowSkeleton);
+
+                        // Clip selection + playback controls
+                        if (skc.clips.empty()) {
+                            ImGui::TextUnformatted("No animation clips");
+                            ap.clipIndex = -1;
+                            ap.playing = false;
+                        } else {
+                            if (ap.clipIndex < 0 || static_cast<size_t>(ap.clipIndex) >= skc.clips.size()) {
+                                ap.clipIndex = 0;
+                            }
+
+                            const char* preview = skc.clips[static_cast<size_t>(ap.clipIndex)].name.empty()
+                                ? "<unnamed>"
+                                : skc.clips[static_cast<size_t>(ap.clipIndex)].name.c_str();
+
+                            if (ImGui::BeginCombo("Clip", preview)) {
+                                for (int i = 0; i < static_cast<int>(skc.clips.size()); ++i) {
+                                    const auto& clip = skc.clips[static_cast<size_t>(i)];
+                                    const char* name = clip.name.empty() ? "<unnamed>" : clip.name.c_str();
+                                    bool sel = (i == ap.clipIndex);
+                                    if (ImGui::Selectable(name, sel)) {
+                                        ap.clipIndex = i;
+                                        ap.timeSeconds = 0.0f;
+                                    }
+                                    if (sel) ImGui::SetItemDefaultFocus();
+                                }
+                                ImGui::EndCombo();
+                            }
+
+                            const float dur = skc.clips[static_cast<size_t>(ap.clipIndex)].durationSeconds;
+
+                            ImGui::BeginDisabled(ov.enabled);
+                            ImGui::Checkbox("Playing", &ap.playing);
+                            ImGui::SameLine();
+                            ImGui::Checkbox("Loop", &ap.loop);
+                            ImGui::EndDisabled();
+
+                            ImGui::DragFloat("Speed", &ap.speed, 0.05f, -5.0f, 5.0f, "%.2f");
+
+                            if (dur > 0.0f) {
+                                float t = ap.timeSeconds;
+                                if (ImGui::SliderFloat("Time", &t, 0.0f, dur, "%.3f")) {
+                                    ap.timeSeconds = t;
+                                }
+                            }
+                        }
+
+                        // Bone list
+                        if (skel->boneCount() > 0) {
+                            if (m_RigEditEntity != skelEntity) {
+                                m_RigEditEntity = skelEntity;
+                                m_RigSelectedBone = 0;
+                            }
+
+                            ImGui::SeparatorText("Bones");
+
+                            const uint32_t bc = skel->boneCount();
+                            if (m_RigSelectedBone >= static_cast<int32_t>(bc)) {
+                                m_RigSelectedBone = 0;
+                            }
+
+                            ImGui::BeginChild("##bone_list", ImVec2(0, 180), true);
+                            for (uint32_t i = 0; i < bc; ++i) {
+                                int depth = 0;
+                                int32_t p = (i < skel->parentIndex.size()) ? skel->parentIndex[i] : -1;
+                                while (p >= 0 && depth < 32) {
+                                    ++depth;
+                                    p = (static_cast<uint32_t>(p) < skel->parentIndex.size()) ? skel->parentIndex[static_cast<uint32_t>(p)] : -1;
+                                }
+
+                                std::string label;
+                                label.reserve(64);
+                                for (int d = 0; d < depth; ++d) label += "  ";
+                                if (i < skel->boneNames.size() && !skel->boneNames[i].empty()) label += skel->boneNames[i];
+                                else label += ("Bone_" + std::to_string(i));
+
+                                bool sel = (static_cast<int32_t>(i) == m_RigSelectedBone);
+                                if (ImGui::Selectable(label.c_str(), sel)) {
+                                    m_RigEditEntity = skelEntity;
+                                    m_RigSelectedBone = static_cast<int32_t>(i);
+                                }
+                            }
+                            ImGui::EndChild();
+
+                            if (ov.enabled && m_RigSelectedBone >= 0) {
+                                ImGui::BeginDisabled(m_RigSelectedBone < 0);
+                                if (ImGui::Button("Reset Selected Bone")) {
+                                    const uint32_t i = static_cast<uint32_t>(m_RigSelectedBone);
+                                    if (i < ov.hasRotation.size()) ov.hasRotation[i] = 0;
+                                }
+                                ImGui::EndDisabled();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (m_Scene->getRegistry().all_of<::Mesh>(selectedEntity)) {
             if (ImGui::CollapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen)) {
                 auto& registry = m_Scene->getRegistry();
@@ -1362,6 +1891,7 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
                             s.alphaMode = m.alphaMode;
                             s.alphaCutoff = m.alphaCutoff;
                             s.doubleSided = m.doubleSided;
+                            s.invertCulling = m.invertCulling;
                             return s;
                         };
 
@@ -1374,7 +1904,8 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
                                    glm::length(a.emissiveFactor - b.emissiveFactor) > eps ||
                                    a.alphaMode != b.alphaMode ||
                                    std::abs(a.alphaCutoff - b.alphaCutoff) > eps ||
-                                   a.doubleSided != b.doubleSided;
+                                   a.doubleSided != b.doubleSided ||
+                                   a.invertCulling != b.invertCulling;
                         };
 
                         auto beginMatScalarEdit = [&]() {
@@ -1438,8 +1969,15 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
                             if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
                         }
 
-                        ImGui::Checkbox("Double Sided##Mat", &mat.doubleSided);
-                        if (ImGui::IsItemActivated()) beginMatScalarEdit();
+                        if (ImGui::Checkbox("Double Sided##Mat", &mat.doubleSided)) {
+                            beginMatScalarEdit();
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
+
+                        ImGui::SameLine();
+                        if (ImGui::Checkbox("Invert Culling##Mat", &mat.invertCulling)) {
+                            beginMatScalarEdit();
+                        }
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
                         auto editTexture = [&](const char* label, const char* dialogId, const char* filter,
@@ -1597,8 +2135,9 @@ std::string getFileIcon(const std::string& filename, bool isFolder) {
     return *current;
 }
 
-void UIManager::renderContentExplorer() {
-    ImGui::Begin("Content Explorer", nullptr, ImGuiWindowFlags_NoCollapse);
+void UIManager::renderContentExplorer() 
+{
+    ImGui::Begin("Content Explorer", &m_ShowContentExplorerWindow, ImGuiWindowFlags_NoCollapse);
 
     m_ContentTextureThumbFrame++;
 
@@ -2047,7 +2586,7 @@ void UIManager::renderMenuBar() {
             ImGui::MenuItem("Viewport", NULL, &m_ShowViewportWindow);
             ImGui::MenuItem("Hierarchy", NULL, &m_ShowHierarchyWindow);
             ImGui::MenuItem("Properties", NULL, &m_ShowPropertiesWindow);
-            ImGui::MenuItem("Content Explorer", NULL, true);
+            ImGui::MenuItem("Content Explorer", NULL, &m_ShowContentExplorerWindow);
             ImGui::Separator();
             ImGui::MenuItem("Profiler", NULL, &m_ShowProfilerWindow);
             ImGui::MenuItem("Camera", NULL, &m_ShowCameraWindow);

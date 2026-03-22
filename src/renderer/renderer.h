@@ -40,6 +40,7 @@ struct PushConstants {
     glm::vec4 emissiveFactor;
     float metallic;
     float roughness;
+    float alphaCutoff;
     int32_t albedoTexIndex;
     int32_t normalTexIndex;
     int32_t metallicRoughnessTexIndex;
@@ -164,6 +165,9 @@ private:
     void createOutlinePipeline();
     void createLightBuffer();
     void createDescriptorSet();
+    void createBonesDescriptorSetLayout();
+    void createBonesResources();
+    uint32_t uploadBonePalette(const glm::mat4* matrices, uint32_t boneCount);
 
     void destroyPipelineResources();
     void destroySwapchainResources();
@@ -222,10 +226,16 @@ private:
     VkRenderPass m_PickingRenderPass = VK_NULL_HANDLE;
     VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineFrontCull = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineNoCull = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipelineBlend = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineBlendFrontCull = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineBlendNoCull = VK_NULL_HANDLE;
 
     VkPipelineLayout m_PickingPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_PickingPipeline = VK_NULL_HANDLE;
+    VkPipeline m_PickingPipelineFrontCull = VK_NULL_HANDLE;
+    VkPipeline m_PickingPipelineNoCull = VK_NULL_HANDLE;
 
     VkPipelineLayout m_OutlinePipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_OutlinePipeline = VK_NULL_HANDLE;
@@ -266,6 +276,21 @@ private:
     VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
+
+    // Bones palette (dynamic SSBO) used by vertex shaders (set=1,binding=0).
+    static constexpr uint32_t MAX_BONES = 256;
+    static constexpr uint32_t MAX_SKINNED_INSTANCES = 256;
+
+    VkDescriptorPool m_BonesDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_BonesDescriptorSetLayout = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> m_BonesDescriptorSets{};
+
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> m_BonePaletteBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> m_BonePaletteMemories{};
+    std::array<void*, MAX_FRAMES_IN_FLIGHT> m_BonePaletteMapped{};
+    VkDeviceSize m_BonePaletteStrideBytes = 0;
+    uint32_t m_BonePaletteNextSlot = 0;
+
     uint32_t m_BoundTextureCount = 1;
 
     static constexpr uint32_t MAX_TEXTURES = 64;

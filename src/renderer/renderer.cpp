@@ -9,9 +9,11 @@
 #include <stdexcept>
 #include <fstream>
 #include <array>
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
+#include <unordered_map>
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -69,6 +71,7 @@ void Renderer::init() {
     createOffscreenRenderPass();
     createPickingRenderPass();
     createDepthResources();
+    createBonesDescriptorSetLayout();
     createGraphicsPipeline();
     createPickingPipeline();
     createOutlinePipeline();
@@ -78,6 +81,7 @@ void Renderer::init() {
     createCommandBuffers();
     createLightBuffer();
     createDescriptorSet();
+    createBonesResources();
     createSyncObjects();
 
 #ifdef TRACY_ENABLE
@@ -146,6 +150,22 @@ void Renderer::shutdown() {
     destroySwapchainResources();
     destroyPipelineResources();
 
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        if (m_BonePaletteMapped[frame] && m_BonePaletteMemories[frame]) {
+            vkUnmapMemory(m_Device, m_BonePaletteMemories[frame]);
+            m_BonePaletteMapped[frame] = nullptr;
+        }
+        if (m_BonePaletteBuffers[frame]) vkDestroyBuffer(m_Device, m_BonePaletteBuffers[frame], nullptr);
+        if (m_BonePaletteMemories[frame]) vkFreeMemory(m_Device, m_BonePaletteMemories[frame], nullptr);
+        m_BonePaletteBuffers[frame] = VK_NULL_HANDLE;
+        m_BonePaletteMemories[frame] = VK_NULL_HANDLE;
+    }
+
+    if (m_BonesDescriptorPool) vkDestroyDescriptorPool(m_Device, m_BonesDescriptorPool, nullptr);
+    if (m_BonesDescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_BonesDescriptorSetLayout, nullptr);
+    m_BonesDescriptorPool = VK_NULL_HANDLE;
+    m_BonesDescriptorSetLayout = VK_NULL_HANDLE;
+
     if (m_DescriptorPool) vkDestroyDescriptorPool(m_Device, m_DescriptorPool, nullptr);
     if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_DescriptorSetLayout, nullptr);
 
@@ -179,6 +199,16 @@ void Renderer::beginFrame() {
     // Command buffers are reused; reset before recording.
     if (!m_CommandBuffers.empty()) {
         vkResetCommandBuffer(m_CommandBuffers[m_CurrentFrame], 0);
+    }
+
+    // Reset bone palette arena for this frame and reserve slot 0 as identity.
+    m_BonePaletteNextSlot = 0;
+    if (m_BonePaletteStrideBytes != 0 && m_BonePaletteMapped[m_CurrentFrame]) {
+        auto* dst = reinterpret_cast<glm::mat4*>(static_cast<char*>(m_BonePaletteMapped[m_CurrentFrame]));
+        for (uint32_t i = 0; i < MAX_BONES; ++i) {
+            dst[i] = glm::mat4(1.0f);
+        }
+        m_BonePaletteNextSlot = 1;
     }
 }
 
@@ -1085,7 +1115,7 @@ void Renderer::createGraphicsPipeline() {
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = 4;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -1177,9 +1207,11 @@ void Renderer::createGraphicsPipeline() {
     }
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    VkDescriptorSetLayout setLayouts[] = {m_DescriptorSetLayout, m_BonesDescriptorSetLayout};
+
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &m_DescriptorSetLayout;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = setLayouts;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -1208,6 +1240,28 @@ void Renderer::createGraphicsPipeline() {
 
     setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipeline), "PBRPipeline");
 
+    VkPipelineRasterizationStateCreateInfo rasterFrontCull = rasterizer;
+    rasterFrontCull.cullMode = VK_CULL_MODE_FRONT_BIT;
+    pipelineInfo.pRasterizationState = &rasterFrontCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineFrontCull) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create front-cull graphics pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineFrontCull), "PBRPipeline_FrontCull");
+
+    VkPipelineRasterizationStateCreateInfo rasterNoCull = rasterizer;
+    rasterNoCull.cullMode = VK_CULL_MODE_NONE;
+    pipelineInfo.pRasterizationState = &rasterNoCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineNoCull) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create no-cull graphics pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineNoCull), "PBRPipeline_NoCull");
+
+    pipelineInfo.pRasterizationState = &rasterizer;
+
     // Transparent pipeline: alpha blending + depth test, but no depth writes.
     colorBlendAttachment.blendEnable = VK_TRUE;
     colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -1224,6 +1278,22 @@ void Renderer::createGraphicsPipeline() {
     }
 
     setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineBlend), "PBRPipeline_AlphaBlend");
+
+    pipelineInfo.pRasterizationState = &rasterFrontCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineBlendFrontCull) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create transparent front-cull graphics pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineBlendFrontCull), "PBRPipeline_AlphaBlend_FrontCull");
+
+    pipelineInfo.pRasterizationState = &rasterNoCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineBlendNoCull) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create transparent no-cull graphics pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineBlendNoCull), "PBRPipeline_AlphaBlend_NoCull");
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
@@ -1257,7 +1327,7 @@ void Renderer::createPickingPipeline() {
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = 4;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -1323,9 +1393,11 @@ void Renderer::createPickingPipeline() {
     pushConstantRange.size = sizeof(PickingPushConstants);
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    VkDescriptorSetLayout setLayouts[] = {m_DescriptorSetLayout, m_BonesDescriptorSetLayout};
+
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = setLayouts;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -1357,6 +1429,30 @@ void Renderer::createPickingPipeline() {
     }
 
     setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_PickingPipeline), "PickingPipeline");
+
+    VkPipelineRasterizationStateCreateInfo rasterFrontCull = rasterizer;
+    rasterFrontCull.cullMode = VK_CULL_MODE_FRONT_BIT;
+    pipelineInfo.pRasterizationState = &rasterFrontCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_PickingPipelineFrontCull) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create front-cull picking pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_PickingPipelineFrontCull), "PickingPipeline_FrontCull");
+
+    VkPipelineRasterizationStateCreateInfo rasterNoCull = rasterizer;
+    rasterNoCull.cullMode = VK_CULL_MODE_NONE;
+    pipelineInfo.pRasterizationState = &rasterNoCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_PickingPipelineNoCull) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create no-cull picking pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_PickingPipelineNoCull), "PickingPipeline_NoCull");
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
@@ -1390,7 +1486,7 @@ void Renderer::createOutlinePipeline() {
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = 4;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -1457,9 +1553,11 @@ void Renderer::createOutlinePipeline() {
     pushConstantRange.size = sizeof(OutlinePushConstants);
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    VkDescriptorSetLayout setLayouts[] = {m_DescriptorSetLayout, m_BonesDescriptorSetLayout};
+
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = setLayouts;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -1597,6 +1695,149 @@ void Renderer::createDescriptorSet() {
     descriptorWrites[1].pImageInfo = imageInfos.data();
 
     vkUpdateDescriptorSets(m_Device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
+void Renderer::createBonesDescriptorSetLayout() {
+    VkDescriptorSetLayoutBinding bonesBinding{};
+    bonesBinding.binding = 0;
+    bonesBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    bonesBinding.descriptorCount = 1;
+    bonesBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &bonesBinding;
+
+    if (vkCreateDescriptorSetLayout(m_Device, &layoutInfo, nullptr, &m_BonesDescriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create bones descriptor set layout!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, reinterpret_cast<uint64_t>(m_BonesDescriptorSetLayout), "BonesDescriptorSetLayout");
+}
+
+static VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment) {
+    if (alignment == 0) return value;
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+void Renderer::createBonesResources() {
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    poolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
+
+    if (vkCreateDescriptorPool(m_Device, &poolInfo, nullptr, &m_BonesDescriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create bones descriptor pool!");
+    }
+
+    std::array<VkDescriptorSetLayout, MAX_FRAMES_IN_FLIGHT> layouts{};
+    layouts.fill(m_BonesDescriptorSetLayout);
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_BonesDescriptorPool;
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts = layouts.data();
+
+    if (vkAllocateDescriptorSets(m_Device, &allocInfo, m_BonesDescriptorSets.data()) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate bones descriptor sets!");
+    }
+
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(m_PhysicalDevice, &props);
+
+    const VkDeviceSize alignment = props.limits.minStorageBufferOffsetAlignment;
+    m_BonePaletteStrideBytes = alignUp(sizeof(glm::mat4) * MAX_BONES, alignment);
+
+    const VkDeviceSize bufferSize = m_BonePaletteStrideBytes * MAX_SKINNED_INSTANCES;
+
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &m_BonePaletteBuffers[frame]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create bone palette buffer!");
+        }
+
+        VkMemoryRequirements memRequirements{};
+        vkGetBufferMemoryRequirements(m_Device, m_BonePaletteBuffers[frame], &memRequirements);
+
+        VkMemoryAllocateInfo memAlloc{};
+        memAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        memAlloc.allocationSize = memRequirements.size;
+        memAlloc.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        if (vkAllocateMemory(m_Device, &memAlloc, nullptr, &m_BonePaletteMemories[frame]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate bone palette memory!");
+        }
+
+        vkBindBufferMemory(m_Device, m_BonePaletteBuffers[frame], m_BonePaletteMemories[frame], 0);
+
+        void* mapped = nullptr;
+        if (vkMapMemory(m_Device, m_BonePaletteMemories[frame], 0, bufferSize, 0, &mapped) != VK_SUCCESS) {
+            throw std::runtime_error("failed to map bone palette memory!");
+        }
+        m_BonePaletteMapped[frame] = mapped;
+
+        char name[64];
+        std::snprintf(name, sizeof(name), "BonePaletteBuffer[%u]", frame);
+        setDebugName(m_Device, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(m_BonePaletteBuffers[frame]), name);
+
+        VkDescriptorBufferInfo bonesInfo{};
+        bonesInfo.buffer = m_BonePaletteBuffers[frame];
+        bonesInfo.offset = 0;
+        bonesInfo.range = bufferSize;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = m_BonesDescriptorSets[frame];
+        write.dstBinding = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        write.descriptorCount = 1;
+        write.pBufferInfo = &bonesInfo;
+
+        vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+    }
+}
+
+uint32_t Renderer::uploadBonePalette(const glm::mat4* matrices, uint32_t boneCount) {
+    if (m_BonePaletteStrideBytes == 0) {
+        return 0;
+    }
+
+    void* mapped = m_BonePaletteMapped[m_CurrentFrame];
+    if (!mapped) {
+        return 0;
+    }
+
+    if (m_BonePaletteNextSlot >= MAX_SKINNED_INSTANCES) {
+        return 0;
+    }
+
+    const uint32_t slot = m_BonePaletteNextSlot++;
+    const VkDeviceSize offset = static_cast<VkDeviceSize>(slot) * m_BonePaletteStrideBytes;
+
+    auto* dst = reinterpret_cast<glm::mat4*>(static_cast<char*>(mapped) + offset);
+    const uint32_t count = std::min<uint32_t>(boneCount, MAX_BONES);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        dst[i] = matrices[i];
+    }
+    for (uint32_t i = count; i < MAX_BONES; ++i) {
+        dst[i] = glm::mat4(1.0f);
+    }
+
+    return static_cast<uint32_t>(offset);
 }
 
 void Renderer::createPlaceholderTexture() {
@@ -2068,10 +2309,16 @@ void Renderer::destroyPipelineResources() {
     if (m_OutlinePipeline) { vkDestroyPipeline(m_Device, m_OutlinePipeline, nullptr); m_OutlinePipeline = VK_NULL_HANDLE; }
     if (m_OutlinePipelineLayout) { vkDestroyPipelineLayout(m_Device, m_OutlinePipelineLayout, nullptr); m_OutlinePipelineLayout = VK_NULL_HANDLE; }
 
+    if (m_PickingPipelineNoCull) { vkDestroyPipeline(m_Device, m_PickingPipelineNoCull, nullptr); m_PickingPipelineNoCull = VK_NULL_HANDLE; }
+    if (m_PickingPipelineFrontCull) { vkDestroyPipeline(m_Device, m_PickingPipelineFrontCull, nullptr); m_PickingPipelineFrontCull = VK_NULL_HANDLE; }
     if (m_PickingPipeline) { vkDestroyPipeline(m_Device, m_PickingPipeline, nullptr); m_PickingPipeline = VK_NULL_HANDLE; }
     if (m_PickingPipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PickingPipelineLayout, nullptr); m_PickingPipelineLayout = VK_NULL_HANDLE; }
 
+    if (m_GraphicsPipelineBlendNoCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineBlendNoCull, nullptr); m_GraphicsPipelineBlendNoCull = VK_NULL_HANDLE; }
+    if (m_GraphicsPipelineBlendFrontCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineBlendFrontCull, nullptr); m_GraphicsPipelineBlendFrontCull = VK_NULL_HANDLE; }
     if (m_GraphicsPipelineBlend) { vkDestroyPipeline(m_Device, m_GraphicsPipelineBlend, nullptr); m_GraphicsPipelineBlend = VK_NULL_HANDLE; }
+    if (m_GraphicsPipelineNoCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineNoCull, nullptr); m_GraphicsPipelineNoCull = VK_NULL_HANDLE; }
+    if (m_GraphicsPipelineFrontCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineFrontCull, nullptr); m_GraphicsPipelineFrontCull = VK_NULL_HANDLE; }
     if (m_GraphicsPipeline) { vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr); m_GraphicsPipeline = VK_NULL_HANDLE; }
     if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 
@@ -2156,6 +2403,78 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
     // Offscreen image layout is defined by the offscreen render pass itself.
 
+        std::unordered_map<uint32_t, uint32_t> boneOffsetCache;
+    boneOffsetCache.reserve(256);
+    std::vector<glm::mat4> bonePaletteScratch;
+    std::vector<glm::mat4> boneGlobalsScratch;
+
+    auto getBoneOffsetBytes = [&](entt::registry& registry, entt::entity entity) -> uint32_t {
+        if (!registry.valid(entity) || !registry.all_of<ECS::SkinnedMeshComponent>(entity)) {
+            return 0;
+        }
+
+        auto& skinned = registry.get<ECS::SkinnedMeshComponent>(entity);
+        const uint32_t cacheKey = static_cast<uint32_t>(entity);
+        if (auto it = boneOffsetCache.find(cacheKey); it != boneOffsetCache.end()) {
+            skinned.bonePaletteOffsetBytes = it->second;
+            return it->second;
+        }
+
+        entt::entity skelEntity = (skinned.skeletonEntity != entt::null) ? skinned.skeletonEntity : entity;
+        if (!registry.valid(skelEntity) || !registry.all_of<ECS::SkeletonComponent>(skelEntity)) {
+            return 0;
+        }
+
+        const auto& skc = registry.get<ECS::SkeletonComponent>(skelEntity);
+        if (!skc.skeleton) {
+            return 0;
+        }
+
+        const Atlas::Anim::Skeleton* skelPtr = skc.skeleton.get();
+        if (!skelPtr) {
+            return 0;
+        }
+
+        const Atlas::Anim::AnimationClip* clip = nullptr;
+        float tSeconds = 0.0f;
+        if (registry.all_of<ECS::AnimationPlayerComponent>(skelEntity)) {
+            const auto& ap = registry.get<ECS::AnimationPlayerComponent>(skelEntity).player;
+            tSeconds = ap.timeSeconds;
+
+            if (ap.clipIndex >= 0 && static_cast<size_t>(ap.clipIndex) < skc.clips.size()) {
+                clip = &skc.clips[static_cast<size_t>(ap.clipIndex)];
+            }
+        }
+
+        Atlas::Anim::PoseOverrides overrides;
+        if (registry.all_of<ECS::BonePoseOverrideComponent>(skelEntity)) {
+            const auto& o = registry.get<ECS::BonePoseOverrideComponent>(skelEntity);
+            if (o.enabled) {
+                overrides.hasRotation = &o.hasRotation;
+                overrides.rotation = &o.rotation;
+            }
+        }
+
+        Atlas::Anim::evaluateGlobals(*skelPtr, clip, tSeconds, overrides, boneGlobalsScratch);
+
+        uint32_t count = static_cast<uint32_t>(boneGlobalsScratch.size());
+        if (count > MAX_BONES) {
+            count = MAX_BONES;
+        }
+
+        bonePaletteScratch.resize(count);
+        const glm::mat4 meshInv = skinned.meshGlobalInverse;
+        for (uint32_t i = 0; i < count; ++i) {
+            glm::mat4 invBind = (i < skelPtr->inverseBind.size()) ? skelPtr->inverseBind[i] : glm::mat4(1.0f);
+            bonePaletteScratch[i] = meshInv * boneGlobalsScratch[i] * invBind;
+        }
+
+        const uint32_t offsetBytes = uploadBonePalette(bonePaletteScratch.data(), count);
+        boneOffsetCache[cacheKey] = offsetBytes;
+        skinned.bonePaletteOffsetBytes = offsetBytes;
+        return offsetBytes;
+    };
+
     // Render scene IDs to picking buffer
     if (scene && m_PickingRenderPass != VK_NULL_HANDLE && m_PickingFramebuffer != VK_NULL_HANDLE && m_PickingPipeline != VK_NULL_HANDLE) {
         if (m_PickingImageLayout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
@@ -2226,7 +2545,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 view = camera.getViewMatrix();
             }
 
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PickingPipeline);
+            VkPipeline activePipeline = VK_NULL_HANDLE;
 
             for (auto entity : meshView) {
                 if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
@@ -2243,6 +2562,31 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     if (!renderable.visible) continue;
                 }
 
+                bool doubleSided = false;
+                if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                    auto& material = registry.get<ECS::MaterialComponent>(entity);
+                    doubleSided = material.doubleSided;
+                }
+
+                bool invertCulling = false;
+                if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                    auto& material = registry.get<ECS::MaterialComponent>(entity);
+                    invertCulling = material.invertCulling;
+                }
+
+                VkPipeline desired = m_PickingPipeline;
+                if (doubleSided && m_PickingPipelineNoCull != VK_NULL_HANDLE) {
+                    desired = m_PickingPipelineNoCull;
+                } else if (invertCulling && m_PickingPipelineFrontCull != VK_NULL_HANDLE) {
+                    desired = m_PickingPipelineFrontCull;
+                }
+
+                if (desired != VK_NULL_HANDLE && desired != activePipeline) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, desired);
+                    activePipeline = desired;
+
+                }
+
                 glm::mat4 model = glm::mat4(1.0f);
                 if (scene->hasTransform(entity)) {
                     model = scene->getCachedWorldTransform(entity);
@@ -2256,6 +2600,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                 vkCmdPushConstants(commandBuffer, m_PickingPipelineLayout,
                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PickingPushConstants), &pc);
+
+                uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, entity);
+                VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PickingPipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
 
                 VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
                 VkDeviceSize offsets[] = {0};
@@ -2317,8 +2665,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 float distSq;
             };
 
-            std::vector<entt::entity> opaqueItems;
-            std::vector<DrawItem> transparentItems;
+            std::vector<entt::entity> opaqueCull;
+            std::vector<entt::entity> opaqueFrontCull;
+            std::vector<entt::entity> opaqueNoCull;
+            std::vector<DrawItem> transparentCull;
+            std::vector<DrawItem> transparentFrontCull;
+            std::vector<DrawItem> transparentNoCull;
 
             for (auto entity : meshView) {
                 if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
@@ -2336,11 +2688,13 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 }
 
                 bool isBlend = false;
+                bool doubleSided = false;
+                bool invertCulling = false;
                 if (registry.all_of<ECS::MaterialComponent>(entity)) {
                     auto& material = registry.get<ECS::MaterialComponent>(entity);
-                    if (material.alphaMode == ECS::MaterialComponent::AlphaMode::Blend) {
-                        isBlend = true;
-                    }
+                    isBlend = (material.alphaMode == ECS::MaterialComponent::AlphaMode::Blend);
+                    doubleSided = material.doubleSided;
+                    invertCulling = material.invertCulling;
                 }
 
                 if (isBlend) {
@@ -2350,13 +2704,32 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                         pos = glm::vec3(model[3]);
                     }
                     glm::vec3 d = pos - cameraPos;
-                    transparentItems.push_back(DrawItem{entity, glm::dot(d, d)});
+                    DrawItem item{entity, glm::dot(d, d)};
+                    if (doubleSided) {
+                        transparentNoCull.push_back(item);
+                    } else if (invertCulling) {
+                        transparentFrontCull.push_back(item);
+                    } else {
+                        transparentCull.push_back(item);
+                    }
                 } else {
-                    opaqueItems.push_back(entity);
+                    if (doubleSided) {
+                        opaqueNoCull.push_back(entity);
+                    } else if (invertCulling) {
+                        opaqueFrontCull.push_back(entity);
+                    } else {
+                        opaqueCull.push_back(entity);
+                    }
                 }
             }
 
-            std::sort(transparentItems.begin(), transparentItems.end(),
+            std::sort(transparentCull.begin(), transparentCull.end(),
+                [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
+
+            std::sort(transparentFrontCull.begin(), transparentFrontCull.end(),
+                [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
+
+            std::sort(transparentNoCull.begin(), transparentNoCull.end(),
                 [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
 
             auto drawEntity = [&](entt::entity entity) {
@@ -2367,6 +2740,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 glm::vec4 emissiveFactor = glm::vec4(0.0f);
                 float metallic = 0.0f;
                 float roughness = 0.5f;
+                float alphaCutoff = 0.5f;
 
                 int32_t albedoTexIndex = 0;
                 int32_t normalTexIndex = 0;
@@ -2385,6 +2759,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     metallic = material.metallic;
                     roughness = material.roughness;
                     emissiveFactor = glm::vec4(material.emissiveFactor, 0.0f);
+                    alphaCutoff = material.alphaCutoff;
 
                     if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) {
                         flags |= (1 << 0);
@@ -2407,10 +2782,16 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                         emissiveTexIndex = material.emissiveTextureIndex;
                     }
 
+                    if (material.doubleSided) {
+                        flags |= (1 << 5);
+                    }
+
                     flags |= (static_cast<int32_t>(material.alphaMode) & 3) << 8;
                 }
 
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
+                uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, entity);
+                VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
 
                 PushConstants pushConstants;
                 pushConstants.model = model;
@@ -2420,6 +2801,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 pushConstants.emissiveFactor = emissiveFactor;
                 pushConstants.metallic = metallic;
                 pushConstants.roughness = roughness;
+                pushConstants.alphaCutoff = alphaCutoff;
                 pushConstants.albedoTexIndex = albedoTexIndex;
                 pushConstants.normalTexIndex = normalTexIndex;
                 pushConstants.metallicRoughnessTexIndex = metallicRoughnessTexIndex;
@@ -2437,16 +2819,44 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
             };
 
-            if (!opaqueItems.empty()) {
+            if (!opaqueCull.empty()) {
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
-                for (auto entity : opaqueItems) {
+                for (auto entity : opaqueCull) {
                     drawEntity(entity);
                 }
             }
 
-            if (!transparentItems.empty() && m_GraphicsPipelineBlend != VK_NULL_HANDLE) {
+            if (!opaqueFrontCull.empty() && m_GraphicsPipelineFrontCull != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineFrontCull);
+                for (auto entity : opaqueFrontCull) {
+                    drawEntity(entity);
+                }
+            }
+
+            if (!opaqueNoCull.empty() && m_GraphicsPipelineNoCull != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineNoCull);
+                for (auto entity : opaqueNoCull) {
+                    drawEntity(entity);
+                }
+            }
+
+            if (!transparentCull.empty() && m_GraphicsPipelineBlend != VK_NULL_HANDLE) {
                 vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlend);
-                for (const auto& item : transparentItems) {
+                for (const auto& item : transparentCull) {
+                    drawEntity(item.entity);
+                }
+            }
+
+            if (!transparentFrontCull.empty() && m_GraphicsPipelineBlendFrontCull != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlendFrontCull);
+                for (const auto& item : transparentFrontCull) {
+                    drawEntity(item.entity);
+                }
+            }
+
+            if (!transparentNoCull.empty() && m_GraphicsPipelineBlendNoCull != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlendNoCull);
+                for (const auto& item : transparentNoCull) {
                     drawEntity(item.entity);
                 }
             }
@@ -2481,6 +2891,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                     vkCmdPushConstants(commandBuffer, m_OutlinePipelineLayout,
                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(OutlinePushConstants), &pc);
+
+                    uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, selected);
+                    VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
 
                     VkBuffer vertexBuffers[] = {selMesh.vertexBuffer};
                     VkDeviceSize offsets[] = {0};

@@ -9,6 +9,7 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 
 #include <ImGuizmo.h>
 #include <imgui.h>
@@ -155,26 +156,26 @@ void EditorApp::queueModelImport(const std::string& assetPath) {
     queueModelImportAt(assetPath, glm::vec3(0.0f), false, 0);
 }
 
-void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3& rootPosition, bool isWorldChunk, uint64_t cellKey) {
-    std::string fullPath = assetPath;
+static bool resolveModelImportPath(::ProjectManager* projectManager, const std::string& assetPath, std::string& outFullPath, std::string& outModelName) {
+    outFullPath = assetPath;
 
     // Normalize "@"-prefixed paths (Content Explorer style) and handle Windows slashes.
-    if (!fullPath.empty() && fullPath[0] == '@') {
-        fullPath.erase(fullPath.begin());
+    if (!outFullPath.empty() && outFullPath[0] == '@') {
+        outFullPath.erase(outFullPath.begin());
     }
-    std::replace(fullPath.begin(), fullPath.end(), '\\', '/');
+    std::replace(outFullPath.begin(), outFullPath.end(), '\\', '/');
 
     // If this already resolves to an existing file, keep it.
     {
         std::error_code ec;
-        std::filesystem::path p(fullPath);
+        std::filesystem::path p(outFullPath);
         if (!p.empty() && std::filesystem::exists(p, ec)) {
-            fullPath = std::filesystem::absolute(p, ec).lexically_normal().string();
-        } else if (m_ProjectManager && m_ProjectManager->hasProject()) {
+            outFullPath = std::filesystem::absolute(p, ec).lexically_normal().string();
+        } else if (projectManager && projectManager->hasProject()) {
             // Accept "MyProject/assets/..." and "assets/..." as input and map to project assets.
-            const std::string assetsPrefix = m_ProjectManager->getAssetsPath() + "/";
+            const std::string assetsPrefix = projectManager->getAssetsPath() + "/";
 
-            std::string rel = fullPath;
+            std::string rel = outFullPath;
             if (rel.rfind(assetsPrefix, 0) == 0) {
                 rel = rel.substr(assetsPrefix.size());
             } else {
@@ -189,13 +190,148 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
 
             std::filesystem::path rp(rel);
             if (!rp.is_absolute()) {
-                fullPath = m_ProjectManager->getAssetFullPath(rel);
+                outFullPath = projectManager->getAssetFullPath(rel);
             }
         }
     }
-    std::filesystem::path fsPath(fullPath);
+
+    std::filesystem::path fsPath(outFullPath);
     std::string ext = fsPath.extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
     if (ext != ".fbx" && ext != ".gltf" && ext != ".glb" && ext != ".obj" && ext != ".dae") {
+        return false;
+    }
+
+    outModelName = fsPath.stem().string();
+    return true;
+}
+
+void EditorApp::enqueueImportRequest(const ImportRequest& req) {
+    // World chunk imports should be silent.
+    if (req.isWorldChunk) {
+        ImportOptions opts;
+        startModelImportAt(req.assetPath, req.rootPosition, req.isWorldChunk, req.cellKey, opts);
+        return;
+    }
+
+    m_ImportQueue.push_back(req);
+
+    if (!m_ShowImportOptionsPopup) {
+        m_ActiveImport = m_ImportQueue.front();
+        m_ImportQueue.pop_front();
+
+        m_ActiveImportOptions = m_LastImportOptions;
+        if (m_ActiveImportOptions.uniformScale <= 0.0f) {
+            m_ActiveImportOptions.uniformScale = 1.0f;
+        }
+
+        m_ActiveImportFullPath.clear();
+        m_ActiveImportModelName.clear();
+        if (!resolveModelImportPath(m_ProjectManager.get(), m_ActiveImport.assetPath, m_ActiveImportFullPath, m_ActiveImportModelName)) {
+            // Drop invalid requests silently.
+            m_ActiveImport = ImportRequest{};
+            return;
+        }
+
+        m_ShowImportOptionsPopup = true;
+    }
+}
+
+void EditorApp::renderImportOptionsPopup() {
+    if (!m_ShowImportOptionsPopup) {
+        return;
+    }
+
+    ImGui::OpenPopup("Import Options");
+
+    bool open = true;
+    if (ImGui::BeginPopupModal("Import Options", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Asset");
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", m_ActiveImportFullPath.c_str());
+
+        ImGui::Spacing();
+        ImGui::SeparatorText("Options");
+
+        ImGui::DragFloat("Uniform Scale", &m_ActiveImportOptions.uniformScale, 0.01f, 0.001f, 1000.0f, "%.3f");
+        ImGui::Checkbox("Import Animations", &m_ActiveImportOptions.importAnimations);
+
+        ImGui::BeginDisabled(!m_ActiveImportOptions.importAnimations);
+        ImGui::Checkbox("Start Playing", &m_ActiveImportOptions.startPlaying);
+        ImGui::EndDisabled();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        bool doImport = ImGui::Button("Import");
+        ImGui::SameLine();
+        bool doCancel = ImGui::Button("Cancel");
+
+        if (!open) {
+            doCancel = true;
+        }
+
+        if (doImport) {
+            startModelImportAt(m_ActiveImport.assetPath, m_ActiveImport.rootPosition, m_ActiveImport.isWorldChunk, m_ActiveImport.cellKey, m_ActiveImportOptions);
+            m_LastImportOptions = m_ActiveImportOptions;
+            doCancel = true;
+        }
+
+        if (doCancel) {
+            ImGui::CloseCurrentPopup();
+            m_ShowImportOptionsPopup = false;
+            m_ActiveImport = ImportRequest{};
+            m_ActiveImportFullPath.clear();
+            m_ActiveImportModelName.clear();
+
+            if (!m_ImportQueue.empty()) {
+                m_ActiveImport = m_ImportQueue.front();
+                m_ImportQueue.pop_front();
+
+                m_ActiveImportOptions = m_LastImportOptions;
+                if (m_ActiveImportOptions.uniformScale <= 0.0f) {
+                    m_ActiveImportOptions.uniformScale = 1.0f;
+                }
+
+                if (resolveModelImportPath(m_ProjectManager.get(), m_ActiveImport.assetPath, m_ActiveImportFullPath, m_ActiveImportModelName)) {
+                    m_ShowImportOptionsPopup = true;
+                } else {
+                    m_ActiveImport = ImportRequest{};
+                    m_ActiveImportFullPath.clear();
+                    m_ActiveImportModelName.clear();
+                }
+            }
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3& rootPosition, bool isWorldChunk, uint64_t cellKey) {
+    ImportRequest req;
+    req.assetPath = assetPath;
+    req.rootPosition = rootPosition;
+    req.isWorldChunk = isWorldChunk;
+    req.cellKey = cellKey;
+
+    // Avoid spamming chunk loads.
+    if (isWorldChunk) {
+        if (m_WorldLoadingCells.find(cellKey) != m_WorldLoadingCells.end()) {
+            return;
+        }
+        if (m_WorldCellRoots.find(cellKey) != m_WorldCellRoots.end()) {
+            return;
+        }
+    }
+
+    enqueueImportRequest(req);
+}
+
+void EditorApp::startModelImportAt(const std::string& assetPath, const glm::vec3& rootPosition, bool isWorldChunk, uint64_t cellKey, const ImportOptions& options) {
+    std::string fullPath;
+    std::string modelName;
+    if (!resolveModelImportPath(m_ProjectManager.get(), assetPath, fullPath, modelName)) {
         return;
     }
 
@@ -208,7 +344,6 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
         }
     }
 
-    std::string modelName = fsPath.stem().string();
     auto tempEntity = m_Scene->createEntity(modelName + " [Loading...]");
     if (m_Scene->getRegistry().all_of<Transform>(tempEntity)) {
         m_Scene->getRegistry().get<Transform>(tempEntity).position = rootPosition;
@@ -217,9 +352,6 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
     if (isWorldChunk) {
         m_WorldCellRoots[cellKey] = tempEntity;
         m_Scene->getRegistry().emplace_or_replace<WorldChunk>(tempEntity, WorldChunk{cellKey, true});
-    }
-
-    if (isWorldChunk) {
         m_WorldLoadingCells.insert(cellKey);
     }
 
@@ -231,13 +363,14 @@ void EditorApp::queueModelImportAt(const std::string& assetPath, const glm::vec3
             ModelLoader::loadModelMultiMesh(fullPath, VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr, modelDataPtr.get(), false);
             return modelDataPtr;
         },
-        [this, modelName, fullPath, tempEntity, rootPosition, isWorldChunk, cellKey](AsyncLoader::LoadResult<::ModelData> result) {
+        [this, modelName, fullPath, tempEntity, rootPosition, isWorldChunk, cellKey, options](AsyncLoader::LoadResult<::ModelData> result) {
             std::lock_guard<std::mutex> lock(m_PendingModelsMutex);
             PendingModel p;
             p.modelData = result.data;
             p.modelName = modelName;
             p.basePath = fullPath;
             p.placeholderEntity = tempEntity;
+            p.importOptions = options;
             p.hasRootPosition = true;
             p.rootPosition = rootPosition;
             p.isWorldChunk = isWorldChunk;
@@ -619,7 +752,20 @@ void EditorApp::run() {
             ImGui::End();
         }
 
+        renderImportOptionsPopup();
         processPendingModels();
+
+        // Skeletal animation: advance playback time (V1).
+        if (m_Scene) {
+            auto& registry = m_Scene->getRegistry();
+            auto view = registry.view<ECS::AnimationPlayerComponent>();
+            for (auto e : view) {
+                auto& ap = view.get<ECS::AnimationPlayerComponent>(e).player;
+                if (ap.playing) {
+                    ap.timeSeconds += deltaTime * ap.speed;
+                }
+            }
+        }
 
         bool sceneXformsChanged = false;
         if (m_Scene) {
@@ -651,10 +797,13 @@ void EditorApp::run() {
                 proj = cam.getProjectionMatrix();
                 proj[1][1] = -proj[1][1];
             } else if (m_CameraController) {
-                camPos = position;
                 view = m_CameraController->getViewMatrix();
                 proj = m_CameraController->getProjMatrix();
                 proj[1][1] = -proj[1][1];
+
+                // Derive camera world position from the view matrix.
+                glm::mat4 invView = glm::inverse(view);
+                camPos = glm::vec3(invView[3]);
             }
 
             m_WorldPartition->update(camPos, proj * view);
@@ -781,6 +930,34 @@ void EditorApp::processPendingModels() {
         auto rootEntity = m_Scene->createEntity(rootName);
         if (item.hasRootPosition && m_Scene->getRegistry().all_of<Transform>(rootEntity)) {
             m_Scene->getRegistry().get<Transform>(rootEntity).position = item.rootPosition;
+        }
+
+        // Import options: root scale.
+        if (m_Scene->getRegistry().all_of<Transform>(rootEntity)) {
+            float s = item.importOptions.uniformScale;
+            if (s <= 0.0f) s = 1.0f;
+            m_Scene->getRegistry().get<Transform>(rootEntity).scale *= glm::vec3(s);
+        }
+
+        // Skeletal animation: attach skeleton + clips + player to the root.
+        if (item.modelData && item.modelData->skeleton) {
+            if (!item.importOptions.importAnimations) {
+                item.modelData->clips.clear();
+            }
+
+            ECS::SkeletonComponent skc;
+            skc.skeleton = item.modelData->skeleton;
+            skc.clips = std::move(item.modelData->clips);
+            m_Scene->getRegistry().emplace_or_replace<ECS::SkeletonComponent>(rootEntity, std::move(skc));
+
+            ECS::AnimationPlayerComponent apc;
+            const auto& clips = m_Scene->getRegistry().get<ECS::SkeletonComponent>(rootEntity).clips;
+            apc.player.clipIndex = clips.empty() ? -1 : 0;
+            apc.player.timeSeconds = 0.0f;
+            apc.player.speed = 1.0f;
+            apc.player.loop = true;
+            apc.player.playing = item.importOptions.startPlaying && !clips.empty();
+            m_Scene->getRegistry().emplace_or_replace<ECS::AnimationPlayerComponent>(rootEntity, apc);
         }
 
         if (item.isWorldChunk) {
@@ -954,6 +1131,27 @@ void EditorApp::processPendingModels() {
 
                 std::unordered_map<std::string, int> childNameCounts;
 
+        auto setTransformFromMatrix = [&](entt::entity e, const glm::mat4& m) {
+            auto& registry = m_Scene->getRegistry();
+            if (!registry.all_of<Transform>(e)) return;
+
+            Transform& t = registry.get<Transform>(e);
+            t.position = glm::vec3(m[3]);
+
+            glm::vec3 col0 = glm::vec3(m[0]);
+            glm::vec3 col1 = glm::vec3(m[1]);
+            glm::vec3 col2 = glm::vec3(m[2]);
+            t.scale = glm::vec3(glm::length(col0), glm::length(col1), glm::length(col2));
+
+            glm::mat3 rot(1.0f);
+            if (t.scale.x != 0.0f) rot[0] = col0 / t.scale.x;
+            if (t.scale.y != 0.0f) rot[1] = col1 / t.scale.y;
+            if (t.scale.z != 0.0f) rot[2] = col2 / t.scale.z;
+
+            glm::quat q = glm::quat_cast(rot);
+            t.rotation = glm::degrees(glm::eulerAngles(q));
+        };
+
         for (auto& meshData : item.modelData->meshes) {
             std::string baseName = meshData.name.empty() ? std::string("Mesh") : meshData.name;
             int& nameCount = childNameCounts[baseName];
@@ -969,8 +1167,19 @@ void EditorApp::processPendingModels() {
                 m_Scene->getRegistry().emplace_or_replace<WorldChunk>(entity, WorldChunk{item.worldCellKey, false});
             }
 
-            // Restore legacy import behavior: mesh is pretransformed and recentered around a pivot.
-            if (m_Scene->getRegistry().all_of<Transform>(entity)) {
+            if (m_Scene->getRegistry().all_of<ECS::SkeletonComponent>(rootEntity)) {
+                ECS::SkinnedMeshComponent smc;
+                smc.skeletonEntity = rootEntity;
+                if (meshData.hasMeshNodeGlobal) {
+                    smc.meshGlobalInverse = glm::inverse(meshData.meshNodeGlobal);
+                }
+                m_Scene->getRegistry().emplace_or_replace<ECS::SkinnedMeshComponent>(entity, smc);
+            }
+
+            // Skinned import: keep mesh node transform; static import: legacy pivot recenter.
+            if (m_Scene->getRegistry().all_of<ECS::SkinnedMeshComponent>(entity) && meshData.hasMeshNodeGlobal) {
+                setTransformFromMatrix(entity, meshData.meshNodeGlobal);
+            } else if (m_Scene->getRegistry().all_of<Transform>(entity)) {
                 m_Scene->getRegistry().get<Transform>(entity).position = meshData.pivotPosition;
             }
 

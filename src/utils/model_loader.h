@@ -2,10 +2,13 @@
 
 #include <string>
 #include <vector>
+#include <array>
 #include <iostream>
 #include <chrono>
 #include <functional>
 #include <unordered_map>
+#include <cstdint>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -20,7 +23,10 @@
 #include <assimp/material.h>
 #include <assimp/GltfMaterial.h>
 
+#include <stb_image.h>
+
 #include "../ecs/vertex.h"
+#include "../animation/animation.h"
 
 struct MeshData {
     std::vector<Vertex> vertices;
@@ -45,6 +51,10 @@ struct MeshData {
     // Since we import with aiProcess_PreTransformVertices, vertex positions are baked into a common space.
     // Keep a per-mesh pivot so editor gizmos start at the mesh location.
     glm::vec3 pivotPosition = glm::vec3(0.0f);
+
+    // For skinned assets (no PreTransform): original mesh node global transform in model space.
+    glm::mat4 meshNodeGlobal = glm::mat4(1.0f);
+    bool hasMeshNodeGlobal = false;
 
     std::string baseColorTexturePath;
     std::string normalTexturePath;
@@ -208,6 +218,10 @@ struct ModelData {
     uint32_t totalIndices = 0;
     VkDevice device = VK_NULL_HANDLE;
 
+    // Skeletal animation (optional)
+    std::shared_ptr<Atlas::Anim::Skeleton> skeleton;
+    std::vector<Atlas::Anim::AnimationClip> clips;
+
     ModelData() = default;
     explicit ModelData(VkDevice dev) : device(dev) {}
     ModelData(const ModelData&) = delete;
@@ -218,7 +232,9 @@ struct ModelData {
           rootName(std::move(other.rootName)),
           totalVertices(other.totalVertices),
           totalIndices(other.totalIndices),
-          device(other.device) {
+          device(other.device),
+          skeleton(std::move(other.skeleton)),
+          clips(std::move(other.clips)) {
         other.device = VK_NULL_HANDLE;
         other.rootName.clear();
         other.totalVertices = 0;
@@ -232,7 +248,12 @@ struct ModelData {
             totalIndices = other.totalIndices;
             meshes = std::move(other.meshes);
             rootName = std::move(other.rootName);
+            skeleton = std::move(other.skeleton);
+            clips = std::move(other.clips);
+
             other.rootName.clear();
+            other.skeleton.reset();
+            other.clips.clear();
             other.device = VK_NULL_HANDLE;
             other.totalVertices = 0;
             other.totalIndices = 0;
@@ -252,6 +273,8 @@ struct ModelData {
         }
         meshes.clear();
         rootName.clear();
+        skeleton.reset();
+        clips.clear();
         totalVertices = 0;
         totalIndices = 0;
         device = VK_NULL_HANDLE;
@@ -413,13 +436,41 @@ public:
         auto startTotal = std::chrono::high_resolution_clock::now();
         
         Assimp::Importer importer;
-        const aiScene* scene = importer.ReadFile(path, 
+
+        const unsigned int baseFlags =
             aiProcess_Triangulate |
             aiProcess_FixInfacingNormals |
-            aiProcess_PreTransformVertices |
             aiProcess_ConvertToLeftHanded |
             aiProcess_FlipUVs |
-            aiProcess_GenNormals);
+            aiProcess_GenNormals;
+
+        // Pass 1: import without PreTransform so we can detect bones/animations.
+        const aiScene* scene = importer.ReadFile(path, baseFlags);
+        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
+            throw std::runtime_error("Failed to load model: " + std::string(importer.GetErrorString()));
+        }
+
+        bool hasBones = false;
+        for (unsigned int i = 0; i < scene->mNumMeshes; ++i) {
+            aiMesh* m = scene->mMeshes[i];
+            if (m && m->mNumBones > 0) {
+                hasBones = true;
+                break;
+            }
+        }
+
+        const bool hasAnimations = (scene->mNumAnimations > 0);
+        const bool usePreTransform = !(hasBones || hasAnimations);
+        if (!usePreTransform) {
+            // Skinned/animated assets are not compatible with merge/recenter legacy path.
+            mergeAll = false;
+        }
+
+        // Pass 2: for non-skinned assets, keep the legacy behavior by re-importing with PreTransform.
+        if (usePreTransform) {
+            importer.FreeScene();
+            scene = importer.ReadFile(path, baseFlags | aiProcess_PreTransformVertices);
+        }
         
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
             throw std::runtime_error("Failed to load model: " + std::string(importer.GetErrorString()));
@@ -427,6 +478,18 @@ public:
 
         std::filesystem::path modelPath(path);
         std::filesystem::path modelDir = modelPath.parent_path();
+
+        std::string modelExt;
+        {
+            std::string ext = modelPath.extension().string();
+            modelExt.reserve(ext.size());
+            for (unsigned char c : ext) {
+                if (c >= 'A' && c <= 'Z') modelExt.push_back(static_cast<char>(c - 'A' + 'a'));
+                else modelExt.push_back(static_cast<char>(c));
+            }
+        }
+
+        const bool isGLTF = (modelExt == ".gltf" || modelExt == ".glb");
 
         auto trimWs = [](std::string& s) {
             auto isWs = [](unsigned char c) -> bool {
@@ -711,6 +774,104 @@ public:
             return copyExternalTexture(std::string(cstr));
         };
 
+        enum class AlphaHint : uint8_t {
+            Unknown = 0,
+            Opaque = 1,
+            Mask = 2,
+            Blend = 3,
+        };
+
+        auto detectAlphaHint = [&](const std::string& texPath) -> AlphaHint {
+            static std::unordered_map<std::string, AlphaHint> cache;
+
+            if (texPath.empty()) {
+                return AlphaHint::Unknown;
+            }
+
+            auto it = cache.find(texPath);
+            if (it != cache.end()) {
+                return it->second;
+            }
+
+            AlphaHint result = AlphaHint::Unknown;
+
+            std::error_code fsEc;
+            std::filesystem::path p(texPath);
+            if (std::filesystem::exists(p, fsEc) && std::filesystem::is_regular_file(p, fsEc)) {
+                int w = 0;
+                int h = 0;
+                int comp = 0;
+                stbi_uc* data = stbi_load(p.string().c_str(), &w, &h, &comp, 4);
+
+                if (data && w > 0 && h > 0) {
+                    const int step = 8;
+                    int samples = 0;
+                    int non255 = 0;
+                    int non01 = 0;
+
+                    for (int y = 0; y < h; y += step) {
+                        for (int x = 0; x < w; x += step) {
+                            const int idx = 4 * (y * w + x) + 3;
+                            const int a = static_cast<int>(data[idx]);
+                            ++samples;
+                            if (a != 255) {
+                                ++non255;
+                                if (a != 0) {
+                                    ++non01;
+                                }
+                            }
+                        }
+                    }
+
+                    if (samples > 0) {
+                        const float fracNon255 = static_cast<float>(non255) / static_cast<float>(samples);
+                        const float fracNon01 = static_cast<float>(non01) / static_cast<float>(samples);
+
+                        if (non255 == 0) {
+                            result = AlphaHint::Opaque;
+                        } else if (fracNon255 < 0.01f) {
+                            // Ignore tiny amounts of alpha noise.
+                            result = AlphaHint::Opaque;
+                        } else if (non01 == 0) {
+                            // Only 0/255 seen.
+                            result = AlphaHint::Mask;
+                        } else if (fracNon01 < 0.01f) {
+                            // Mostly binary alpha with a small amount of antialias.
+                            result = AlphaHint::Mask;
+                        } else {
+                            result = AlphaHint::Blend;
+                        }
+                    }
+                }
+
+                if (data) {
+                    stbi_image_free(data);
+                }
+            }
+
+            cache.emplace(texPath, result);
+            return result;
+        };
+
+        auto applyAlphaHint = [&](int& alphaMode, float baseAlpha, AlphaHint hint, bool explicitAlpha) {
+            if (explicitAlpha) {
+                return;
+            }
+
+            if (baseAlpha < 0.999f) {
+                alphaMode = 2;
+                return;
+            }
+
+            if (hint == AlphaHint::Opaque) {
+                alphaMode = 0;
+            } else if (hint == AlphaHint::Mask) {
+                alphaMode = 1;
+            } else if (hint == AlphaHint::Blend) {
+                alphaMode = 2;
+            }
+        };
+
         auto recenterVertices = [&](std::vector<Vertex>& verts, glm::vec3& outPivot) {
             if (verts.empty()) {
                 outPivot = glm::vec3(0.0f);
@@ -732,6 +893,200 @@ public:
 
         ModelData modelData(device);
         modelData.rootName = outData->rootName;
+
+        auto aiToGlm = [](const aiMatrix4x4& m) -> glm::mat4 {
+            glm::mat4 out(1.0f);
+            out[0][0] = m.a1; out[1][0] = m.a2; out[2][0] = m.a3; out[3][0] = m.a4;
+            out[0][1] = m.b1; out[1][1] = m.b2; out[2][1] = m.b3; out[3][1] = m.b4;
+            out[0][2] = m.c1; out[1][2] = m.c2; out[2][2] = m.c3; out[3][2] = m.c4;
+            out[0][3] = m.d1; out[1][3] = m.d2; out[2][3] = m.d3; out[3][3] = m.d4;
+            return out;
+        };
+
+        std::vector<aiMatrix4x4> meshNodeGlobals;
+        std::vector<uint8_t> meshNodeHasGlobal;
+
+        if (!usePreTransform) {
+            // Build mesh-index -> node global transform (model space).
+            meshNodeGlobals.resize(scene->mNumMeshes);
+            meshNodeHasGlobal.assign(scene->mNumMeshes, uint8_t(0));
+
+            std::function<void(const aiNode*, const aiMatrix4x4&)> walkMeshNodes;
+            walkMeshNodes = [&](const aiNode* n, const aiMatrix4x4& parent) {
+                if (!n) return;
+                aiMatrix4x4 global = parent * n->mTransformation;
+
+                for (unsigned int mi = 0; mi < n->mNumMeshes; ++mi) {
+                    unsigned int meshIndex = n->mMeshes[mi];
+                    if (meshIndex < meshNodeGlobals.size() && meshNodeHasGlobal[meshIndex] == 0) {
+                        meshNodeGlobals[meshIndex] = global;
+                        meshNodeHasGlobal[meshIndex] = 1;
+                    }
+                }
+
+                for (unsigned int i = 0; i < n->mNumChildren; ++i) {
+                    walkMeshNodes(n->mChildren[i], global);
+                }
+            };
+
+            walkMeshNodes(scene->mRootNode, aiMatrix4x4());
+
+            auto skel = std::make_shared<Atlas::Anim::Skeleton>();
+
+            // Collect bones and inverse bind matrices.
+            for (unsigned int mi = 0; mi < scene->mNumMeshes; ++mi) {
+                aiMesh* mesh = scene->mMeshes[mi];
+                if (!mesh || mesh->mNumBones == 0) continue;
+
+                for (unsigned int bi = 0; bi < mesh->mNumBones; ++bi) {
+                    aiBone* bone = mesh->mBones[bi];
+                    if (!bone) continue;
+
+                    std::string boneName = bone->mName.C_Str();
+                    if (boneName.empty()) continue;
+
+                    auto it = skel->nameToIndex.find(boneName);
+                    if (it == skel->nameToIndex.end()) {
+                        uint32_t idx = static_cast<uint32_t>(skel->boneNames.size());
+                        skel->nameToIndex[boneName] = idx;
+                        skel->boneNames.push_back(boneName);
+                        skel->inverseBind.push_back(aiToGlm(bone->mOffsetMatrix));
+                    }
+                }
+            }
+
+            // Build a node lookup table.
+            std::unordered_map<std::string, const aiNode*> nodeByName;
+            nodeByName.reserve(1024);
+
+            std::function<void(const aiNode*)> walk;
+            walk = [&](const aiNode* n) {
+                if (!n) return;
+                const char* raw = n->mName.C_Str();
+                if (raw && raw[0]) {
+                    nodeByName[raw] = n;
+                }
+                for (unsigned int i = 0; i < n->mNumChildren; ++i) {
+                    walk(n->mChildren[i]);
+                }
+            };
+            walk(scene->mRootNode);
+
+            const uint32_t boneCount = static_cast<uint32_t>(skel->boneNames.size());
+            skel->parentIndex.assign(boneCount, -1);
+            skel->bindLocal.assign(boneCount, Atlas::Anim::TRS{});
+            if (skel->inverseBind.size() < boneCount) {
+                skel->inverseBind.resize(boneCount, glm::mat4(1.0f));
+            }
+
+            // Resolve parent indices and bind local transforms (relative to parent bone).
+            for (uint32_t i = 0; i < boneCount; ++i) {
+                const std::string& boneName = skel->boneNames[i];
+                auto itNode = nodeByName.find(boneName);
+                if (itNode == nodeByName.end() || !itNode->second) {
+                    continue;
+                }
+
+                const aiNode* node = itNode->second;
+
+                const aiNode* parentBoneNode = nullptr;
+                int32_t parentBoneIndex = -1;
+
+                for (const aiNode* p = node->mParent; p != nullptr; p = p->mParent) {
+                    std::string pn = p->mName.C_Str();
+                    auto it = skel->nameToIndex.find(pn);
+                    if (it != skel->nameToIndex.end()) {
+                        parentBoneNode = p;
+                        parentBoneIndex = static_cast<int32_t>(it->second);
+                        break;
+                    }
+                }
+
+                skel->parentIndex[i] = parentBoneIndex;
+
+                // Compute transform relative to parent bone node, folding intermediate nodes.
+                aiMatrix4x4 local = node->mTransformation;
+                for (const aiNode* p = node->mParent; p != nullptr && p != parentBoneNode; p = p->mParent) {
+                    local = p->mTransformation * local;
+                }
+
+                aiVector3D s(1.0f, 1.0f, 1.0f);
+                aiVector3D t(0.0f, 0.0f, 0.0f);
+                aiQuaternion r(1.0f, 0.0f, 0.0f, 0.0f);
+                local.Decompose(s, r, t);
+
+                Atlas::Anim::TRS trs;
+                trs.translation = glm::vec3(t.x, t.y, t.z);
+                trs.rotation = glm::quat(r.w, r.x, r.y, r.z);
+                trs.scale = glm::vec3(s.x, s.y, s.z);
+                skel->bindLocal[i] = trs;
+            }
+
+            modelData.skeleton = skel;
+
+            // Import animation clips.
+            if (scene->mNumAnimations > 0) {
+                modelData.clips.reserve(scene->mNumAnimations);
+
+                for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai) {
+                    const aiAnimation* anim = scene->mAnimations[ai];
+                    if (!anim) continue;
+
+                    const double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 25.0;
+                    const float duration = (tps != 0.0) ? static_cast<float>(anim->mDuration / tps) : 0.0f;
+
+                    Atlas::Anim::AnimationClip clip;
+                    clip.name = (anim->mName.length > 0) ? std::string(anim->mName.C_Str()) : (std::string("Anim_") + std::to_string(ai));
+                    clip.durationSeconds = duration;
+
+                    for (unsigned int ci = 0; ci < anim->mNumChannels; ++ci) {
+                        const aiNodeAnim* ch = anim->mChannels[ci];
+                        if (!ch) continue;
+
+                        std::string target = ch->mNodeName.C_Str();
+                        auto it = skel->nameToIndex.find(target);
+                        if (it == skel->nameToIndex.end()) {
+                            continue;
+                        }
+
+                        Atlas::Anim::BoneTrack track;
+                        track.boneIndex = it->second;
+
+                        track.translationKeys.reserve(ch->mNumPositionKeys);
+                        for (unsigned int k = 0; k < ch->mNumPositionKeys; ++k) {
+                            const auto& key = ch->mPositionKeys[k];
+                            Atlas::Anim::Key<glm::vec3> out;
+                            out.time = static_cast<float>(key.mTime / tps);
+                            out.value = glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z);
+                            track.translationKeys.push_back(out);
+                        }
+
+                        track.rotationKeys.reserve(ch->mNumRotationKeys);
+                        for (unsigned int k = 0; k < ch->mNumRotationKeys; ++k) {
+                            const auto& key = ch->mRotationKeys[k];
+                            Atlas::Anim::Key<glm::quat> out;
+                            out.time = static_cast<float>(key.mTime / tps);
+                            out.value = glm::quat(key.mValue.w, key.mValue.x, key.mValue.y, key.mValue.z);
+                            track.rotationKeys.push_back(out);
+                        }
+
+                        track.scaleKeys.reserve(ch->mNumScalingKeys);
+                        for (unsigned int k = 0; k < ch->mNumScalingKeys; ++k) {
+                            const auto& key = ch->mScalingKeys[k];
+                            Atlas::Anim::Key<glm::vec3> out;
+                            out.time = static_cast<float>(key.mTime / tps);
+                            out.value = glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z);
+                            track.scaleKeys.push_back(out);
+                        }
+
+                        clip.boneToTrack[track.boneIndex] = clip.tracks.size();
+                        clip.tracks.push_back(std::move(track));
+                    }
+
+                    modelData.clips.push_back(std::move(clip));
+                }
+            }
+        }
 
         if (mergeAll) {
             // Chunk by material (opt-in) to reduce entity count.
@@ -791,7 +1146,8 @@ public:
                 // Alpha mode / opacity
                 build.alphaMode = 0;
                 aiString alphaModeStr;
-                if (aiGetMaterialString(mat, AI_MATKEY_GLTF_ALPHAMODE, &alphaModeStr) == AI_SUCCESS) {
+                const bool hasGLTFAlphaMode = (aiGetMaterialString(mat, AI_MATKEY_GLTF_ALPHAMODE, &alphaModeStr) == AI_SUCCESS);
+                if (hasGLTFAlphaMode) {
                     std::string s = alphaModeStr.C_Str();
                     if (s == "MASK") build.alphaMode = 1;
                     if (s == "BLEND") build.alphaMode = 2;
@@ -802,10 +1158,16 @@ public:
                 }
 
                 if (aiGetMaterialFloat(mat, AI_MATKEY_OPACITY, &value) == AI_SUCCESS) {
-                    if (static_cast<float>(value) < 0.999f) {
-                        build.alphaMode = 2;
+                    // Assimp sometimes reports OPACITY != 1 for glTF even when alphaMode is OPAQUE.
+                    // For glTF we only trust the explicit alphaMode.
+                    if (!isGLTF) {
+                        if (static_cast<float>(value) < 0.999f) {
+                            build.alphaMode = 2;
+                        }
+                        build.baseColor.a *= static_cast<float>(value);
+                    } else if (hasGLTFAlphaMode) {
+                        build.baseColor.a *= static_cast<float>(value);
                     }
-                    build.baseColor.a *= static_cast<float>(value);
                 }
 
                 auto tryTex = [&](aiTextureType type, std::string& dst) {
@@ -817,6 +1179,9 @@ public:
 
                 tryTex(aiTextureType_BASE_COLOR, build.baseColorTexturePath);
                 if (build.baseColorTexturePath.empty()) tryTex(aiTextureType_DIFFUSE, build.baseColorTexturePath);
+
+                // If alpha mode was not explicitly declared, infer it from the base color texture alpha.
+                applyAlphaHint(build.alphaMode, build.baseColor.a, detectAlphaHint(build.baseColorTexturePath), hasGLTFAlphaMode);
 
                 tryTex(aiTextureType_NORMALS, build.normalTexturePath);
                 if (build.normalTexturePath.empty()) tryTex(aiTextureType_HEIGHT, build.normalTexturePath);
@@ -831,9 +1196,12 @@ public:
                 tryTex(aiTextureType_EMISSIVE, build.emissiveTexturePath);
 
                 // If an explicit opacity texture exists, treat as BLEND.
-                aiString opacityTex;
-                if (mat->GetTexture(aiTextureType_OPACITY, 0, &opacityTex) == AI_SUCCESS) {
-                    build.alphaMode = 2;
+                // For glTF, alpha uses baseColor alpha and the explicit GLTF alphaMode; do not force BLEND here.
+                if (!isGLTF) {
+                    aiString opacityTex;
+                    if (mat->GetTexture(aiTextureType_OPACITY, 0, &opacityTex) == AI_SUCCESS) {
+                        build.alphaMode = 2;
+                    }
                 }
             };
 
@@ -978,6 +1346,11 @@ public:
                     meshData.name = std::string("Mesh_") + std::to_string(i);
                 }
 
+                if (!usePreTransform && i < meshNodeHasGlobal.size() && meshNodeHasGlobal[i]) {
+                    meshData.meshNodeGlobal = aiToGlm(meshNodeGlobals[i]);
+                    meshData.hasMeshNodeGlobal = true;
+                }
+
                 if (mesh->mMaterialIndex < scene->mNumMaterials) {
                     aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
 
@@ -1008,7 +1381,8 @@ public:
                     // Alpha mode / opacity
                     meshData.alphaMode = 0;
                     aiString alphaModeStr;
-                    if (aiGetMaterialString(mat, AI_MATKEY_GLTF_ALPHAMODE, &alphaModeStr) == AI_SUCCESS) {
+                    const bool hasGLTFAlphaMode = (aiGetMaterialString(mat, AI_MATKEY_GLTF_ALPHAMODE, &alphaModeStr) == AI_SUCCESS);
+                    if (hasGLTFAlphaMode) {
                         std::string s = alphaModeStr.C_Str();
                         if (s == "MASK") meshData.alphaMode = 1;
                         if (s == "BLEND") meshData.alphaMode = 2;
@@ -1019,10 +1393,16 @@ public:
                     }
 
                     if (aiGetMaterialFloat(mat, AI_MATKEY_OPACITY, &value) == AI_SUCCESS) {
-                        if (static_cast<float>(value) < 0.999f) {
-                            meshData.alphaMode = 2;
+                        // Assimp sometimes reports OPACITY != 1 for glTF even when alphaMode is OPAQUE.
+                        // For glTF we only trust the explicit alphaMode.
+                        if (!isGLTF) {
+                            if (static_cast<float>(value) < 0.999f) {
+                                meshData.alphaMode = 2;
+                            }
+                            meshData.baseColor.a *= static_cast<float>(value);
+                        } else if (hasGLTFAlphaMode) {
+                            meshData.baseColor.a *= static_cast<float>(value);
                         }
-                        meshData.baseColor.a *= static_cast<float>(value);
                     }
 
                     auto tryTex = [&](aiTextureType type, std::string& dst) {
@@ -1036,6 +1416,9 @@ public:
                     if (meshData.baseColorTexturePath.empty()) tryTex(aiTextureType_DIFFUSE, meshData.baseColorTexturePath);
                     if (meshData.baseColorTexturePath.empty()) tryTex(aiTextureType_UNKNOWN, meshData.baseColorTexturePath);
 
+                    // If alpha mode was not explicitly declared, infer it from the base color texture alpha.
+                    applyAlphaHint(meshData.alphaMode, meshData.baseColor.a, detectAlphaHint(meshData.baseColorTexturePath), hasGLTFAlphaMode);
+
                     tryTex(aiTextureType_NORMALS, meshData.normalTexturePath);
                     if (meshData.normalTexturePath.empty()) tryTex(aiTextureType_HEIGHT, meshData.normalTexturePath);
 
@@ -1048,9 +1431,66 @@ public:
                     tryTex(aiTextureType_EMISSIVE, meshData.emissiveTexturePath);
 
                     // If an explicit opacity texture exists, treat as BLEND.
-                    aiString opacityTex;
-                    if (mat->GetTexture(aiTextureType_OPACITY, 0, &opacityTex) == AI_SUCCESS) {
-                        meshData.alphaMode = 2;
+                    // For glTF, alpha uses baseColor alpha and the explicit GLTF alphaMode; do not force BLEND here.
+                    if (!isGLTF) {
+                        aiString opacityTex;
+                        if (mat->GetTexture(aiTextureType_OPACITY, 0, &opacityTex) == AI_SUCCESS) {
+                            meshData.alphaMode = 2;
+                        }
+                    }
+                }
+
+                std::vector<std::array<uint32_t, 4>> vJoints(mesh->mNumVertices, {0u, 0u, 0u, 0u});
+                std::vector<std::array<float, 4>> vWeights(mesh->mNumVertices, {0.0f, 0.0f, 0.0f, 0.0f});
+
+                if (mesh->mNumBones > 0 && modelData.skeleton) {
+                    auto insertInfluence = [](std::array<uint32_t, 4>& joints, std::array<float, 4>& weights, uint32_t joint, float w) {
+                        uint32_t minIdx = 0;
+                        for (uint32_t i = 1; i < 4; ++i) {
+                            if (weights[i] < weights[minIdx]) {
+                                minIdx = i;
+                            }
+                        }
+                        if (w > weights[minIdx]) {
+                            weights[minIdx] = w;
+                            joints[minIdx] = joint;
+                        }
+                    };
+
+                    for (unsigned int bi = 0; bi < mesh->mNumBones; ++bi) {
+                        aiBone* bone = mesh->mBones[bi];
+                        if (!bone) continue;
+
+                        std::string boneName = bone->mName.C_Str();
+                        auto it = modelData.skeleton->nameToIndex.find(boneName);
+                        if (it == modelData.skeleton->nameToIndex.end()) {
+                            continue;
+                        }
+                        const uint32_t jointIdx = it->second;
+
+                        for (unsigned int wi = 0; wi < bone->mNumWeights; ++wi) {
+                            const aiVertexWeight& w = bone->mWeights[wi];
+                            if (w.mVertexId >= mesh->mNumVertices) continue;
+                            insertInfluence(vJoints[w.mVertexId], vWeights[w.mVertexId], jointIdx, static_cast<float>(w.mWeight));
+                        }
+                    }
+
+                    for (unsigned int vi = 0; vi < mesh->mNumVertices; ++vi) {
+                        float sum = vWeights[vi][0] + vWeights[vi][1] + vWeights[vi][2] + vWeights[vi][3];
+                        if (sum > 0.0f) {
+                            vWeights[vi][0] /= sum;
+                            vWeights[vi][1] /= sum;
+                            vWeights[vi][2] /= sum;
+                            vWeights[vi][3] /= sum;
+                        } else {
+                            vJoints[vi] = {0u, 0u, 0u, 0u};
+                            vWeights[vi] = {1.0f, 0.0f, 0.0f, 0.0f};
+                        }
+                    }
+                } else {
+                    for (unsigned int vi = 0; vi < mesh->mNumVertices; ++vi) {
+                        vJoints[vi] = {0u, 0u, 0u, 0u};
+                        vWeights[vi] = {1.0f, 0.0f, 0.0f, 0.0f};
                     }
                 }
 
@@ -1076,6 +1516,9 @@ public:
                         vtx.normal = {0.0f, 1.0f, 0.0f};
                     }
 
+                    vtx.joints = glm::uvec4(vJoints[j][0], vJoints[j][1], vJoints[j][2], vJoints[j][3]);
+                    vtx.weights = glm::vec4(vWeights[j][0], vWeights[j][1], vWeights[j][2], vWeights[j][3]);
+
                     meshData.vertices.push_back(vtx);
                 }
 
@@ -1089,7 +1532,11 @@ public:
                 meshData.vertexCount = static_cast<uint32_t>(meshData.vertices.size());
                 meshData.indexCount = static_cast<uint32_t>(meshData.indices.size());
 
-                recenterVertices(meshData.vertices, meshData.pivotPosition);
+                if (usePreTransform) {
+                    recenterVertices(meshData.vertices, meshData.pivotPosition);
+                } else {
+                    meshData.pivotPosition = glm::vec3(0.0f);
+                }
 
                 if (device != VK_NULL_HANDLE && physicalDevice != VK_NULL_HANDLE && findMemoryType != nullptr) {
                     createBuffers(meshData, device, physicalDevice, findMemoryType);

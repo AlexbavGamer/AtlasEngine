@@ -3,12 +3,14 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include <entt/entt.hpp>
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include "../../core/string/string_id.h"
+#include "../../animation/animation.h"
 
 namespace Atlas { namespace ECS {
 
@@ -47,6 +49,7 @@ struct MaterialComponent {
     AlphaMode alphaMode = AlphaMode::Opaque;
     float alphaCutoff = 0.5f;
     bool doubleSided = false;
+    bool invertCulling = false;
 
     StringID albedoTextureId;
     std::string albedoTexturePath;
@@ -142,6 +145,33 @@ struct ChildrenComponent {
 // Editor-only state used for soft deletes/hiding entities without releasing GPU resources.
 struct EditorHiddenComponent {
     bool hidden = true;
+};
+
+// Skeletal animation (V1): one skeleton shared across skinned meshes + one clip player per entity.
+struct SkeletonComponent {
+    std::shared_ptr<Atlas::Anim::Skeleton> skeleton;
+    std::vector<Atlas::Anim::AnimationClip> clips;
+};
+
+struct AnimationPlayerComponent {
+    Atlas::Anim::AnimationPlayer player;
+};
+
+struct BonePoseOverrideComponent {
+    bool enabled = false;
+    std::vector<uint8_t> hasRotation;
+    std::vector<glm::quat> rotation;
+};
+
+struct SkinnedMeshComponent {
+    // Entity that owns the skeleton/clips/player state (usually the model root).
+    entt::entity skeletonEntity = entt::null;
+
+    // Inverse of the mesh node global transform (model space) at import time.
+    glm::mat4 meshGlobalInverse = glm::mat4(1.0f);
+
+    // Dynamic offset (bytes) into the renderer bone palette buffer for the current frame.
+    uint32_t bonePaletteOffsetBytes = 0;
 };
 
 }}

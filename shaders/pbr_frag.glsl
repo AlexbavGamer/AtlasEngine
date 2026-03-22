@@ -8,6 +8,7 @@ layout(push_constant) uniform PushConstants {
     vec4 emissiveFactor;
     float metallic;
     float roughness;
+    float alphaCutoff;
     int albedoTexIndex;
     int normalTexIndex;
     int metallicRoughnessTexIndex;
@@ -101,6 +102,7 @@ void main() {
     const int FLAG_HAS_MR = 1 << 2;
     const int FLAG_HAS_AO = 1 << 3;
     const int FLAG_HAS_EMISSIVE = 1 << 4;
+    const int FLAG_DOUBLE_SIDED = 1 << 5;
 
     const int ALPHA_MODE_SHIFT = 8;
     const int ALPHA_MODE_MASK = 3 << ALPHA_MODE_SHIFT;
@@ -119,7 +121,9 @@ void main() {
     if (alphaMode == ALPHA_OPAQUE) {
         alpha = 1.0;
     } else if (alphaMode == ALPHA_MASK) {
-        if (alpha < 0.5) {
+        float cutoff = pc.alphaCutoff;
+        if (cutoff <= 0.0) cutoff = 0.5;
+        if (alpha < cutoff) {
             discard;
         }
         alpha = 1.0;
@@ -132,6 +136,10 @@ void main() {
         vec3 mapN = texture(textureSamplers[pc.normalTexIndex], fragTexCoord).xyz * 2.0 - 1.0;
         mat3 TBN = cotangentFrame(N, fragWorldPos, fragTexCoord);
         N = normalize(TBN * mapN);
+    }
+
+    if ((pc.flags & FLAG_DOUBLE_SIDED) != 0 && !gl_FrontFacing) {
+        N = -N;
     }
 
     float metallic = pc.metallic;

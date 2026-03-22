@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 #include <filesystem>
+#include <deque>
 
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
@@ -34,11 +35,19 @@ public:
     void run();
 
 private:
+    struct ImportOptions {
+        float uniformScale = 1.0f;
+        bool importAnimations = true;
+        bool startPlaying = true;
+    };
+
     struct PendingModel {
         std::shared_ptr<::ModelData> modelData;
         std::string modelName;
         std::string basePath;
         entt::entity placeholderEntity = entt::null;
+
+        ImportOptions importOptions;
 
         bool loadFailed = false;
         std::string error;
@@ -51,8 +60,19 @@ private:
     };
 
     void processPendingModels();
+
+    struct ImportRequest {
+        std::string assetPath;
+        glm::vec3 rootPosition{0.0f};
+        bool isWorldChunk = false;
+        uint64_t cellKey = 0;
+    };
+
     void queueModelImport(const std::string& assetPath);
     void queueModelImportAt(const std::string& assetPath, const glm::vec3& rootPosition, bool isWorldChunk, uint64_t cellKey);
+    void startModelImportAt(const std::string& assetPath, const glm::vec3& rootPosition, bool isWorldChunk, uint64_t cellKey, const ImportOptions& options);
+    void enqueueImportRequest(const ImportRequest& req);
+    void renderImportOptionsPopup();
 
     void updateWorldStreaming();
     void onMeshDestroyed(entt::registry& registry, entt::entity entity);
@@ -93,6 +113,15 @@ private:
     std::unordered_map<uint64_t, Entity> m_WorldCellRoots;
     std::unordered_map<uint64_t, double> m_WorldFailedCells;
     float m_WorldFailRetrySeconds = 2.0f;
+
+    // Import options popup (models).
+    std::deque<ImportRequest> m_ImportQueue;
+    bool m_ShowImportOptionsPopup = false;
+    ImportRequest m_ActiveImport;
+    std::string m_ActiveImportFullPath;
+    std::string m_ActiveImportModelName;
+    ImportOptions m_ActiveImportOptions;
+    ImportOptions m_LastImportOptions;
 };
 
 }

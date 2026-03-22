@@ -102,6 +102,16 @@ private:
     char m_RenameAssetBuf[256] = {};
 
     bool m_ShowDeleteAssetPopup = false;
+
+    // Hierarchy context actions
+    bool m_ShowHierarchyRenamePopup = false;
+    uint32_t m_HierarchyRenameEntityId = 0;
+    char m_HierarchyRenameBuf[256] = {};
+
+    // Rig editing (V1): select a skeleton entity + a bone index.
+    Entity m_RigEditEntity = entt::null;
+    int32_t m_RigSelectedBone = -1;
+    bool m_RigShowSkeleton = true;
     Atlas::Scene* m_Scene = nullptr;
     std::vector<Entity> m_SelectedEntities;
     Entity m_PrimarySelected = entt::null;
@@ -163,6 +173,7 @@ private:
     bool m_ShowViewportWindow = true;
     bool m_ShowHierarchyWindow = true;
     bool m_ShowPropertiesWindow = true;
+    bool m_ShowContentExplorerWindow = true;
 
     // Simple ImGui profiler panel data
     bool m_ShowProfilerWindow = false;
@@ -277,6 +288,7 @@ private:
         Atlas::ECS::MaterialComponent::AlphaMode alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Opaque;
         float alphaCutoff = 0.5f;
         bool doubleSided = false;
+        bool invertCulling = false;
     };
 
     struct MaterialScalarCommand final : UndoCommand {
@@ -299,6 +311,7 @@ private:
             mat.alphaMode = s.alphaMode;
             mat.alphaCutoff = s.alphaCutoff;
             mat.doubleSided = s.doubleSided;
+            mat.invertCulling = s.invertCulling;
         }
 
         void undo(Atlas::Scene* scene) override { apply(scene, entity, before); }
