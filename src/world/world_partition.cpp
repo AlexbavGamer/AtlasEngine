@@ -71,6 +71,11 @@ void WorldPartition::setCellVisible(const WorldCellCoord& cell, bool visible) {
 void WorldPartition::update(const glm::vec3& cameraPos, const glm::mat4& viewProj) {
     if (!m_Scene) return;
     if (!m_Config.enabled) {
+        // Restore visibility for any cells we previously toggled.
+        for (const auto& cell : m_LoadedCells) {
+            setCellVisible(cell, true);
+        }
+        m_LoadedCells.clear();
         return;
     }
 
