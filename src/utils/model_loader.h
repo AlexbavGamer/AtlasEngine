@@ -972,6 +972,69 @@ public:
             };
             walk(scene->mRootNode);
 
+            auto addSkeletonNode = [&](const std::string& nodeName) {
+                if (nodeName.empty()) return;
+                if (skel->nameToIndex.find(nodeName) != skel->nameToIndex.end()) return;
+                uint32_t idx = static_cast<uint32_t>(skel->boneNames.size());
+                skel->nameToIndex[nodeName] = idx;
+                skel->boneNames.push_back(nodeName);
+                skel->inverseBind.push_back(glm::mat4(1.0f));
+            };
+
+            if (!skel->boneNames.empty() || scene->mNumAnimations > 0) {
+                std::vector<const aiNode*> skeletonRoots;
+                std::unordered_set<std::string> rootNames;
+
+                auto addSkeletonSubtreeRoot = [&](const aiNode* start) {
+                    if (!start) return;
+                    const aiNode* root = start;
+                    while (root->mParent && root->mParent != scene->mRootNode) {
+                        root = root->mParent;
+                    }
+                    std::string rootName = root->mName.C_Str();
+                    if (rootName.empty()) return;
+                    if (rootNames.insert(rootName).second) {
+                        skeletonRoots.push_back(root);
+                    }
+                };
+
+                for (const auto& boneName : skel->boneNames) {
+                    auto itNode = nodeByName.find(boneName);
+                    if (itNode != nodeByName.end()) {
+                        addSkeletonSubtreeRoot(itNode->second);
+                    }
+                }
+
+                for (unsigned int ai = 0; ai < scene->mNumAnimations; ++ai) {
+                    const aiAnimation* anim = scene->mAnimations[ai];
+                    if (!anim) continue;
+                    for (unsigned int ci = 0; ci < anim->mNumChannels; ++ci) {
+                        const aiNodeAnim* ch = anim->mChannels[ci];
+                        if (!ch) continue;
+                        auto itNode = nodeByName.find(std::string(ch->mNodeName.C_Str()));
+                        if (itNode != nodeByName.end()) {
+                            addSkeletonSubtreeRoot(itNode->second);
+                        }
+                    }
+                }
+
+                std::function<void(const aiNode*)> addSubtree;
+                addSubtree = [&](const aiNode* n) {
+                    if (!n) return;
+                    const char* raw = n->mName.C_Str();
+                    if (raw && raw[0]) {
+                        addSkeletonNode(raw);
+                    }
+                    for (unsigned int i = 0; i < n->mNumChildren; ++i) {
+                        addSubtree(n->mChildren[i]);
+                    }
+                };
+
+                for (const aiNode* root : skeletonRoots) {
+                    addSubtree(root);
+                }
+            }
+
             const uint32_t boneCount = static_cast<uint32_t>(skel->boneNames.size());
             skel->parentIndex.assign(boneCount, -1);
             skel->bindLocal.assign(boneCount, Atlas::Anim::TRS{});
@@ -1032,12 +1095,12 @@ public:
                     const aiAnimation* anim = scene->mAnimations[ai];
                     if (!anim) continue;
 
-                    const double tps = (anim->mTicksPerSecond != 0.0) ? anim->mTicksPerSecond : 25.0;
-                    const float duration = (tps != 0.0) ? static_cast<float>(anim->mDuration / tps) : 0.0f;
+                    const double tps = (anim->mTicksPerSecond > 0.0) ? anim->mTicksPerSecond : 1000.0;
+                    double maxKeyTimeTicks = anim->mDuration;
 
                     Atlas::Anim::AnimationClip clip;
                     clip.name = (anim->mName.length > 0) ? std::string(anim->mName.C_Str()) : (std::string("Anim_") + std::to_string(ai));
-                    clip.durationSeconds = duration;
+                    clip.durationSeconds = (tps > 0.0) ? static_cast<float>(anim->mDuration / tps) : 0.0f;
 
                     for (unsigned int ci = 0; ci < anim->mNumChannels; ++ci) {
                         const aiNodeAnim* ch = anim->mChannels[ci];
@@ -1059,6 +1122,7 @@ public:
                             out.time = static_cast<float>(key.mTime / tps);
                             out.value = glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z);
                             track.translationKeys.push_back(out);
+                            maxKeyTimeTicks = std::max(maxKeyTimeTicks, key.mTime);
                         }
 
                         track.rotationKeys.reserve(ch->mNumRotationKeys);
@@ -1068,6 +1132,7 @@ public:
                             out.time = static_cast<float>(key.mTime / tps);
                             out.value = glm::quat(key.mValue.w, key.mValue.x, key.mValue.y, key.mValue.z);
                             track.rotationKeys.push_back(out);
+                            maxKeyTimeTicks = std::max(maxKeyTimeTicks, key.mTime);
                         }
 
                         track.scaleKeys.reserve(ch->mNumScalingKeys);
@@ -1077,12 +1142,14 @@ public:
                             out.time = static_cast<float>(key.mTime / tps);
                             out.value = glm::vec3(key.mValue.x, key.mValue.y, key.mValue.z);
                             track.scaleKeys.push_back(out);
+                            maxKeyTimeTicks = std::max(maxKeyTimeTicks, key.mTime);
                         }
 
                         clip.boneToTrack[track.boneIndex] = clip.tracks.size();
                         clip.tracks.push_back(std::move(track));
                     }
 
+                    clip.durationSeconds = (tps > 0.0) ? static_cast<float>(maxKeyTimeTicks / tps) : clip.durationSeconds;
                     modelData.clips.push_back(std::move(clip));
                 }
             }

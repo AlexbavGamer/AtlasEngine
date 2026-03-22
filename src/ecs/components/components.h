@@ -11,6 +11,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include "../../core/string/string_id.h"
 #include "../../animation/animation.h"
+#include "../../scripting/script_types.h"
 
 namespace Atlas { namespace ECS {
 
@@ -147,6 +148,27 @@ struct EditorHiddenComponent {
     bool hidden = true;
 };
 
+struct ScriptEntry {
+    bool enabled = true;
+    std::string scriptPath;
+    Atlas::Scripting::ScriptFieldMap fields;
+};
+
+struct ScriptComponent {
+    std::vector<ScriptEntry> scripts;
+};
+
+struct FollowCameraComponent {
+    entt::entity target = entt::null;
+    glm::vec3 offset = glm::vec3(0.0f, 2.0f, 5.0f);
+    float smoothness = 8.0f;
+    bool lookAtTarget = true;
+};
+
+struct GameCameraComponent {
+    bool primary = true;
+};
+
 // Skeletal animation (V1): one skeleton shared across skinned meshes + one clip player per entity.
 struct SkeletonComponent {
     std::shared_ptr<Atlas::Anim::Skeleton> skeleton;
@@ -166,9 +188,6 @@ struct BonePoseOverrideComponent {
 struct SkinnedMeshComponent {
     // Entity that owns the skeleton/clips/player state (usually the model root).
     entt::entity skeletonEntity = entt::null;
-
-    // Inverse of the mesh node global transform (model space) at import time.
-    glm::mat4 meshGlobalInverse = glm::mat4(1.0f);
 
     // Dynamic offset (bytes) into the renderer bone palette buffer for the current frame.
     uint32_t bonePaletteOffsetBytes = 0;

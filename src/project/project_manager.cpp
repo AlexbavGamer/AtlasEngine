@@ -36,6 +36,7 @@ void ProjectManager::ensureDirectories() {
     fs::create_directories(currentProject.assetsPath + "/textures");
     fs::create_directories(currentProject.assetsPath + "/materials");
     fs::create_directories(currentProject.assetsPath + "/scenes");
+    fs::create_directories(currentProject.assetsPath + "/scripts");
 }
 
 std::vector<std::string> ProjectManager::getAssetFiles(const std::string& subfolder) {
@@ -98,6 +99,16 @@ std::vector<std::string> ProjectManager::getTextureFiles() {
 std::string ProjectManager::getAssetFullPath(const std::string& relativePath) {
     if (!hasCurrentProject) return "";
     return currentProject.assetsPath + "/" + relativePath;
+}
+
+std::string ProjectManager::getDefaultScenePath() const {
+    if (!hasCurrentProject) return "";
+    return currentProject.assetsPath + "/scenes/main.scene";
+}
+
+void ProjectManager::ensureProjectDirectories() {
+    if (!hasCurrentProject) return;
+    ensureDirectories();
 }
 
 void ProjectManager::invalidateAssetTreeCache() {

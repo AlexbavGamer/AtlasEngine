@@ -86,6 +86,18 @@ FetchContent_MakeAvailable(imguizmo)
 # EnTT
 atlas_fetch(entt https://github.com/skypjack/entt.git v3.12.1)
 
+# Lua (runtime)
+FetchContent_Declare(
+    lua_src
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG v5.4.8
+    SOURCE_DIR "${DEPS_SRC_DIR}/lua"
+)
+FetchContent_GetProperties(lua_src)
+if(NOT lua_src_POPULATED)
+    FetchContent_Populate(lua_src)
+endif()
+
 # VMA
 set(VMA_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 atlas_fetch(vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git v3.3.0)
@@ -259,6 +271,18 @@ endif()
 
 target_link_libraries(imgui_lib PUBLIC glfw Vulkan::Vulkan imguifiledialog)
 
+file(GLOB LUA_SOURCES
+    "${lua_src_SOURCE_DIR}/*.c"
+)
+list(FILTER LUA_SOURCES EXCLUDE REGEX ".*/lua\\.c$")
+list(FILTER LUA_SOURCES EXCLUDE REGEX ".*/luac\\.c$")
+list(FILTER LUA_SOURCES EXCLUDE REGEX ".*/onelua\\.c$")
+add_library(lua_lib STATIC ${LUA_SOURCES})
+target_include_directories(lua_lib PUBLIC ${lua_src_SOURCE_DIR})
+if(MSVC)
+    target_compile_definitions(lua_lib PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ============================================================================
 # Main executable: AtlasEngine
 # ============================================================================
@@ -271,6 +295,7 @@ add_executable(${PROJECT_NAME} ${ATLAS_SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${ATLAS_INCLUDE_DIRS}
+    ${lua_src_SOURCE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -279,6 +304,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     imgui_lib
     imguizmo_lib
     assimp
+    lua_lib
 )
 
 if(ENABLE_TRACY)

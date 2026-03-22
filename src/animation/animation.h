@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -69,6 +70,7 @@ struct Skeleton {
     std::vector<TRS> bindLocal;
     std::vector<glm::mat4> inverseBind;
     std::unordered_map<std::string, uint32_t> nameToIndex;
+    int32_t rootMotionBoneIndex = -1;
 
     uint32_t boneCount() const { return static_cast<uint32_t>(boneNames.size()); }
 };
@@ -79,6 +81,9 @@ struct AnimationPlayer {
     float speed = 1.0f;
     bool loop = true;
     bool playing = true;
+    bool enableRootMotion = true;
+    bool rootMotionApplyRotation = false;
+    bool rootMotionApplyY = false;
 };
 
 inline float wrapTime(float t, float duration) {
@@ -136,35 +141,158 @@ inline glm::quat sampleQuat(const std::vector<Key<glm::quat>>& keys, float t, co
     return glm::normalize(glm::slerp(k0.value, k1.value, a));
 }
 
-inline void evaluateGlobals(const Skeleton& skel, const AnimationClip* clip, float tSeconds,
-                           const PoseOverrides& overrides,
-                           std::vector<glm::mat4>& outGlobals) {
-    const uint32_t boneCount = skel.boneCount();
-    outGlobals.resize(boneCount);
+inline TRS sampleLocalTRS(const Skeleton& skel, const AnimationClip* clip, float tSeconds,
+                          const PoseOverrides& overrides, uint32_t boneIndex) {
+    TRS localTRS = (boneIndex < skel.bindLocal.size()) ? skel.bindLocal[boneIndex] : TRS{};
 
     float t = tSeconds;
     if (clip) {
         t = wrapTime(tSeconds, clip->durationSeconds);
-    } else {
-        t = 0.0f;
+        auto it = clip->boneToTrack.find(boneIndex);
+        if (it != clip->boneToTrack.end()) {
+            const BoneTrack& tr = clip->tracks[it->second];
+            localTRS.translation = sampleVec3(tr.translationKeys, t, localTRS.translation);
+            localTRS.rotation = sampleQuat(tr.rotationKeys, t, localTRS.rotation);
+            localTRS.scale = sampleVec3(tr.scaleKeys, t, localTRS.scale);
+        }
     }
 
-    for (uint32_t i = 0; i < boneCount; ++i) {
-        TRS localTRS = (i < skel.bindLocal.size()) ? skel.bindLocal[i] : TRS{};
+    glm::quat rotOverride;
+    if (overrideRotation(overrides, boneIndex, rotOverride)) {
+        localTRS.rotation = rotOverride;
+    }
 
-        if (clip) {
-            auto it = clip->boneToTrack.find(i);
-            if (it != clip->boneToTrack.end()) {
-                const BoneTrack& tr = clip->tracks[it->second];
-                localTRS.translation = sampleVec3(tr.translationKeys, t, localTRS.translation);
-                localTRS.rotation = sampleQuat(tr.rotationKeys, t, localTRS.rotation);
-                localTRS.scale = sampleVec3(tr.scaleKeys, t, localTRS.scale);
+    return localTRS;
+}
+
+inline int32_t chooseRootMotionBone(const Skeleton& skel, const std::vector<AnimationClip>& clips) {
+    if (skel.boneCount() == 0 || clips.empty()) return -1;
+
+    auto normalizeName = [](const std::string& name) {
+        std::string lower;
+        lower.reserve(name.size());
+        for (unsigned char c : name) {
+            if (std::isalnum(c)) {
+                lower.push_back(static_cast<char>(std::tolower(c)));
             }
         }
+        return lower;
+    };
 
-        glm::quat rotOverride;
-        if (overrideRotation(overrides, i, rotOverride)) {
-            localTRS.rotation = rotOverride;
+    auto depthOf = [&](uint32_t boneIndex) {
+        int depth = 0;
+        int32_t p = (boneIndex < skel.parentIndex.size()) ? skel.parentIndex[boneIndex] : -1;
+        while (p >= 0 && depth < 128) {
+            ++depth;
+            p = (static_cast<size_t>(p) < skel.parentIndex.size()) ? skel.parentIndex[static_cast<size_t>(p)] : -1;
+        }
+        return depth;
+    };
+
+    auto motionMagnitudeOf = [&](uint32_t boneIndex, bool& hasTranslationTrack) {
+        float motionMagnitude = 0.0f;
+        hasTranslationTrack = false;
+
+        for (const auto& clip : clips) {
+            auto it = clip.boneToTrack.find(boneIndex);
+            if (it == clip.boneToTrack.end()) continue;
+            const BoneTrack& track = clip.tracks[it->second];
+            if (track.translationKeys.empty()) continue;
+
+            hasTranslationTrack = true;
+            glm::vec3 minV = track.translationKeys.front().value;
+            glm::vec3 maxV = minV;
+            for (const auto& key : track.translationKeys) {
+                minV = glm::min(minV, key.value);
+                maxV = glm::max(maxV, key.value);
+            }
+            motionMagnitude = std::max(motionMagnitude, glm::length(maxV - minV));
+        }
+
+        return motionMagnitude;
+    };
+
+    auto nameScore = [&](const std::string& name) {
+        const std::string lower = normalizeName(name);
+
+        if (lower == "trans" || lower == "translation" || lower == "trajectory" || lower == "traj" ||
+            lower == "rootmotion" || lower == "motion") return 220;
+        if (lower == "root" || lower == "armature" || lower == "master" || lower == "boneroot") return 150;
+        if (lower == "hip" || lower == "hips" || lower == "pelvis") return 100;
+        if (lower.find("rootmotion") != std::string::npos) return 200;
+        if (lower.find("trans") != std::string::npos || lower.find("trajectory") != std::string::npos) return 180;
+        if (lower.find("root") != std::string::npos) return 120;
+        if (lower.find("hips") != std::string::npos || lower.find("pelvis") != std::string::npos || lower.find("hip") != std::string::npos) return 80;
+        if (lower.find("cog") != std::string::npos || lower.find("center") != std::string::npos) return 70;
+        if (lower.find("ik") != std::string::npos || lower.find("fk") != std::string::npos || lower.find("pole") != std::string::npos ||
+            lower.find("end") != std::string::npos || lower.find("cam") != std::string::npos || lower.find("weapon") != std::string::npos) return -80;
+        return 0;
+    };
+
+    const std::array<const char*, 9> exactPreferred = {
+        "trans", "translation", "trajectory", "traj", "rootmotion", "motion", "root", "boneroot", "master"
+    };
+
+    for (const char* preferred : exactPreferred) {
+        for (uint32_t boneIndex = 0; boneIndex < skel.boneCount(); ++boneIndex) {
+            const std::string normalized = normalizeName(boneIndex < skel.boneNames.size() ? skel.boneNames[boneIndex] : std::string());
+            if (normalized != preferred) continue;
+
+            bool hasTranslationTrack = false;
+            motionMagnitudeOf(boneIndex, hasTranslationTrack);
+            if (hasTranslationTrack) {
+                return static_cast<int32_t>(boneIndex);
+            }
+        }
+    }
+
+    int32_t bestBone = -1;
+    float bestScore = -1000000.0f;
+
+    for (uint32_t boneIndex = 0; boneIndex < skel.boneCount(); ++boneIndex) {
+        bool hasTranslationTrack = false;
+        const float motionMagnitude = motionMagnitudeOf(boneIndex, hasTranslationTrack);
+        if (!hasTranslationTrack) continue;
+
+        const std::string boneName = boneIndex < skel.boneNames.size() ? skel.boneNames[boneIndex] : std::string();
+        float score = static_cast<float>(nameScore(boneName));
+        score += motionMagnitude * 10.0f;
+        score -= static_cast<float>(depthOf(boneIndex)) * 2.0f;
+
+        int32_t parent = (boneIndex < skel.parentIndex.size()) ? skel.parentIndex[boneIndex] : -1;
+        if (parent >= 0 && static_cast<size_t>(parent) < skel.boneNames.size()) {
+            score += static_cast<float>(nameScore(skel.boneNames[static_cast<size_t>(parent)])) * 0.15f;
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestBone = static_cast<int32_t>(boneIndex);
+        }
+    }
+
+    return bestBone;
+}
+
+inline void evaluateGlobals(const Skeleton& skel, const AnimationClip* clip, float tSeconds,
+                           const PoseOverrides& overrides,
+                           std::vector<glm::mat4>& outGlobals,
+                           int32_t lockedBoneIndex = -1,
+                           bool lockTranslation = false,
+                           bool lockRotation = false) {
+    const uint32_t boneCount = skel.boneCount();
+    outGlobals.resize(boneCount);
+
+    for (uint32_t i = 0; i < boneCount; ++i) {
+        TRS localTRS = sampleLocalTRS(skel, clip, tSeconds, overrides, i);
+
+        if (static_cast<int32_t>(i) == lockedBoneIndex) {
+            const TRS bindTRS = (i < skel.bindLocal.size()) ? skel.bindLocal[i] : TRS{};
+            if (lockTranslation) {
+                localTRS.translation = bindTRS.translation;
+            }
+            if (lockRotation) {
+                localTRS.rotation = bindTRS.rotation;
+            }
         }
 
         glm::mat4 localM = toMat4(localTRS);

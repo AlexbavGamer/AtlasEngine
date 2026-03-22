@@ -63,7 +63,7 @@ struct Renderable {
     uint32_t materialID = 0;
 };
 
-struct Camera {
+struct CameraBase {
     glm::vec3 position{0.0f, 0.0f, 5.0f};
     glm::vec3 target{0.0f, 0.0f, 0.0f};
     glm::vec3 up{0.0f, 1.0f, 0.0f};
@@ -80,6 +80,9 @@ struct Camera {
         return glm::perspective(glm::radians(fov), aspectRatio, nearPlane, farPlane);
     }
 };
+
+struct Camera : CameraBase {};
+struct EditorCamera : CameraBase {};
 
 using World = entt::registry;
 
@@ -110,7 +113,7 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         } else {
             ImGui::Text("Bounds: (none)");
         }
-    } else if constexpr (std::is_same_v<T, Camera>) {
+    } else if constexpr (std::is_same_v<T, Camera> || std::is_same_v<T, EditorCamera>) {
         ImGui::DragFloat3("Position##C", &component.position.x, 0.1f);
         ImGui::DragFloat3("Target##C", &component.target.x, 0.1f);
         ImGui::DragFloat("FOV##C", &component.fov, 1.0f, 1.0f, 180.0f);

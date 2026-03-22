@@ -104,6 +104,8 @@ public:
     VkCommandBuffer getCurrentCommandBuffer() const { return m_CommandBuffers[m_CurrentFrame]; }
     VkImageView getOffscreenImageView() const { return m_OffscreenImageView; }
     VkSampler getOffscreenSampler() const { return m_OffscreenSampler; }
+    VkImageView getGameOffscreenImageView() const { return m_GameOffscreenImageView; }
+    VkSampler getGameOffscreenSampler() const { return m_GameOffscreenSampler; }
     MemoryManager* getMemoryManager() { return m_MemoryManager.get(); }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
@@ -113,6 +115,7 @@ public:
 
     using RenderCallback = std::function<void(VkCommandBuffer commandBuffer)>;
     void setRenderCallback(RenderCallback callback) { m_RenderCallback = std::move(callback); }
+    void setPreferGameCamera(bool prefer) { m_PreferGameCamera = prefer; }
 
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
     uint32_t bindTexture(VkImageView imageView, VkSampler sampler);
@@ -260,6 +263,16 @@ private:
     VkDeviceMemory m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
     VkImageView m_OffscreenDepthImageView = VK_NULL_HANDLE;
 
+    VkImage m_GameOffscreenImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_GameOffscreenImageMemory = VK_NULL_HANDLE;
+    VkImageView m_GameOffscreenImageView = VK_NULL_HANDLE;
+    VkSampler m_GameOffscreenSampler = VK_NULL_HANDLE;
+    VkFramebuffer m_GameOffscreenFramebuffer = VK_NULL_HANDLE;
+    VkImageLayout m_GameOffscreenImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage m_GameOffscreenDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_GameOffscreenDepthImageMemory = VK_NULL_HANDLE;
+    VkImageView m_GameOffscreenDepthImageView = VK_NULL_HANDLE;
+
     VkImage m_PickingImage = VK_NULL_HANDLE;
     VkDeviceMemory m_PickingImageMemory = VK_NULL_HANDLE;
     VkImageView m_PickingImageView = VK_NULL_HANDLE;
@@ -323,6 +336,7 @@ private:
     bool m_FramebufferResized = false;
     ResizeCallback m_ResizeCallback;
     RenderCallback m_RenderCallback;
+    bool m_PreferGameCamera = false;
 
     struct DeletionQueue {
         std::deque<std::function<void()>> deletors;

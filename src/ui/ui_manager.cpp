@@ -9,7 +9,9 @@
 #include "../ecs/ecs.h"
 #include "../ecs/components.h"
 #include "../assets/asset_manager.h"
+#include "../core/runtime_console.h"
 #include "../ecs/components/components.h"
+#include "../scripting/script_engine.h"
 #include <glm/glm.hpp>
 #include <cstring>
 #include <algorithm>
@@ -248,7 +250,7 @@ void UIManager::redo() {
     m_UndoStack.push_back(std::move(cmd));
 }
 
-void UIManager::renderToolbar() {
+void UIManager::renderToolbar(bool gameModeActive, bool gameModePaused) {
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 10.0f));
@@ -322,11 +324,60 @@ void UIManager::renderToolbar() {
         m_GizmoSnap = !m_GizmoSnap;
     }
 
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(24.0f, 0.0f));
+    ImGui::SameLine();
+
+    if (pill("##primitives", "Primitives", false, ImVec2(112.0f, 28.0f))) {
+        ImGui::OpenPopup("toolbar_primitives");
+    }
+    if (ImGui::BeginPopup("toolbar_primitives")) {
+        if (ImGui::MenuItem("Cube") && onCreatePrimitive) {
+            onCreatePrimitive("Cube", entt::null);
+        }
+        if (ImGui::MenuItem("Plane") && onCreatePrimitive) {
+            onCreatePrimitive("Plane", entt::null);
+        }
+        if (ImGui::MenuItem("Sphere") && onCreatePrimitive) {
+            onCreatePrimitive("Sphere", entt::null);
+        }
+        if (ImGui::MenuItem("Cylinder") && onCreatePrimitive) {
+            onCreatePrimitive("Cylinder", entt::null);
+        }
+        if (ImGui::MenuItem("Capsule") && onCreatePrimitive) {
+            onCreatePrimitive("Capsule", entt::null);
+        }
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine(0.0f, 8.0f);
+    if (pill("##gamecam", "Game Camera", false, ImVec2(132.0f, 28.0f))) {
+        if (onCreateGameCamera) onCreateGameCamera(entt::null);
+    }
+
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(12.0f, 0.0f));
+    ImGui::SameLine();
+
+    if (!gameModeActive) {
+        if (pill("##play", "Play", false, ImVec2(72.0f, 28.0f))) {
+            if (onPlay) onPlay();
+        }
+    } else {
+        if (pill("##pause", gameModePaused ? "Resume" : "Pause", gameModePaused, ImVec2(82.0f, 28.0f))) {
+            if (onPause) onPause();
+        }
+        ImGui::SameLine(0.0f, 8.0f);
+        if (pill("##stop", "Stop", false, ImVec2(72.0f, 28.0f))) {
+            if (onStop) onStop();
+        }
+    }
+
     ImGui::End();
     ImGui::PopStyleVar();
 }
 
-void UIManager::render(ImTextureID viewportTexture) {
+void UIManager::render(ImTextureID viewportTexture, ImTextureID gameViewportTexture, bool gameModeActive, bool gameModePaused) {
     static ImGuiID dockspaceID = 0;
 
     // Background behind the dockspace (helps it feel less "stock ImGui").
@@ -385,15 +436,21 @@ void UIManager::render(ImTextureID viewportTexture) {
             ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.24f, &dockLeft, &dockMain);
 
             ImGuiID dockTop = 0;
-            ImGuiID dockCenter = 0;
-            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Up, 0.07f, &dockTop, &dockCenter);
+            ImGuiID dockMainCenter = 0;
+            ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Up, 0.07f, &dockTop, &dockMainCenter);
+
+            ImGuiID dockCenterBottom = 0;
+            ImGuiID dockCenterTop = 0;
+            ImGui::DockBuilderSplitNode(dockMainCenter, ImGuiDir_Down, 0.28f, &dockCenterBottom, &dockCenterTop);
 
             ImGuiID dockLeftTop = 0;
             ImGuiID dockLeftBottom = 0;
             ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Down, 0.45f, &dockLeftBottom, &dockLeftTop);
 
             ImGui::DockBuilderDockWindow("Toolbar", dockTop);
-            ImGui::DockBuilderDockWindow("Viewport", dockCenter);
+            ImGui::DockBuilderDockWindow("Viewport", dockCenterTop);
+            ImGui::DockBuilderDockWindow("Game", dockCenterTop);
+            ImGui::DockBuilderDockWindow("Console", dockCenterBottom);
             ImGui::DockBuilderDockWindow("Hierarchy", dockLeftTop);
             ImGui::DockBuilderDockWindow("Content Explorer", dockLeftBottom);
             ImGui::DockBuilderDockWindow("Properties", dockRight);
@@ -450,8 +507,8 @@ void UIManager::render(ImTextureID viewportTexture) {
                 auto& reg = m_Scene->getRegistry();
                 Entity selected = m_PrimarySelected;
                 if (selected != entt::null && reg.valid(selected) && !reg.all_of<Atlas::ECS::EditorHiddenComponent>(selected)) {
-                    bool isCameraEntity = reg.all_of<Camera>(selected);
-                    if (!isCameraEntity) {
+                    bool isProtectedCameraEntity = reg.all_of<EditorCamera>(selected);
+                    if (!isProtectedCameraEntity) {
                         // Reuse the same soft-delete behavior as the Hierarchy context menu.
                         std::vector<Entity> subtree;
                         subtree.reserve(32);
@@ -486,19 +543,27 @@ void UIManager::render(ImTextureID viewportTexture) {
         }
     }
 
-    // Reset every frame; renderViewport() sets it when visible.
+    // Reset every frame; renderViewport()/renderGameViewport() set these when visible.
     m_ViewportAllowCameraInput = false;
+    m_ViewportFocusedLastFrame = false;
+    m_GameViewportFocusedLastFrame = false;
 
-    renderToolbar();
+    renderToolbar(gameModeActive, gameModePaused);
 
     if (m_ShowViewportWindow) {
         renderViewport(viewportTexture);
+    }
+    if (m_ShowGameViewportWindow) {
+        renderGameViewport(gameViewportTexture);
     }
     if (m_ShowHierarchyWindow) {
         renderHierarchy();
     }
     if (m_ShowPropertiesWindow) {
         renderProperties();
+    }
+    if (m_ShowConsoleWindow) {
+        renderConsoleWindow();
     }
     renderContentExplorer();
     
@@ -515,6 +580,7 @@ void UIManager::render(ImTextureID viewportTexture) {
             ImGuiFileDialog::Instance()->Close();
             if (projectManager && !folderPath.empty()) {
                 projectManager->openProject(folderPath);
+                if (onOpenProject) onOpenProject();
             }
         }
         ImGuiFileDialog::Instance()->Close();
@@ -579,7 +645,7 @@ Entity UIManager::getSelectedEntity() const {
     return m_PrimarySelected;
 }
 
-bool UIManager::popViewportPickRequest(uint32_t& outX, uint32_t& outY, bool& outAdditive) {
+bool UIManager::popViewportPickRequest(uint32_t& outX, uint32_t& outY, bool& outAdditive, bool& outDeselectOnMiss) {
     if (!m_HasViewportPickRequest) {
         return false;
     }
@@ -587,7 +653,9 @@ bool UIManager::popViewportPickRequest(uint32_t& outX, uint32_t& outY, bool& out
     outX = m_ViewportPickX;
     outY = m_ViewportPickY;
     outAdditive = m_ViewportPickAdditive;
+    outDeselectOnMiss = m_ViewportPickDeselectOnMiss;
     m_ViewportPickAdditive = false;
+    m_ViewportPickDeselectOnMiss = false;
     return true;
 }
 
@@ -602,6 +670,7 @@ void UIManager::setProjectManager(::ProjectManager* projManager) {
 void UIManager::openProject(const std::string& path) {
     if (projectManager) {
         projectManager->openProject(path);
+        if (onOpenProject) onOpenProject();
     }
     clearContentTextureThumbs();
 }
@@ -645,6 +714,7 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
         ImGuiIO& io = ImGui::GetIO();
         const bool viewportHovered = ImGui::IsItemHovered();
         const bool viewportFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        m_ViewportFocusedLastFrame = viewportFocused;
         m_ViewportAllowCameraInput = viewportHovered && viewportFocused && !io.WantTextInput;
     }
 
@@ -683,10 +753,24 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
             m_ViewportPickX = px;
             m_ViewportPickY = py;
             m_ViewportPickAdditive = io.KeyCtrl;
+            m_ViewportPickDeselectOnMiss = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
             m_HasViewportPickRequest = true;
         }
     }
     
+    auto projectToViewport = [&](const glm::vec3& worldPos, ImVec2& out) -> bool {
+        glm::vec4 clipPos = m_ProjMatrix * m_ViewMatrix * glm::vec4(worldPos, 1.0f);
+        if (clipPos.w <= 1e-5f) return false;
+
+        glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
+        if (ndc.z < -1.5f || ndc.z > 1.5f) return false;
+
+        float sx = (ndc.x * 0.5f + 0.5f) * contentSize.x + imageMin.x;
+        float sy = (-ndc.y * 0.5f + 0.5f) * contentSize.y + imageMin.y;
+        out = ImVec2(sx, sy);
+        return true;
+    };
+
     Entity primary = m_PrimarySelected;
 
     bool rigEditActive = false;
@@ -731,19 +815,6 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
                 if (m_Scene->hasTransform(rigEntity)) {
                     entityWorld = m_Scene->getWorldTransform(rigEntity);
                 }
-
-                auto projectToViewport = [&](const glm::vec3& worldPos, ImVec2& out) -> bool {
-                    glm::vec4 clipPos = m_ProjMatrix * m_ViewMatrix * glm::vec4(worldPos, 1.0f);
-                    if (clipPos.w <= 1e-5f) return false;
-
-                    glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
-                    if (ndc.z < -1.5f || ndc.z > 1.5f) return false;
-
-                    float sx = (ndc.x * 0.5f + 0.5f) * contentSize.x + imageMin.x;
-                    float sy = (-ndc.y * 0.5f + 0.5f) * contentSize.y + imageMin.y;
-                    out = ImVec2(sx, sy);
-                    return true;
-                };
 
                 if (m_RigShowSkeleton) {
                     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -826,6 +897,84 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
                     }
                 }
             }
+        }
+    }
+
+    if (primary != entt::null && m_Scene && m_Scene->getRegistry().valid(primary) &&
+        (m_Scene->getRegistry().all_of<Camera>(primary) || m_Scene->getRegistry().all_of<EditorCamera>(primary))) {
+        auto& registry = m_Scene->getRegistry();
+        const CameraBase& cam = registry.all_of<Camera>(primary)
+            ? static_cast<const CameraBase&>(registry.get<Camera>(primary))
+            : static_cast<const CameraBase&>(registry.get<EditorCamera>(primary));
+
+        glm::vec3 forward = glm::normalize(cam.target - cam.position);
+        if (glm::length(forward) < 1e-5f) {
+            forward = glm::vec3(0.0f, 0.0f, -1.0f);
+        }
+        glm::vec3 right = glm::normalize(glm::cross(forward, cam.up));
+        if (glm::length(right) < 1e-5f) {
+            right = glm::vec3(1.0f, 0.0f, 0.0f);
+        }
+        glm::vec3 up = glm::normalize(glm::cross(right, forward));
+
+        const float tanHalfFov = std::tan(glm::radians(cam.fov) * 0.5f);
+        const float nearDist = std::max(cam.nearPlane, 0.01f);
+        const float farDist = std::max(cam.farPlane, nearDist + 0.01f);
+        const float aspect = (cam.aspectRatio > 0.0f) ? cam.aspectRatio : (contentSize.x / std::max(contentSize.y, 1.0f));
+        const float nearH = tanHalfFov * nearDist;
+        const float nearW = nearH * aspect;
+        const float farH = tanHalfFov * farDist;
+        const float farW = farH * aspect;
+
+        const glm::vec3 nc = cam.position + forward * nearDist;
+        const glm::vec3 fc = cam.position + forward * farDist;
+
+        const glm::vec3 ntl = nc + up * nearH - right * nearW;
+        const glm::vec3 ntr = nc + up * nearH + right * nearW;
+        const glm::vec3 nbl = nc - up * nearH - right * nearW;
+        const glm::vec3 nbr = nc - up * nearH + right * nearW;
+        const glm::vec3 ftl = fc + up * farH - right * farW;
+        const glm::vec3 ftr = fc + up * farH + right * farW;
+        const glm::vec3 fbl = fc - up * farH - right * farW;
+        const glm::vec3 fbr = fc - up * farH + right * farW;
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 col = IM_COL32(255, 220, 120, 210);
+        const ImU32 fillCol = IM_COL32(255, 220, 120, 40);
+
+        auto drawSegment = [&](const glm::vec3& a, const glm::vec3& b) {
+            ImVec2 as, bs;
+            if (projectToViewport(a, as) && projectToViewport(b, bs)) {
+                dl->AddLine(as, bs, col, 1.5f);
+            }
+        };
+
+        auto drawLoop = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, const glm::vec3& d) {
+            drawSegment(a, b);
+            drawSegment(b, c);
+            drawSegment(c, d);
+            drawSegment(d, a);
+        };
+
+        ImVec2 centerS;
+        if (projectToViewport(cam.position, centerS)) {
+            dl->AddCircleFilled(centerS, 4.0f, col);
+        }
+        drawLoop(ntl, ntr, nbr, nbl);
+        drawLoop(ftl, ftr, fbr, fbl);
+        drawSegment(cam.position, ntl);
+        drawSegment(cam.position, ntr);
+        drawSegment(cam.position, nbl);
+        drawSegment(cam.position, nbr);
+        drawSegment(ntl, ftl);
+        drawSegment(ntr, ftr);
+        drawSegment(nbl, fbl);
+        drawSegment(nbr, fbr);
+
+        ImVec2 nearPts[4];
+        if (projectToViewport(ntl, nearPts[0]) && projectToViewport(ntr, nearPts[1]) &&
+            projectToViewport(nbr, nearPts[2]) && projectToViewport(nbl, nearPts[3])) {
+            dl->AddConvexPolyFilled(nearPts, 4, fillCol);
         }
     }
 
@@ -954,7 +1103,7 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
 
                 for (auto e : targets) {
                     glm::mat4 oldWorld = m_Scene->getWorldTransform(e);
-                    glm::mat4 editedWorld = deltaMatrix * oldWorld;
+                    glm::mat4 editedWorld = (targets.size() == 1) ? manipMatrix : (deltaMatrix * oldWorld);
 
                     glm::mat4 parentWorld = glm::mat4(1.0f);
                     if (registry.all_of<Atlas::ECS::ParentComponent>(e)) {
@@ -1023,6 +1172,33 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     ImGui::PopStyleVar();
 }
 
+void UIManager::renderGameViewport(ImTextureID viewportTexture) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Game", &m_ShowGameViewportWindow, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar);
+
+    if (m_RequestFocusGameViewport) {
+        ImGui::SetWindowFocus();
+        m_RequestFocusGameViewport = false;
+    }
+
+    ImVec2 contentSize = ImGui::GetContentRegionAvail();
+    ImGui::Image(viewportTexture, contentSize);
+
+    ImGuiIO& io = ImGui::GetIO();
+    const bool gameFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    m_GameViewportFocusedLastFrame = gameFocused;
+
+    if (gameFocused && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        if (onReleaseGameFocus) {
+            onReleaseGameFocus();
+        }
+        ImGui::SetWindowFocus("Toolbar");
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
 void UIManager::renderHierarchy() {
     ImGui::Begin("Hierarchy", &m_ShowHierarchyWindow, ImGuiWindowFlags_NoCollapse);
 
@@ -1062,8 +1238,8 @@ void UIManager::renderHierarchy() {
             if (!m_Scene) return;
             if (!registry.valid(entity)) return;
 
-            bool isCameraEntity = registry.all_of<Camera>(entity);
-            if (isCameraEntity) {
+            bool isProtectedCameraEntity = registry.all_of<EditorCamera>(entity);
+            if (isProtectedCameraEntity) {
                 return;
             }
 
@@ -1109,9 +1285,15 @@ void UIManager::renderHierarchy() {
             }
 
             const auto& children = m_Scene->getChildren(entity);
+            Atlas::Anim::Skeleton* entitySkeleton = nullptr;
+            if (registry.all_of<Atlas::ECS::SkeletonComponent>(entity)) {
+                entitySkeleton = registry.get<Atlas::ECS::SkeletonComponent>(entity).skeleton.get();
+            }
+            const bool hasBoneHierarchy = (entitySkeleton && entitySkeleton->boneCount() > 0);
+
             ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
             if (isSelected(entity)) flags |= ImGuiTreeNodeFlags_Selected;
-            if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            if (children.empty() && !hasBoneHierarchy) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
             ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entity)));
             bool nodeOpen = ImGui::TreeNodeEx(entityName.c_str(), flags);
@@ -1131,7 +1313,7 @@ void UIManager::renderHierarchy() {
                     setSelectedEntity(entity);
                 }
 
-                const bool isCameraEntity = registry.all_of<Camera>(entity);
+                const bool isProtectedCameraEntity = registry.all_of<EditorCamera>(entity);
 
                 if (ImGui::MenuItem("Rename...")) {
                     m_ShowHierarchyRenamePopup = true;
@@ -1145,7 +1327,7 @@ void UIManager::renderHierarchy() {
                     }
                 }
 
-                if (ImGui::MenuItem("Delete", nullptr, false, !isCameraEntity)) {
+                if (ImGui::MenuItem("Delete", nullptr, false, !isProtectedCameraEntity)) {
                     softDeleteSubtree(entity);
                 }
 
@@ -1157,6 +1339,29 @@ void UIManager::renderHierarchy() {
 
                 if (ImGui::MenuItem("Create Child")) {
                     pendingCreateChildren.push_back(entity);
+                }
+
+                if (ImGui::MenuItem("Create Child Game Camera") && onCreateGameCamera) {
+                    onCreateGameCamera(entity);
+                }
+
+                if (ImGui::BeginMenu("Add Primitive")) {
+                    if (ImGui::MenuItem("Cube") && onCreatePrimitive) {
+                        onCreatePrimitive("Cube", entity);
+                    }
+                    if (ImGui::MenuItem("Plane") && onCreatePrimitive) {
+                        onCreatePrimitive("Plane", entity);
+                    }
+                    if (ImGui::MenuItem("Sphere") && onCreatePrimitive) {
+                        onCreatePrimitive("Sphere", entity);
+                    }
+                    if (ImGui::MenuItem("Cylinder") && onCreatePrimitive) {
+                        onCreatePrimitive("Cylinder", entity);
+                    }
+                    if (ImGui::MenuItem("Capsule") && onCreatePrimitive) {
+                        onCreatePrimitive("Capsule", entity);
+                    }
+                    ImGui::EndMenu();
                 }
 
                 ImGui::EndPopup();
@@ -1208,10 +1413,66 @@ void UIManager::renderHierarchy() {
                 }
             }
 
-            if (nodeOpen && !children.empty()) {
+            const bool entityLeaf = children.empty() && !hasBoneHierarchy;
+            if (nodeOpen && !entityLeaf) {
                 for (auto child : children) {
                     self(self, child);
                 }
+
+                if (hasBoneHierarchy) {
+                    std::vector<std::vector<uint32_t>> boneChildren(entitySkeleton->boneCount());
+                    std::vector<uint32_t> boneRoots;
+                    boneRoots.reserve(entitySkeleton->boneCount());
+
+                    for (uint32_t bi = 0; bi < entitySkeleton->boneCount(); ++bi) {
+                        int32_t parent = (bi < entitySkeleton->parentIndex.size()) ? entitySkeleton->parentIndex[bi] : -1;
+                        if (parent >= 0 && static_cast<uint32_t>(parent) < entitySkeleton->boneCount()) {
+                            boneChildren[static_cast<uint32_t>(parent)].push_back(bi);
+                        } else {
+                            boneRoots.push_back(bi);
+                        }
+                    }
+
+                    auto renderBoneRecursively = [&](auto&& selfBone, uint32_t boneIndex) -> void {
+                        const bool boneSelected = (m_RigEditEntity == entity) && (m_RigSelectedBone == static_cast<int32_t>(boneIndex));
+                        const bool boneLeaf = boneIndex >= boneChildren.size() || boneChildren[boneIndex].empty();
+                        ImGuiTreeNodeFlags boneFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+                        if (boneSelected) boneFlags |= ImGuiTreeNodeFlags_Selected;
+                        if (boneLeaf) boneFlags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+                        const char* boneName = (boneIndex < entitySkeleton->boneNames.size() && !entitySkeleton->boneNames[boneIndex].empty())
+                            ? entitySkeleton->boneNames[boneIndex].c_str()
+                            : "<bone>";
+
+                        ImGui::PushID(static_cast<int>(boneIndex) + 1000000);
+                        bool boneOpen = ImGui::TreeNodeEx(boneName, boneFlags);
+                        if (ImGui::IsItemClicked()) {
+                            setSelectedEntity(entity);
+                            m_RigEditEntity = entity;
+                            m_RigSelectedBone = static_cast<int32_t>(boneIndex);
+                        }
+
+                        if (boneOpen && !boneLeaf) {
+                            for (uint32_t childBone : boneChildren[boneIndex]) {
+                                selfBone(selfBone, childBone);
+                            }
+                            ImGui::TreePop();
+                        }
+                        ImGui::PopID();
+                    };
+
+                    ImGui::PushID("__skeleton_tree");
+                    ImGuiTreeNodeFlags skelFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
+                    bool skeletonNodeOpen = ImGui::TreeNodeEx("Skeleton", skelFlags);
+                    if (skeletonNodeOpen) {
+                        for (uint32_t rootBone : boneRoots) {
+                            renderBoneRecursively(renderBoneRecursively, rootBone);
+                        }
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                }
+
                 ImGui::TreePop();
             }
             ImGui::PopID();
@@ -1248,6 +1509,29 @@ void UIManager::renderHierarchy() {
 
             if (ImGui::MenuItem("Create Entity")) {
                 pendingCreateRoot = true;
+            }
+
+            if (ImGui::MenuItem("Create Game Camera") && onCreateGameCamera) {
+                onCreateGameCamera(entt::null);
+            }
+
+            if (ImGui::BeginMenu("Add Primitive")) {
+                if (ImGui::MenuItem("Cube") && onCreatePrimitive) {
+                    onCreatePrimitive("Cube", entt::null);
+                }
+                if (ImGui::MenuItem("Plane") && onCreatePrimitive) {
+                    onCreatePrimitive("Plane", entt::null);
+                }
+                if (ImGui::MenuItem("Sphere") && onCreatePrimitive) {
+                    onCreatePrimitive("Sphere", entt::null);
+                }
+                if (ImGui::MenuItem("Cylinder") && onCreatePrimitive) {
+                    onCreatePrimitive("Cylinder", entt::null);
+                }
+                if (ImGui::MenuItem("Capsule") && onCreatePrimitive) {
+                    onCreatePrimitive("Capsule", entt::null);
+                }
+                ImGui::EndMenu();
             }
 
             if (ImGui::MenuItem("Create Child", nullptr, false, selectedValid)) {
@@ -1457,13 +1741,13 @@ void UIManager::renderProperties() {
             }
         }
 
-bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
-        if (isCameraEntity) {
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Camera entity cannot be deleted");
+bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selectedEntity);
+        if (isProtectedCameraEntity) {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Editor camera cannot be deleted here");
         }
 
         bool deleted = false;
-        ImGui::BeginDisabled(isCameraEntity);
+        ImGui::BeginDisabled(isProtectedCameraEntity);
         if (ImGui::Button("Delete Entity")) {
             auto& registry = m_Scene->getRegistry();
 
@@ -1578,6 +1862,127 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
             renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable");
         }
 
+        // Script inspector (V1)
+        {
+            auto& registry = m_Scene->getRegistry();
+
+            if (!registry.all_of<Atlas::ECS::ScriptComponent>(selectedEntity)) {
+                if (ImGui::Button("Add Script Component")) {
+                    Atlas::ECS::ScriptComponent sc;
+                    sc.scripts.push_back(Atlas::ECS::ScriptEntry{});
+                    registry.emplace<Atlas::ECS::ScriptComponent>(selectedEntity, std::move(sc));
+                    m_ScriptInspectError.clear();
+                }
+            } else if (ImGui::CollapsingHeader("Scripts", ImGuiTreeNodeFlags_DefaultOpen)) {
+                auto& sc = registry.get<Atlas::ECS::ScriptComponent>(selectedEntity);
+
+                if (ImGui::Button("Add Script##entry")) {
+                    sc.scripts.push_back(Atlas::ECS::ScriptEntry{});
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Remove All Scripts")) {
+                    registry.remove<Atlas::ECS::ScriptComponent>(selectedEntity);
+                    m_ScriptInspectError.clear();
+                }
+
+                if (!m_ScriptInspectError.empty()) {
+                    ImGui::TextWrapped("Schema error: %s", m_ScriptInspectError.c_str());
+                }
+
+                for (size_t scriptIndex = 0; scriptIndex < sc.scripts.size();) {
+                    auto& entry = sc.scripts[scriptIndex];
+                    ImGui::PushID(static_cast<int>(scriptIndex));
+
+                    std::string header = entry.scriptPath.empty()
+                        ? (std::string("Script ") + std::to_string(scriptIndex + 1))
+                        : entry.scriptPath;
+
+                    bool removeEntry = false;
+                    if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                        ImGui::Checkbox("Enabled", &entry.enabled);
+
+                        char pathBuf[512] = {};
+                        if (!entry.scriptPath.empty()) {
+                            std::strncpy(pathBuf, entry.scriptPath.c_str(), sizeof(pathBuf) - 1);
+                        }
+                        if (ImGui::InputText("Script Path", pathBuf, sizeof(pathBuf))) {
+                            entry.scriptPath = std::string(pathBuf);
+                        }
+
+                        if (ImGui::Button("Reload Schema")) {
+                            std::string inspectPath = entry.scriptPath;
+                            if (projectManager && projectManager->hasProject() && !inspectPath.empty() && !std::filesystem::path(inspectPath).is_absolute()) {
+                                inspectPath = projectManager->getAssetFullPath(inspectPath);
+                            }
+                            auto defs = Atlas::Scripting::ScriptEngine::inspectScript(inspectPath, &m_ScriptInspectError);
+                            Atlas::Scripting::ScriptEngine::syncComponentFields(defs, entry.fields);
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Remove Script")) {
+                            removeEntry = true;
+                        }
+
+                        for (auto& [name, value] : entry.fields) {
+                            const Atlas::Scripting::ScriptFieldType type = Atlas::Scripting::getFieldType(value);
+                            switch (type) {
+                            case Atlas::Scripting::ScriptFieldType::Bool: {
+                                bool v = std::get<bool>(value);
+                                if (ImGui::Checkbox(name.c_str(), &v)) value = v;
+                                break;
+                            }
+                            case Atlas::Scripting::ScriptFieldType::Int: {
+                                int v = std::get<int>(value);
+                                if (ImGui::DragInt(name.c_str(), &v, 1.0f)) value = v;
+                                break;
+                            }
+                            case Atlas::Scripting::ScriptFieldType::Float: {
+                                float v = std::get<float>(value);
+                                if (ImGui::DragFloat(name.c_str(), &v, 0.1f)) value = v;
+                                break;
+                            }
+                            case Atlas::Scripting::ScriptFieldType::String: {
+                                char buf[256] = {};
+                                const auto& s = std::get<std::string>(value);
+                                std::strncpy(buf, s.c_str(), sizeof(buf) - 1);
+                                if (ImGui::InputText(name.c_str(), buf, sizeof(buf))) value = std::string(buf);
+                                break;
+                            }
+                            case Atlas::Scripting::ScriptFieldType::Vec2: {
+                                auto v = std::get<glm::vec2>(value);
+                                if (ImGui::DragFloat2(name.c_str(), &v.x, 0.1f)) value = v;
+                                break;
+                            }
+                            case Atlas::Scripting::ScriptFieldType::Vec3: {
+                                auto v = std::get<glm::vec3>(value);
+                                if (ImGui::DragFloat3(name.c_str(), &v.x, 0.1f)) value = v;
+                                break;
+                            }
+                            case Atlas::Scripting::ScriptFieldType::Vec4: {
+                                auto v = std::get<glm::vec4>(value);
+                                if (ImGui::DragFloat4(name.c_str(), &v.x, 0.1f)) value = v;
+                                break;
+                            }
+                            default:
+                                break;
+                            }
+                        }
+                    }
+
+                    ImGui::PopID();
+
+                    if (removeEntry) {
+                        sc.scripts.erase(sc.scripts.begin() + static_cast<std::ptrdiff_t>(scriptIndex));
+                        continue;
+                    }
+                    ++scriptIndex;
+                }
+
+                if (sc.scripts.empty()) {
+                    registry.remove<Atlas::ECS::ScriptComponent>(selectedEntity);
+                }
+            }
+        }
+
         // Skeletal animation inspector (V1)
         {
             auto& registry = m_Scene->getRegistry();
@@ -1592,7 +1997,7 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
             if (skelEntity != entt::null && registry.valid(skelEntity) && registry.all_of<Atlas::ECS::SkeletonComponent>(skelEntity)) {
                 if (ImGui::CollapsingHeader("Skeleton", ImGuiTreeNodeFlags_DefaultOpen)) {
                     auto& skc = registry.get<Atlas::ECS::SkeletonComponent>(skelEntity);
-                    const Atlas::Anim::Skeleton* skel = skc.skeleton.get();
+                    Atlas::Anim::Skeleton* skel = skc.skeleton.get();
 
                     if (!skel) {
                         ImGui::TextUnformatted("No skeleton data");
@@ -1663,6 +2068,36 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
                             ImGui::Checkbox("Playing", &ap.playing);
                             ImGui::SameLine();
                             ImGui::Checkbox("Loop", &ap.loop);
+                            ImGui::EndDisabled();
+
+                            const bool rootMotionToggled = ImGui::Checkbox("Enable Root Motion", &ap.enableRootMotion);
+                            if (rootMotionToggled && ap.enableRootMotion && skel->rootMotionBoneIndex < 0) {
+                                skel->rootMotionBoneIndex = Atlas::Anim::chooseRootMotionBone(*skel, skc.clips);
+                            }
+
+                            ImGui::BeginDisabled(!ap.enableRootMotion);
+                            if (ImGui::BeginCombo("Root Motion Bone", (skel->rootMotionBoneIndex >= 0 && static_cast<size_t>(skel->rootMotionBoneIndex) < skel->boneNames.size()) ? skel->boneNames[static_cast<size_t>(skel->rootMotionBoneIndex)].c_str() : "<none>")) {
+                                bool noneSelected = (skel->rootMotionBoneIndex < 0);
+                                if (ImGui::Selectable("<none>", noneSelected)) {
+                                    skel->rootMotionBoneIndex = -1;
+                                }
+                                if (noneSelected) ImGui::SetItemDefaultFocus();
+                                for (uint32_t i = 0; i < skel->boneCount(); ++i) {
+                                    const char* name = (i < skel->boneNames.size() && !skel->boneNames[i].empty()) ? skel->boneNames[i].c_str() : "<unnamed>";
+                                    bool selected = (skel->rootMotionBoneIndex == static_cast<int32_t>(i));
+                                    if (ImGui::Selectable(name, selected)) {
+                                        skel->rootMotionBoneIndex = static_cast<int32_t>(i);
+                                    }
+                                    if (selected) ImGui::SetItemDefaultFocus();
+                                }
+                                ImGui::EndCombo();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Auto Detect")) {
+                                skel->rootMotionBoneIndex = Atlas::Anim::chooseRootMotionBone(*skel, skc.clips);
+                            }
+                            ImGui::Checkbox("Root Motion Rotation", &ap.rootMotionApplyRotation);
+                            ImGui::Checkbox("Root Motion Y", &ap.rootMotionApplyY);
                             ImGui::EndDisabled();
 
                             ImGui::DragFloat("Speed", &ap.speed, 0.05f, -5.0f, 5.0f, "%.2f");
@@ -2092,8 +2527,96 @@ bool isCameraEntity = m_Scene->getRegistry().all_of<Camera>(selectedEntity);
             }
         }
 
-        if (m_Scene->getRegistry().all_of<Camera>(selectedEntity)) {
-            renderComponent(m_Scene->getRegistry().get<Camera>(selectedEntity), "Camera");
+        if (m_Scene->getRegistry().all_of<Camera>(selectedEntity) || m_Scene->getRegistry().all_of<EditorCamera>(selectedEntity)) {
+            auto& registry = m_Scene->getRegistry();
+            const bool isRuntimeCamera = registry.all_of<Camera>(selectedEntity);
+            const bool isEditorCamera = registry.all_of<EditorCamera>(selectedEntity);
+
+            if (isRuntimeCamera && ImGui::CollapsingHeader("Game Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+                bool hasGameCamera = registry.all_of<Atlas::ECS::GameCameraComponent>(selectedEntity);
+                if (!hasGameCamera) {
+                    if (ImGui::Button("Add Game Camera Component")) {
+                        Atlas::ECS::GameCameraComponent gcc;
+                        auto gameCameraView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+                        gcc.primary = (gameCameraView.begin() == gameCameraView.end());
+                        registry.emplace<Atlas::ECS::GameCameraComponent>(selectedEntity, gcc);
+                    }
+                } else {
+                    auto& gcc = registry.get<Atlas::ECS::GameCameraComponent>(selectedEntity);
+                    bool primaryInPlay = gcc.primary;
+                    if (ImGui::Checkbox("Primary In Play Mode", &primaryInPlay)) {
+                        gcc.primary = primaryInPlay;
+                        if (gcc.primary) {
+                            auto gameCameraView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+                            for (auto e : gameCameraView) {
+                                if (e != selectedEntity) {
+                                    gameCameraView.get<Atlas::ECS::GameCameraComponent>(e).primary = false;
+                                }
+                            }
+                        }
+                    }
+                    if (ImGui::Button("Remove Game Camera")) {
+                        registry.remove<Atlas::ECS::GameCameraComponent>(selectedEntity);
+                    }
+                }
+            }
+
+            if (isRuntimeCamera && ImGui::CollapsingHeader("Follow Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+                bool hasFollow = registry.all_of<Atlas::ECS::FollowCameraComponent>(selectedEntity);
+
+                if (!hasFollow) {
+                    if (ImGui::Button("Add Follow Camera")) {
+                        registry.emplace<Atlas::ECS::FollowCameraComponent>(selectedEntity);
+                    }
+                } else {
+                    auto& follow = registry.get<Atlas::ECS::FollowCameraComponent>(selectedEntity);
+
+                    std::string targetLabel = "None";
+                    if (follow.target != entt::null && registry.valid(follow.target) && registry.all_of<Atlas::ECS::TagComponent>(follow.target)) {
+                        targetLabel = registry.get<Atlas::ECS::TagComponent>(follow.target).name;
+                    }
+                    ImGui::Text("Target: %s", targetLabel.c_str());
+
+                    int targetId = (follow.target == entt::null) ? -1 : static_cast<int>(static_cast<uint32_t>(follow.target));
+                    if (ImGui::InputInt("Target Entity ID", &targetId)) {
+                        if (targetId < 0) {
+                            follow.target = entt::null;
+                        } else {
+                            Entity candidate = static_cast<Entity>(static_cast<uint32_t>(targetId));
+                            follow.target = registry.valid(candidate) ? candidate : entt::null;
+                        }
+                    }
+
+                    Entity otherSelected = entt::null;
+                    for (Entity e : m_SelectedEntities) {
+                        if (e != selectedEntity && registry.valid(e)) {
+                            otherSelected = e;
+                            break;
+                        }
+                    }
+                    if (ImGui::Button("Use Other Selected") && otherSelected != entt::null) {
+                        follow.target = otherSelected;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Clear Target")) {
+                        follow.target = entt::null;
+                    }
+
+                    ImGui::DragFloat3("Offset", &follow.offset.x, 0.1f);
+                    ImGui::DragFloat("Smoothness", &follow.smoothness, 0.1f, 0.0f, 30.0f, "%.2f");
+                    ImGui::Checkbox("Look At Target", &follow.lookAtTarget);
+
+                    if (ImGui::Button("Remove Follow Camera")) {
+                        registry.remove<Atlas::ECS::FollowCameraComponent>(selectedEntity);
+                    }
+                }
+            }
+
+            if (isRuntimeCamera) {
+                renderComponent(m_Scene->getRegistry().get<Camera>(selectedEntity), "Runtime Camera");
+            } else if (isEditorCamera) {
+                renderComponent(m_Scene->getRegistry().get<EditorCamera>(selectedEntity), "Editor Camera");
+            }
         }
     } else {
         ImGui::Text("No entity selected");
@@ -2584,9 +3107,12 @@ void UIManager::renderMenuBar() {
         }
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Viewport", NULL, &m_ShowViewportWindow);
+            ImGui::MenuItem("Game", NULL, &m_ShowGameViewportWindow);
+            ImGui::MenuItem("Console", NULL, &m_ShowConsoleWindow);
             ImGui::MenuItem("Hierarchy", NULL, &m_ShowHierarchyWindow);
             ImGui::MenuItem("Properties", NULL, &m_ShowPropertiesWindow);
             ImGui::MenuItem("Content Explorer", NULL, &m_ShowContentExplorerWindow);
+            ImGui::MenuItem("World Streaming", NULL, &m_ShowWorldStreamingWindow);
             ImGui::Separator();
             ImGui::MenuItem("Profiler", NULL, &m_ShowProfilerWindow);
             ImGui::MenuItem("Camera", NULL, &m_ShowCameraWindow);
@@ -2615,6 +3141,36 @@ void UIManager::updateProfiler(float deltaTime)
 
     m_FrameTimeHistory[m_FrameTimeIndex] = m_FrameTimeMs;
     m_FrameTimeIndex = (m_FrameTimeIndex + 1) % PROFILER_HISTORY;
+}
+
+void UIManager::renderConsoleWindow()
+{
+    if (!m_ShowConsoleWindow) return;
+
+    ImGui::Begin("Console", &m_ShowConsoleWindow, ImGuiWindowFlags_NoCollapse);
+
+    if (ImGui::Button("Clear")) {
+        Atlas::RuntimeConsole::instance().clear();
+    }
+    ImGui::Separator();
+
+    const auto entries = Atlas::RuntimeConsole::instance().snapshot();
+    ImGui::BeginChild("console_scroll");
+    for (const auto& entry : entries) {
+        ImVec4 color(0.85f, 0.87f, 0.90f, 1.0f);
+        if (entry.level == Atlas::RuntimeConsole::Level::Warn) {
+            color = ImVec4(0.95f, 0.75f, 0.25f, 1.0f);
+        } else if (entry.level == Atlas::RuntimeConsole::Level::Error) {
+            color = ImVec4(0.95f, 0.35f, 0.35f, 1.0f);
+        }
+        ImGui::TextColored(color, "%s", entry.text.c_str());
+    }
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f) {
+        ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
 }
 
 void UIManager::renderProfilerWindow()

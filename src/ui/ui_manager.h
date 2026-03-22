@@ -27,7 +27,7 @@ public:
     UIManager(Atlas::Scene* scene);
     ~UIManager();
 
-    void render(ImTextureID viewportTexture);
+    void render(ImTextureID viewportTexture, ImTextureID gameViewportTexture, bool gameModeActive, bool gameModePaused);
     void setSelectedEntity(Entity entity);
     void toggleSelectedEntity(Entity entity);
     void clearSelection();
@@ -37,13 +37,26 @@ public:
     const std::vector<Entity>& getSelectedEntities() const { return m_SelectedEntities; }
     
     void setProjectManager(::ProjectManager* projManager);
+    void setScene(Atlas::Scene* scene) { m_Scene = scene; }
     void setOnAssetDropped(std::function<void(const std::string&)> callback);
     void setRenderer(Atlas::Renderer* renderer);
     void setAssetManager(Atlas::AssetManager* am) { assetManager = am; }
     void openProject(const std::string& path);
     void setWindow(GLFWwindow* win);
+    void setOnNewProject(std::function<void()> callback) { onNewProject = std::move(callback); }
+    void setOnOpenProject(std::function<void()> callback) { onOpenProject = std::move(callback); }
+    void setOnSaveProject(std::function<void()> callback) { onSaveProject = std::move(callback); }
+    void setOnExit(std::function<void()> callback) { onExit = std::move(callback); }
     void setCameraMatrices(glm::mat4 view, glm::mat4 proj);
     void setCameraController(CameraController* controller);
+    void setOnPlay(std::function<void()> callback) { onPlay = std::move(callback); }
+    void setOnPause(std::function<void()> callback) { onPause = std::move(callback); }
+    void setOnStop(std::function<void()> callback) { onStop = std::move(callback); }
+    void setOnReleaseGameFocus(std::function<void()> callback) { onReleaseGameFocus = std::move(callback); }
+    void requestFocusGameViewport() { m_RequestFocusGameViewport = true; }
+    bool wasViewportFocused() const { return m_ViewportFocusedLastFrame; }
+    void setOnCreatePrimitive(std::function<void(const std::string&, Entity)> callback) { onCreatePrimitive = std::move(callback); }
+    void setOnCreateGameCamera(std::function<void(Entity)> callback) { onCreateGameCamera = std::move(callback); }
 
     TransformMode getTransformMode() const { return m_TransformMode; }
     bool isGizmoUsing() const { return m_GizmoUsing; }
@@ -55,10 +68,11 @@ public:
     void updateProfiler(float deltaTime);
     void renderProfilerWindow();
     void renderCameraWindow();
+    void renderConsoleWindow();
 
     int getMaxFps() const { return m_MaxFps; }
 
-    bool popViewportPickRequest(uint32_t& outX, uint32_t& outY, bool& outAdditive);
+    bool popViewportPickRequest(uint32_t& outX, uint32_t& outY, bool& outAdditive, bool& outDeselectOnMiss);
 
     void undo();
     void redo();
@@ -120,8 +134,9 @@ private:
     Atlas::AssetManager* assetManager = nullptr;
     std::function<void(const std::string&)> onAssetDropped;
 
-    void renderToolbar();
+    void renderToolbar(bool gameModeActive, bool gameModePaused);
     void renderViewport(ImTextureID viewportTexture);
+    void renderGameViewport(ImTextureID viewportTexture);
     void renderHierarchy();
     void renderProperties();
     void renderContentExplorer();
@@ -134,6 +149,12 @@ private:
     std::function<void()> onOpenProject;
     std::function<void()> onSaveProject;
     std::function<void()> onExit;
+    std::function<void()> onPlay;
+    std::function<void()> onPause;
+    std::function<void()> onStop;
+    std::function<void()> onReleaseGameFocus;
+    std::function<void(const std::string&, Entity)> onCreatePrimitive;
+    std::function<void(Entity)> onCreateGameCamera;
 
     GLFWwindow* window = nullptr;
 
@@ -153,9 +174,13 @@ private:
     uint32_t m_ViewportPickX = 0;
     uint32_t m_ViewportPickY = 0;
     bool m_ViewportPickAdditive = false;
+    bool m_ViewportPickDeselectOnMiss = false;
 
-    // Cached from last frame's Viewport window.
+    // Cached from last frame's Viewport/Game windows.
     bool m_ViewportAllowCameraInput = false;
+    bool m_ViewportFocusedLastFrame = false;
+    bool m_GameViewportFocusedLastFrame = false;
+    bool m_RequestFocusGameViewport = false;
     bool showNewProjectDialog = false;
     bool showOpenProjectDialog = false;
     char newProjectName[256] = "MyProject";
@@ -171,6 +196,7 @@ private:
 
     // Panel visibility
     bool m_ShowViewportWindow = true;
+    bool m_ShowGameViewportWindow = true;
     bool m_ShowHierarchyWindow = true;
     bool m_ShowPropertiesWindow = true;
     bool m_ShowContentExplorerWindow = true;
@@ -178,6 +204,7 @@ private:
     // Simple ImGui profiler panel data
     bool m_ShowProfilerWindow = false;
     bool m_ShowCameraWindow = false;
+    bool m_ShowConsoleWindow = true;
 
     float m_FrameTimeMs = 0.0f;
     float m_Fps = 0.0f;
@@ -197,6 +224,10 @@ private:
     char m_MetallicRoughnessTexturePathBuf[512] = {};
     char m_AOTexturePathBuf[512] = {};
     char m_EmissiveTexturePathBuf[512] = {};
+
+    uint32_t m_ScriptEditEntityId = 0;
+    char m_ScriptPathBuf[512] = {};
+    std::string m_ScriptInspectError;
 
     struct TransformState {
         glm::vec3 position{0.0f};

@@ -36,6 +36,8 @@ public:
     std::string getAssetFullPath(const std::string& relativePath);
     std::string getProjectPath() const { return currentProject.path; }
     std::string getAssetsPath() const { return currentProject.assetsPath; }
+    std::string getDefaultScenePath() const;
+    void ensureProjectDirectories();
     
     struct FileEntry {
         std::string name;

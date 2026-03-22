@@ -20,6 +20,7 @@
 #include "../utils/model_loader.h"
 
 namespace Atlas { class WorldPartition; }
+namespace Atlas::Scripting { class ScriptEngine; }
 
 namespace Atlas {
 class Window;
@@ -60,6 +61,20 @@ private:
     };
 
     void processPendingModels();
+    void startPlayMode();
+    void togglePausePlayMode();
+    void stopPlayMode();
+    void updateAnimationRuntime(Scene* scene, float deltaTime);
+    void updateFollowCameras(Scene* scene, float deltaTime);
+    void updateGameCameras(Scene* scene);
+    void cloneSceneToRuntime();
+    Entity createPrimitiveEntity(const std::string& primitiveType, Entity parent = entt::null);
+    Entity createGameCameraEntity(Entity parent = entt::null);
+    void resetEditorScene();
+    void ensureEditorCamera();
+    void rebindEditorCameraController();
+    bool saveProjectScene();
+    bool loadProjectScene();
 
     struct ImportRequest {
         std::string assetPath;
@@ -89,6 +104,8 @@ private:
     std::unique_ptr<Renderer> m_Renderer;
     std::unique_ptr<AssetManager> m_AssetManager;
     std::unique_ptr<Scene> m_Scene;
+    std::unique_ptr<Scene> m_RuntimeScene;
+    std::unique_ptr<Atlas::Scripting::ScriptEngine> m_ScriptEngine;
     std::unique_ptr<::UIManager> m_UIManager;
     std::unique_ptr<::ProjectManager> m_ProjectManager;
     std::unique_ptr<::CameraController> m_CameraController;
@@ -117,6 +134,8 @@ private:
     // Import options popup (models).
     std::deque<ImportRequest> m_ImportQueue;
     bool m_ShowImportOptionsPopup = false;
+    bool m_GameModePlaying = false;
+    bool m_GameModePaused = false;
     ImportRequest m_ActiveImport;
     std::string m_ActiveImportFullPath;
     std::string m_ActiveImportModelName;

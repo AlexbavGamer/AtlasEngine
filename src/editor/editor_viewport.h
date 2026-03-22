@@ -16,11 +16,13 @@ public:
     void refreshTexture();
     void releaseTexture();
 
-    ImTextureID getTextureId() const;
+    ImTextureID getSceneTextureId() const;
+    ImTextureID getGameTextureId() const;
 
 private:
     Renderer* m_Renderer = nullptr;
-    VkDescriptorSet m_TextureDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_SceneTextureDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_GameTextureDescriptorSet = VK_NULL_HANDLE;
 };
 
 }

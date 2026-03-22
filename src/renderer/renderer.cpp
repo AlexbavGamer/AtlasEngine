@@ -2302,6 +2302,54 @@ void Renderer::createOffscreenResources() {
     if (vkCreateFramebuffer(m_Device, &framebufferInfo, nullptr, &m_OffscreenFramebuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create offscreen framebuffer!");
     }
+
+    if (vkCreateImage(m_Device, &imageInfo, nullptr, &m_GameOffscreenImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create game offscreen image!");
+    }
+
+    vkGetImageMemoryRequirements(m_Device, m_GameOffscreenImage, &memRequirements);
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_GameOffscreenImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate game offscreen image memory!");
+    }
+
+    vkBindImageMemory(m_Device, m_GameOffscreenImage, m_GameOffscreenImageMemory, 0);
+
+    viewInfo.image = m_GameOffscreenImage;
+    if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_GameOffscreenImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create game offscreen image view!");
+    }
+
+    if (vkCreateSampler(m_Device, &samplerInfo, nullptr, &m_GameOffscreenSampler) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create game offscreen sampler!");
+    }
+
+    if (vkCreateImage(m_Device, &depthImageInfo, nullptr, &m_GameOffscreenDepthImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create game offscreen depth image!");
+    }
+
+    vkGetImageMemoryRequirements(m_Device, m_GameOffscreenDepthImage, &depthMemRequirements);
+    depthAllocInfo.allocationSize = depthMemRequirements.size;
+    depthAllocInfo.memoryTypeIndex = findMemoryType(depthMemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    if (vkAllocateMemory(m_Device, &depthAllocInfo, nullptr, &m_GameOffscreenDepthImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate game offscreen depth image memory!");
+    }
+
+    vkBindImageMemory(m_Device, m_GameOffscreenDepthImage, m_GameOffscreenDepthImageMemory, 0);
+
+    depthViewInfo.image = m_GameOffscreenDepthImage;
+    if (vkCreateImageView(m_Device, &depthViewInfo, nullptr, &m_GameOffscreenDepthImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create game offscreen depth image view!");
+    }
+
+    VkImageView gameOffscreenAttachments[] = {m_GameOffscreenImageView, m_GameOffscreenDepthImageView};
+    framebufferInfo.pAttachments = gameOffscreenAttachments;
+    if (vkCreateFramebuffer(m_Device, &framebufferInfo, nullptr, &m_GameOffscreenFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create game offscreen framebuffer!");
+    }
 }
 
 
@@ -2364,6 +2412,15 @@ void Renderer::destroyOffscreenResources() {
     if (m_OffscreenDepthImage) vkDestroyImage(m_Device, m_OffscreenDepthImage, nullptr);
     if (m_OffscreenDepthImageMemory) vkFreeMemory(m_Device, m_OffscreenDepthImageMemory, nullptr);
 
+    if (m_GameOffscreenFramebuffer) vkDestroyFramebuffer(m_Device, m_GameOffscreenFramebuffer, nullptr);
+    if (m_GameOffscreenSampler) vkDestroySampler(m_Device, m_GameOffscreenSampler, nullptr);
+    if (m_GameOffscreenImageView) vkDestroyImageView(m_Device, m_GameOffscreenImageView, nullptr);
+    if (m_GameOffscreenImage) vkDestroyImage(m_Device, m_GameOffscreenImage, nullptr);
+    if (m_GameOffscreenImageMemory) vkFreeMemory(m_Device, m_GameOffscreenImageMemory, nullptr);
+    if (m_GameOffscreenDepthImageView) vkDestroyImageView(m_Device, m_GameOffscreenDepthImageView, nullptr);
+    if (m_GameOffscreenDepthImage) vkDestroyImage(m_Device, m_GameOffscreenDepthImage, nullptr);
+    if (m_GameOffscreenDepthImageMemory) vkFreeMemory(m_Device, m_GameOffscreenDepthImageMemory, nullptr);
+
     m_OffscreenFramebuffer = VK_NULL_HANDLE;
     m_OffscreenSampler = VK_NULL_HANDLE;
     m_OffscreenImageView = VK_NULL_HANDLE;
@@ -2373,6 +2430,16 @@ void Renderer::destroyOffscreenResources() {
     m_OffscreenDepthImageView = VK_NULL_HANDLE;
     m_OffscreenDepthImage = VK_NULL_HANDLE;
     m_OffscreenDepthImageMemory = VK_NULL_HANDLE;
+
+    m_GameOffscreenFramebuffer = VK_NULL_HANDLE;
+    m_GameOffscreenSampler = VK_NULL_HANDLE;
+    m_GameOffscreenImageView = VK_NULL_HANDLE;
+    m_GameOffscreenImage = VK_NULL_HANDLE;
+    m_GameOffscreenImageMemory = VK_NULL_HANDLE;
+    m_GameOffscreenImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_GameOffscreenDepthImageView = VK_NULL_HANDLE;
+    m_GameOffscreenDepthImage = VK_NULL_HANDLE;
+    m_GameOffscreenDepthImageMemory = VK_NULL_HANDLE;
 
     m_PickingFramebuffer = VK_NULL_HANDLE;
     m_PickingImageView = VK_NULL_HANDLE;
@@ -2437,12 +2504,21 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
         const Atlas::Anim::AnimationClip* clip = nullptr;
         float tSeconds = 0.0f;
+        int32_t lockedBoneIndex = -1;
+        bool lockTranslation = false;
+        bool lockRotation = false;
         if (registry.all_of<ECS::AnimationPlayerComponent>(skelEntity)) {
             const auto& ap = registry.get<ECS::AnimationPlayerComponent>(skelEntity).player;
             tSeconds = ap.timeSeconds;
 
             if (ap.clipIndex >= 0 && static_cast<size_t>(ap.clipIndex) < skc.clips.size()) {
                 clip = &skc.clips[static_cast<size_t>(ap.clipIndex)];
+            }
+
+            if (ap.enableRootMotion && skc.skeleton && skc.skeleton->rootMotionBoneIndex >= 0) {
+                lockedBoneIndex = skc.skeleton->rootMotionBoneIndex;
+                lockTranslation = true;
+                lockRotation = ap.rootMotionApplyRotation;
             }
         }
 
@@ -2455,7 +2531,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             }
         }
 
-        Atlas::Anim::evaluateGlobals(*skelPtr, clip, tSeconds, overrides, boneGlobalsScratch);
+        Atlas::Anim::evaluateGlobals(*skelPtr, clip, tSeconds, overrides, boneGlobalsScratch,
+            lockedBoneIndex, lockTranslation, lockRotation);
 
         uint32_t count = static_cast<uint32_t>(boneGlobalsScratch.size());
         if (count > MAX_BONES) {
@@ -2463,10 +2540,9 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         }
 
         bonePaletteScratch.resize(count);
-        const glm::mat4 meshInv = skinned.meshGlobalInverse;
         for (uint32_t i = 0; i < count; ++i) {
             glm::mat4 invBind = (i < skelPtr->inverseBind.size()) ? skelPtr->inverseBind[i] : glm::mat4(1.0f);
-            bonePaletteScratch[i] = meshInv * boneGlobalsScratch[i] * invBind;
+            bonePaletteScratch[i] = boneGlobalsScratch[i] * invBind;
         }
 
         const uint32_t offsetBytes = uploadBonePalette(bonePaletteScratch.data(), count);
@@ -2532,17 +2608,57 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
             glm::mat4 view = glm::mat4(1.0f);
             glm::mat4 proj = glm::mat4(1.0f);
 
-            auto cameraView = registry.view<Camera>();
-            if (!cameraView.empty()) {
-                auto cameraEntity = cameraView[0];
-                auto& camera = registry.get<Camera>(cameraEntity);
-                camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+            auto chooseCameraEntity = [&]() -> entt::entity {
+                if (m_PreferGameCamera) {
+                    auto gameView = registry.view<Camera, ECS::GameCameraComponent>();
+                    entt::entity fallback = entt::null;
+                    for (auto e : gameView) {
+                        const auto& gcc = gameView.get<ECS::GameCameraComponent>(e);
+                        if (fallback == entt::null) {
+                            fallback = e;
+                        }
+                        if (gcc.primary) {
+                            return e;
+                        }
+                    }
+                    if (fallback != entt::null) {
+                        return fallback;
+                    }
+                }
 
-                // Respect Near/Far from Camera component
-                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
-                proj[1][1] = -proj[1][1];
+                if (!m_PreferGameCamera) {
+                    auto editorCameraView = registry.view<EditorCamera>();
+                    if (editorCameraView.begin() != editorCameraView.end()) {
+                        return *editorCameraView.begin();
+                    }
+                }
 
-                view = camera.getViewMatrix();
+                auto cameraView = registry.view<Camera>();
+                if (cameraView.begin() != cameraView.end()) {
+                    return *cameraView.begin();
+                }
+
+                return entt::null;
+            };
+
+            entt::entity cameraEntity = chooseCameraEntity();
+            if (cameraEntity != entt::null) {
+                if (registry.all_of<Camera>(cameraEntity)) {
+                    auto& camera = registry.get<Camera>(cameraEntity);
+                    camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+
+                    // Respect Near/Far from Camera component
+                    proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
+                    proj[1][1] = -proj[1][1];
+
+                    view = camera.getViewMatrix();
+                } else if (registry.all_of<EditorCamera>(cameraEntity)) {
+                    auto& camera = registry.get<EditorCamera>(cameraEntity);
+                    camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+                    proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
+                    proj[1][1] = -proj[1][1];
+                    view = camera.getViewMatrix();
+                }
             }
 
             VkPipeline activePipeline = VK_NULL_HANDLE;
@@ -2617,303 +2733,294 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         m_PickingImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
-    // Render scene to offscreen
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = m_OffscreenRenderPass;
-    renderPassInfo.framebuffer = m_OffscreenFramebuffer;
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = m_SwapChainExtent;
-
-    VkClearValue offscreenClearValues[2];
-    offscreenClearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
-    offscreenClearValues[1].depthStencil = {1.0f, 0};
-    renderPassInfo.clearValueCount = 2;
-    renderPassInfo.pClearValues = offscreenClearValues;
-
-    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-    m_OffscreenImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    // Render scene entities
-    if (scene) {
-        auto& registry = scene->getRegistry();
-        auto meshView = registry.view<Mesh>();
-        
-        if (!meshView.empty()) {
-            // Get camera
-            glm::mat4 view = glm::mat4(1.0f);
-            glm::mat4 proj = glm::mat4(1.0f);
-            glm::vec3 cameraPos = glm::vec3(0.0f);
-
-            auto cameraView = registry.view<Camera>();
-            if (!cameraView.empty()) {
-                auto cameraEntity = cameraView[0];
-                auto& camera = registry.get<Camera>(cameraEntity);
-                camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
-
-                // Respect Near/Far from Camera component
-                proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
-                proj[1][1] = -proj[1][1];
-
-                view = camera.getViewMatrix();
-                cameraPos = camera.position;
+    auto choosePreviewCameraEntity = [&](entt::registry& registry, bool preferGameCamera) -> entt::entity {
+        if (preferGameCamera) {
+            auto gameView = registry.view<Camera, ECS::GameCameraComponent>();
+            entt::entity fallback = entt::null;
+            for (auto e : gameView) {
+                const auto& gcc = gameView.get<ECS::GameCameraComponent>(e);
+                if (fallback == entt::null) {
+                    fallback = e;
+                }
+                if (gcc.primary) {
+                    return e;
+                }
             }
+            if (fallback != entt::null) {
+                return fallback;
+            }
+        } else {
+            auto editorCameraView = registry.view<EditorCamera>();
+            if (editorCameraView.begin() != editorCameraView.end()) {
+                return *editorCameraView.begin();
+            }
+        }
 
-            struct DrawItem {
-                entt::entity entity;
-                float distSq;
-            };
+        auto cameraView = registry.view<Camera>();
+        if (cameraView.begin() != cameraView.end()) {
+            return *cameraView.begin();
+        }
 
-            std::vector<entt::entity> opaqueCull;
-            std::vector<entt::entity> opaqueFrontCull;
-            std::vector<entt::entity> opaqueNoCull;
-            std::vector<DrawItem> transparentCull;
-            std::vector<DrawItem> transparentFrontCull;
-            std::vector<DrawItem> transparentNoCull;
+        if (preferGameCamera) {
+            auto editorCameraView = registry.view<EditorCamera>();
+            if (editorCameraView.begin() != editorCameraView.end()) {
+                return *editorCameraView.begin();
+            }
+        }
 
-            for (auto entity : meshView) {
-                if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
-                    continue;
+        return entt::null;
+    };
+
+    auto renderPreviewPass = [&](VkFramebuffer framebuffer, VkImageLayout& imageLayout, bool preferGameCamera) {
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = m_OffscreenRenderPass;
+        renderPassInfo.framebuffer = framebuffer;
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = m_SwapChainExtent;
+
+        VkClearValue offscreenClearValues[2];
+        offscreenClearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
+        offscreenClearValues[1].depthStencil = {1.0f, 0};
+        renderPassInfo.clearValueCount = 2;
+        renderPassInfo.pClearValues = offscreenClearValues;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        if (scene) {
+            auto& registry = scene->getRegistry();
+            auto meshView = registry.view<Mesh>();
+
+            if (!meshView.empty()) {
+                glm::mat4 view = glm::mat4(1.0f);
+                glm::mat4 proj = glm::mat4(1.0f);
+                glm::vec3 cameraPos = glm::vec3(0.0f);
+
+                entt::entity cameraEntity = choosePreviewCameraEntity(registry, preferGameCamera);
+                if (cameraEntity != entt::null) {
+                    if (registry.all_of<Camera>(cameraEntity)) {
+                        auto& camera = registry.get<Camera>(cameraEntity);
+                        camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+                        proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
+                        proj[1][1] = -proj[1][1];
+                        view = camera.getViewMatrix();
+                        cameraPos = camera.position;
+                    } else if (registry.all_of<EditorCamera>(cameraEntity)) {
+                        auto& camera = registry.get<EditorCamera>(cameraEntity);
+                        camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+                        proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
+                        proj[1][1] = -proj[1][1];
+                        view = camera.getViewMatrix();
+                        cameraPos = camera.position;
+                    }
                 }
 
-                auto& mesh = registry.get<Mesh>(entity);
-                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
-                    continue;
+                struct DrawItem {
+                    entt::entity entity;
+                    float distSq;
+                };
+
+                std::vector<entt::entity> opaqueCull;
+                std::vector<entt::entity> opaqueFrontCull;
+                std::vector<entt::entity> opaqueNoCull;
+                std::vector<DrawItem> transparentCull;
+                std::vector<DrawItem> transparentFrontCull;
+                std::vector<DrawItem> transparentNoCull;
+
+                for (auto entity : meshView) {
+                    if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
+                        continue;
+                    }
+
+                    auto& mesh = registry.get<Mesh>(entity);
+                    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+                        continue;
+                    }
+
+                    if (registry.all_of<Renderable>(entity)) {
+                        auto& renderable = registry.get<Renderable>(entity);
+                        if (!renderable.visible) continue;
+                    }
+
+                    bool isBlend = false;
+                    bool doubleSided = false;
+                    bool invertCulling = false;
+                    if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                        auto& material = registry.get<ECS::MaterialComponent>(entity);
+                        isBlend = (material.alphaMode == ECS::MaterialComponent::AlphaMode::Blend);
+                        doubleSided = material.doubleSided;
+                        invertCulling = material.invertCulling;
+                    }
+
+                    if (isBlend) {
+                        glm::vec3 pos = glm::vec3(0.0f);
+                        if (scene && scene->hasTransform(entity)) {
+                            glm::mat4 model = scene->getCachedWorldTransform(entity);
+                            pos = glm::vec3(model[3]);
+                        }
+                        glm::vec3 d = pos - cameraPos;
+                        DrawItem item{entity, glm::dot(d, d)};
+                        if (doubleSided) {
+                            transparentNoCull.push_back(item);
+                        } else if (invertCulling) {
+                            transparentFrontCull.push_back(item);
+                        } else {
+                            transparentCull.push_back(item);
+                        }
+                    } else {
+                        if (doubleSided) {
+                            opaqueNoCull.push_back(entity);
+                        } else if (invertCulling) {
+                            opaqueFrontCull.push_back(entity);
+                        } else {
+                            opaqueCull.push_back(entity);
+                        }
+                    }
                 }
 
-                if (registry.all_of<Renderable>(entity)) {
-                    auto& renderable = registry.get<Renderable>(entity);
-                    if (!renderable.visible) continue;
-                }
+                std::sort(transparentCull.begin(), transparentCull.end(), [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
+                std::sort(transparentFrontCull.begin(), transparentFrontCull.end(), [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
+                std::sort(transparentNoCull.begin(), transparentNoCull.end(), [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
 
-                bool isBlend = false;
-                bool doubleSided = false;
-                bool invertCulling = false;
-                if (registry.all_of<ECS::MaterialComponent>(entity)) {
-                    auto& material = registry.get<ECS::MaterialComponent>(entity);
-                    isBlend = (material.alphaMode == ECS::MaterialComponent::AlphaMode::Blend);
-                    doubleSided = material.doubleSided;
-                    invertCulling = material.invertCulling;
-                }
+                auto drawEntity = [&](entt::entity entity) {
+                    auto& mesh = registry.get<Mesh>(entity);
+                    glm::mat4 model = glm::mat4(1.0f);
+                    glm::vec4 baseColor = glm::vec4(1.0f);
+                    glm::vec4 emissiveFactor = glm::vec4(0.0f);
+                    float metallic = 0.0f;
+                    float roughness = 0.5f;
+                    float alphaCutoff = 0.5f;
+                    int32_t albedoTexIndex = 0;
+                    int32_t normalTexIndex = 0;
+                    int32_t metallicRoughnessTexIndex = 0;
+                    int32_t aoTexIndex = 0;
+                    int32_t emissiveTexIndex = 0;
+                    int32_t flags = 0;
 
-                if (isBlend) {
-                    glm::vec3 pos = glm::vec3(0.0f);
                     if (scene && scene->hasTransform(entity)) {
-                        glm::mat4 model = scene->getCachedWorldTransform(entity);
-                        pos = glm::vec3(model[3]);
-                    }
-                    glm::vec3 d = pos - cameraPos;
-                    DrawItem item{entity, glm::dot(d, d)};
-                    if (doubleSided) {
-                        transparentNoCull.push_back(item);
-                    } else if (invertCulling) {
-                        transparentFrontCull.push_back(item);
-                    } else {
-                        transparentCull.push_back(item);
-                    }
-                } else {
-                    if (doubleSided) {
-                        opaqueNoCull.push_back(entity);
-                    } else if (invertCulling) {
-                        opaqueFrontCull.push_back(entity);
-                    } else {
-                        opaqueCull.push_back(entity);
-                    }
-                }
-            }
-
-            std::sort(transparentCull.begin(), transparentCull.end(),
-                [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
-
-            std::sort(transparentFrontCull.begin(), transparentFrontCull.end(),
-                [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
-
-            std::sort(transparentNoCull.begin(), transparentNoCull.end(),
-                [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
-
-            auto drawEntity = [&](entt::entity entity) {
-                auto& mesh = registry.get<Mesh>(entity);
-
-                glm::mat4 model = glm::mat4(1.0f);
-                glm::vec4 baseColor = glm::vec4(1.0f);
-                glm::vec4 emissiveFactor = glm::vec4(0.0f);
-                float metallic = 0.0f;
-                float roughness = 0.5f;
-                float alphaCutoff = 0.5f;
-
-                int32_t albedoTexIndex = 0;
-                int32_t normalTexIndex = 0;
-                int32_t metallicRoughnessTexIndex = 0;
-                int32_t aoTexIndex = 0;
-                int32_t emissiveTexIndex = 0;
-                int32_t flags = 0;
-
-                if (scene && scene->hasTransform(entity)) {
-                    model = scene->getCachedWorldTransform(entity);
-                }
-
-                if (registry.all_of<ECS::MaterialComponent>(entity)) {
-                    auto& material = registry.get<ECS::MaterialComponent>(entity);
-                    baseColor = material.baseColor;
-                    metallic = material.metallic;
-                    roughness = material.roughness;
-                    emissiveFactor = glm::vec4(material.emissiveFactor, 0.0f);
-                    alphaCutoff = material.alphaCutoff;
-
-                    if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) {
-                        flags |= (1 << 0);
-                        albedoTexIndex = material.albedoTextureIndex;
-                    }
-                    if (material.useNormalTexture && material.normalTextureIndex >= 0) {
-                        flags |= (1 << 1);
-                        normalTexIndex = material.normalTextureIndex;
-                    }
-                    if (material.useMetallicRoughnessTexture && material.metallicRoughnessTextureIndex >= 0) {
-                        flags |= (1 << 2);
-                        metallicRoughnessTexIndex = material.metallicRoughnessTextureIndex;
-                    }
-                    if (material.useAOTexture && material.aoTextureIndex >= 0) {
-                        flags |= (1 << 3);
-                        aoTexIndex = material.aoTextureIndex;
-                    }
-                    if (material.useEmissiveTexture && material.emissiveTextureIndex >= 0) {
-                        flags |= (1 << 4);
-                        emissiveTexIndex = material.emissiveTextureIndex;
+                        model = scene->getCachedWorldTransform(entity);
                     }
 
-                    if (material.doubleSided) {
-                        flags |= (1 << 5);
+                    if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                        auto& material = registry.get<ECS::MaterialComponent>(entity);
+                        baseColor = material.baseColor;
+                        metallic = material.metallic;
+                        roughness = material.roughness;
+                        emissiveFactor = glm::vec4(material.emissiveFactor, 0.0f);
+                        alphaCutoff = material.alphaCutoff;
+                        if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) { flags |= (1 << 0); albedoTexIndex = material.albedoTextureIndex; }
+                        if (material.useNormalTexture && material.normalTextureIndex >= 0) { flags |= (1 << 1); normalTexIndex = material.normalTextureIndex; }
+                        if (material.useMetallicRoughnessTexture && material.metallicRoughnessTextureIndex >= 0) { flags |= (1 << 2); metallicRoughnessTexIndex = material.metallicRoughnessTextureIndex; }
+                        if (material.useAOTexture && material.aoTextureIndex >= 0) { flags |= (1 << 3); aoTexIndex = material.aoTextureIndex; }
+                        if (material.useEmissiveTexture && material.emissiveTextureIndex >= 0) { flags |= (1 << 4); emissiveTexIndex = material.emissiveTextureIndex; }
+                        if (material.doubleSided) { flags |= (1 << 5); }
+                        flags |= (static_cast<int32_t>(material.alphaMode) & 3) << 8;
                     }
 
-                    flags |= (static_cast<int32_t>(material.alphaMode) & 3) << 8;
-                }
-
-                uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, entity);
-                VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
-
-                PushConstants pushConstants;
-                pushConstants.model = model;
-                pushConstants.view = view;
-                pushConstants.proj = proj;
-                pushConstants.baseColor = baseColor;
-                pushConstants.emissiveFactor = emissiveFactor;
-                pushConstants.metallic = metallic;
-                pushConstants.roughness = roughness;
-                pushConstants.alphaCutoff = alphaCutoff;
-                pushConstants.albedoTexIndex = albedoTexIndex;
-                pushConstants.normalTexIndex = normalTexIndex;
-                pushConstants.metallicRoughnessTexIndex = metallicRoughnessTexIndex;
-                pushConstants.aoTexIndex = aoTexIndex;
-                pushConstants.emissiveTexIndex = emissiveTexIndex;
-                pushConstants.flags = flags;
-
-                vkCmdPushConstants(commandBuffer, m_PipelineLayout,
-                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
-
-                VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
-                VkDeviceSize offsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
-            };
-
-            if (!opaqueCull.empty()) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
-                for (auto entity : opaqueCull) {
-                    drawEntity(entity);
-                }
-            }
-
-            if (!opaqueFrontCull.empty() && m_GraphicsPipelineFrontCull != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineFrontCull);
-                for (auto entity : opaqueFrontCull) {
-                    drawEntity(entity);
-                }
-            }
-
-            if (!opaqueNoCull.empty() && m_GraphicsPipelineNoCull != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineNoCull);
-                for (auto entity : opaqueNoCull) {
-                    drawEntity(entity);
-                }
-            }
-
-            if (!transparentCull.empty() && m_GraphicsPipelineBlend != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlend);
-                for (const auto& item : transparentCull) {
-                    drawEntity(item.entity);
-                }
-            }
-
-            if (!transparentFrontCull.empty() && m_GraphicsPipelineBlendFrontCull != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlendFrontCull);
-                for (const auto& item : transparentFrontCull) {
-                    drawEntity(item.entity);
-                }
-            }
-
-            if (!transparentNoCull.empty() && m_GraphicsPipelineBlendNoCull != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlendNoCull);
-                for (const auto& item : transparentNoCull) {
-                    drawEntity(item.entity);
-                }
-            }
-
-            if (!m_SelectedEntityIds.empty() && m_OutlinePipeline != VK_NULL_HANDLE) {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipeline);
-
-                for (uint32_t selId : m_SelectedEntityIds) {
-                    if (selId == UINT32_MAX) continue;
-
-                    entt::entity selected = static_cast<entt::entity>(selId);
-                    if (!registry.valid(selected) || !registry.all_of<Mesh>(selected)) {
-                        continue;
-                    }
-
-                    auto& selMesh = registry.get<Mesh>(selected);
-                    if (selMesh.vertexBuffer == VK_NULL_HANDLE || selMesh.indexBuffer == VK_NULL_HANDLE || selMesh.indexCount == 0) {
-                        continue;
-                    }
-
-                    glm::mat4 selModel = glm::mat4(1.0f);
-                    if (scene && scene->hasTransform(selected)) {
-                        selModel = scene->getCachedWorldTransform(selected);
-                    }
-
-                    OutlinePushConstants pc{};
-                    pc.model = selModel;
-                    pc.view = view;
-                    pc.proj = proj;
-                    pc.color = glm::vec4(1.0f, 0.7f, 0.1f, 1.0f);
-                    pc.width = 0.015f;
-
-                    vkCmdPushConstants(commandBuffer, m_OutlinePipelineLayout,
-                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(OutlinePushConstants), &pc);
-
-                    uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, selected);
+                    uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, entity);
                     VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
-                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
 
-                    VkBuffer vertexBuffers[] = {selMesh.vertexBuffer};
+                    PushConstants pushConstants{};
+                    pushConstants.model = model;
+                    pushConstants.view = view;
+                    pushConstants.proj = proj;
+                    pushConstants.baseColor = baseColor;
+                    pushConstants.emissiveFactor = emissiveFactor;
+                    pushConstants.metallic = metallic;
+                    pushConstants.roughness = roughness;
+                    pushConstants.alphaCutoff = alphaCutoff;
+                    pushConstants.albedoTexIndex = albedoTexIndex;
+                    pushConstants.normalTexIndex = normalTexIndex;
+                    pushConstants.metallicRoughnessTexIndex = metallicRoughnessTexIndex;
+                    pushConstants.aoTexIndex = aoTexIndex;
+                    pushConstants.emissiveTexIndex = emissiveTexIndex;
+                    pushConstants.flags = flags;
+                    vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
+
+                    VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
                     VkDeviceSize offsets[] = {0};
                     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                    vkCmdBindIndexBuffer(commandBuffer, selMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                    vkCmdDrawIndexed(commandBuffer, selMesh.indexCount, 1, 0, 0, 0);
+                    vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                    vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+                };
+
+                if (!opaqueCull.empty()) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
+                    for (auto entity : opaqueCull) drawEntity(entity);
+                }
+                if (!opaqueFrontCull.empty() && m_GraphicsPipelineFrontCull != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineFrontCull);
+                    for (auto entity : opaqueFrontCull) drawEntity(entity);
+                }
+                if (!opaqueNoCull.empty() && m_GraphicsPipelineNoCull != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineNoCull);
+                    for (auto entity : opaqueNoCull) drawEntity(entity);
+                }
+                if (!transparentCull.empty() && m_GraphicsPipelineBlend != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlend);
+                    for (const auto& item : transparentCull) drawEntity(item.entity);
+                }
+                if (!transparentFrontCull.empty() && m_GraphicsPipelineBlendFrontCull != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlendFrontCull);
+                    for (const auto& item : transparentFrontCull) drawEntity(item.entity);
+                }
+                if (!transparentNoCull.empty() && m_GraphicsPipelineBlendNoCull != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlendNoCull);
+                    for (const auto& item : transparentNoCull) drawEntity(item.entity);
+                }
+
+                if (!preferGameCamera && !m_SelectedEntityIds.empty() && m_OutlinePipeline != VK_NULL_HANDLE) {
+                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipeline);
+                    for (uint32_t selId : m_SelectedEntityIds) {
+                        if (selId == UINT32_MAX) continue;
+                        entt::entity selected = static_cast<entt::entity>(selId);
+                        if (!registry.valid(selected) || !registry.all_of<Mesh>(selected)) continue;
+                        auto& selMesh = registry.get<Mesh>(selected);
+                        if (selMesh.vertexBuffer == VK_NULL_HANDLE || selMesh.indexBuffer == VK_NULL_HANDLE || selMesh.indexCount == 0) continue;
+
+                        glm::mat4 selModel = glm::mat4(1.0f);
+                        if (scene && scene->hasTransform(selected)) {
+                            selModel = scene->getCachedWorldTransform(selected);
+                        }
+
+                        OutlinePushConstants pc{};
+                        pc.model = selModel;
+                        pc.view = view;
+                        pc.proj = proj;
+                        pc.color = glm::vec4(1.0f, 0.7f, 0.1f, 1.0f);
+                        pc.width = 0.015f;
+                        vkCmdPushConstants(commandBuffer, m_OutlinePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(OutlinePushConstants), &pc);
+
+                        uint32_t boneOffsetBytes = getBoneOffsetBytes(registry, selected);
+                        VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
+
+                        VkBuffer vertexBuffers[] = {selMesh.vertexBuffer};
+                        VkDeviceSize offsets[] = {0};
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+                        vkCmdBindIndexBuffer(commandBuffer, selMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(commandBuffer, selMesh.indexCount, 1, 0, 0, 0);
+                    }
                 }
             }
         }
-    }
 
-    vkCmdEndRenderPass(commandBuffer);
+        vkCmdEndRenderPass(commandBuffer);
+        imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    };
 
-    // Update layout tracking (render pass finalLayout is SHADER_READ_ONLY_OPTIMAL)
-    m_OffscreenImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    renderPreviewPass(m_OffscreenFramebuffer, m_OffscreenImageLayout, false);
+    renderPreviewPass(m_GameOffscreenFramebuffer, m_GameOffscreenImageLayout, true);
 
     // Render UI to swapchain
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = m_RenderPass;
     renderPassInfo.framebuffer = m_SwapChainFramebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = m_SwapChainExtent;
     VkClearValue clearValues[2];
     clearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
     clearValues[1].depthStencil = {1.0f, 0};
