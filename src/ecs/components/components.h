@@ -169,6 +169,42 @@ struct GameCameraComponent {
     bool primary = true;
 };
 
+enum class PhysicsMotionType : uint8_t {
+    Static = 0,
+    Dynamic = 1,
+    Kinematic = 2,
+};
+
+struct RigidBodyComponent {
+    PhysicsMotionType motionType = PhysicsMotionType::Static;
+    float friction = 0.5f;
+    float restitution = 0.0f;
+    float linearDamping = 0.05f;
+    float angularDamping = 0.05f;
+    float gravityScale = 1.0f;
+    bool continuous = false;
+    bool allowSleep = true;
+};
+
+struct BoxColliderComponent {
+    glm::vec3 halfExtent = glm::vec3(0.5f);
+    glm::vec3 offset = glm::vec3(0.0f);
+    bool isTrigger = false;
+};
+
+struct SphereColliderComponent {
+    float radius = 0.5f;
+    glm::vec3 offset = glm::vec3(0.0f);
+    bool isTrigger = false;
+};
+
+struct CapsuleColliderComponent {
+    float radius = 0.5f;
+    float halfHeight = 0.5f;
+    glm::vec3 offset = glm::vec3(0.0f);
+    bool isTrigger = false;
+};
+
 // Skeletal animation (V1): one skeleton shared across skinned meshes + one clip player per entity.
 struct SkeletonComponent {
     std::shared_ptr<Atlas::Anim::Skeleton> skeleton;

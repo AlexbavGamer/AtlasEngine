@@ -127,6 +127,8 @@ void pushVec(lua_State* L, const glm::vec4& v) {
     lua_pushnumber(L, v.w); lua_seti(L, -2, 4);
 }
 
+void pushEntityTable(lua_State* L, Scene* scene, entt::entity entity);
+
 ScriptEngine* getEngine(lua_State* L) {
     lua_getfield(L, LUA_REGISTRYINDEX, "Atlas.ScriptEnginePtr");
     ScriptEngine* engine = static_cast<ScriptEngine*>(lua_touserdata(L, -1));
@@ -194,49 +196,33 @@ int l_print(lua_State* L) {
     return 0;
 }
 
-int l_input_is_key_down(lua_State* L) {
+int l_game_input_is_key_down(lua_State* L) {
     ScriptEngine* engine = getEngine(L);
     const int key = static_cast<int>(luaL_checkinteger(L, 1));
-    if (!engine) {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-    lua_pushboolean(L, engine->getWindow() && glfwGetKey(engine->getWindow(), key) == GLFW_PRESS);
+    lua_pushboolean(L, engine && engine->getGameInput().isKeyDown(key));
     return 1;
 }
 
-int l_input_is_mouse_button_down(lua_State* L) {
+int l_game_input_is_mouse_button_down(lua_State* L) {
     ScriptEngine* engine = getEngine(L);
     const int button = static_cast<int>(luaL_checkinteger(L, 1));
-    if (!engine) {
-        lua_pushboolean(L, 0);
-        return 1;
-    }
-    lua_pushboolean(L, engine->getWindow() && glfwGetMouseButton(engine->getWindow(), button) == GLFW_PRESS);
+    lua_pushboolean(L, engine && engine->getGameInput().isMouseButtonDown(button));
     return 1;
 }
 
-int l_input_get_mouse_position(lua_State* L) {
+int l_game_input_get_mouse_position(lua_State* L) {
     ScriptEngine* engine = getEngine(L);
-    if (!engine) {
-        pushVec(L, glm::vec2(0.0f));
-        return 1;
-    }
-    pushVec(L, engine->getMousePosition());
+    pushVec(L, engine ? engine->getMousePosition() : glm::vec2(0.0f));
     return 1;
 }
 
-int l_input_get_mouse_delta(lua_State* L) {
+int l_game_input_get_mouse_delta(lua_State* L) {
     ScriptEngine* engine = getEngine(L);
-    if (!engine) {
-        pushVec(L, glm::vec2(0.0f));
-        return 1;
-    }
-    pushVec(L, engine->getMouseDelta());
+    pushVec(L, engine ? engine->getMouseDelta() : glm::vec2(0.0f));
     return 1;
 }
 
-int l_input_set_mouse_captured(lua_State* L) {
+int l_game_input_set_mouse_captured(lua_State* L) {
     ScriptEngine* engine = getEngine(L);
     const bool captured = lua_toboolean(L, 1) != 0;
     if (engine) {
@@ -245,7 +231,7 @@ int l_input_set_mouse_captured(lua_State* L) {
     return 0;
 }
 
-int l_input_is_mouse_captured(lua_State* L) {
+int l_game_input_is_mouse_captured(lua_State* L) {
     ScriptEngine* engine = getEngine(L);
     lua_pushboolean(L, engine && engine->isMouseCaptured());
     return 1;
@@ -330,6 +316,24 @@ int l_entity_destroy(lua_State* L) {
     return 0;
 }
 
+int l_entity_get_parent(lua_State* L) {
+    Scene* scene = getSceneUpvalue(L);
+    entt::entity entity = getEntityUpvalue(L);
+    if (!scene || !scene->getRegistry().valid(entity) || !scene->getRegistry().all_of<ECS::ParentComponent>(entity)) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    entt::entity parent = scene->getRegistry().get<ECS::ParentComponent>(entity).parent;
+    if (!scene->getRegistry().valid(parent)) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    pushEntityTable(L, scene, parent);
+    return 1;
+}
+
 glm::vec3 getTransformBasis(Transform transform, const glm::vec3& axis) {
     transform.position = glm::vec3(0.0f);
     transform.scale = glm::vec3(1.0f);
@@ -375,7 +379,12 @@ int l_entity_get_up(lua_State* L) {
 }
 
 void pushEntityTable(lua_State* L, Scene* scene, entt::entity entity) {
-    lua_createtable(L, 0, 10);
+    lua_createtable(L, 0, 11);
+
+    lua_pushlightuserdata(L, scene);
+    lua_pushinteger(L, static_cast<lua_Integer>(static_cast<uint32_t>(entity)));
+    lua_pushcclosure(L, l_entity_get_parent, 2);
+    lua_setfield(L, -2, "GetParent");
 
     lua_pushlightuserdata(L, scene);
     lua_pushinteger(L, static_cast<lua_Integer>(static_cast<uint32_t>(entity)));
@@ -553,12 +562,7 @@ bool ScriptEngine::initialize() {
 
 void ScriptEngine::shutdown() {
     destroyScene();
-    if (m_Window && m_MouseCaptured) {
-        glfwSetInputMode(m_Window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-    }
-    m_MouseCaptured = false;
-    m_HasMousePosition = false;
-    m_MouseDelta = glm::vec2(0.0f);
+    m_GameInput.setEnabled(false);
     if (m_Lua) {
         lua_close(m_Lua);
         m_Lua = nullptr;
@@ -583,13 +587,15 @@ bool ScriptEngine::registerBindings() {
     lua_setglobal(m_Lua, "Log");
 
     lua_newtable(m_Lua);
-    lua_pushcfunction(m_Lua, l_input_is_key_down); lua_setfield(m_Lua, -2, "IsKeyDown");
-    lua_pushcfunction(m_Lua, l_input_is_mouse_button_down); lua_setfield(m_Lua, -2, "IsMouseButtonDown");
-    lua_pushcfunction(m_Lua, l_input_get_mouse_position); lua_setfield(m_Lua, -2, "GetMousePosition");
-    lua_pushcfunction(m_Lua, l_input_get_mouse_delta); lua_setfield(m_Lua, -2, "GetMouseDelta");
-    lua_pushcfunction(m_Lua, l_input_set_mouse_captured); lua_setfield(m_Lua, -2, "SetMouseCaptured");
-    lua_pushcfunction(m_Lua, l_input_is_mouse_captured); lua_setfield(m_Lua, -2, "IsMouseCaptured");
+    lua_pushcfunction(m_Lua, l_game_input_is_key_down); lua_setfield(m_Lua, -2, "IsKeyDown");
+    lua_pushcfunction(m_Lua, l_game_input_is_mouse_button_down); lua_setfield(m_Lua, -2, "IsMouseButtonDown");
+    lua_pushcfunction(m_Lua, l_game_input_get_mouse_position); lua_setfield(m_Lua, -2, "GetMousePosition");
+    lua_pushcfunction(m_Lua, l_game_input_get_mouse_delta); lua_setfield(m_Lua, -2, "GetMouseDelta");
+    lua_pushcfunction(m_Lua, l_game_input_set_mouse_captured); lua_setfield(m_Lua, -2, "SetMouseCaptured");
+    lua_pushcfunction(m_Lua, l_game_input_is_mouse_captured); lua_setfield(m_Lua, -2, "IsMouseCaptured");
+    lua_pushvalue(m_Lua, -1);
     lua_setglobal(m_Lua, "Input");
+    lua_setglobal(m_Lua, "GameInput");
 
     lua_newtable(m_Lua);
     lua_pushinteger(m_Lua, GLFW_KEY_W); lua_setfield(m_Lua, -2, "W");
@@ -649,44 +655,37 @@ void ScriptEngine::callStart() {
     }
 }
 
+void ScriptEngine::setWindow(GLFWwindow* window) {
+    m_Window = window;
+    m_GameInput.setWindow(window);
+}
+
+void ScriptEngine::setInputEnabled(bool enabled) {
+    m_GameInput.setEnabled(enabled);
+}
+
+bool ScriptEngine::isInputEnabled() const {
+    return m_GameInput.isEnabled();
+}
+
 void ScriptEngine::updateMouseState() {
-    if (!m_Window) {
-        m_MousePosition = glm::vec2(0.0f);
-        m_MouseDelta = glm::vec2(0.0f);
-        m_HasMousePosition = false;
-        return;
-    }
-
-    double mouseX = 0.0;
-    double mouseY = 0.0;
-    glfwGetCursorPos(m_Window, &mouseX, &mouseY);
-    glm::vec2 current(static_cast<float>(mouseX), static_cast<float>(mouseY));
-
-    if (!m_HasMousePosition) {
-        m_MousePosition = current;
-        m_MouseDelta = glm::vec2(0.0f);
-        m_HasMousePosition = true;
-        return;
-    }
-
-    m_MouseDelta = current - m_MousePosition;
-    m_MousePosition = current;
+    m_GameInput.update();
 }
 
 void ScriptEngine::setMouseCaptured(bool captured) {
-    m_MouseCaptured = captured;
-    if (!m_Window) {
-        return;
-    }
+    m_GameInput.setMouseCaptured(captured);
+}
 
-    glfwSetInputMode(m_Window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+bool ScriptEngine::isMouseCaptured() const {
+    return m_GameInput.isMouseCaptured();
+}
 
-    double mouseX = 0.0;
-    double mouseY = 0.0;
-    glfwGetCursorPos(m_Window, &mouseX, &mouseY);
-    m_MousePosition = glm::vec2(static_cast<float>(mouseX), static_cast<float>(mouseY));
-    m_MouseDelta = glm::vec2(0.0f);
-    m_HasMousePosition = true;
+glm::vec2 ScriptEngine::getMousePosition() const {
+    return m_GameInput.getMousePosition();
+}
+
+glm::vec2 ScriptEngine::getMouseDelta() const {
+    return m_GameInput.getMouseDelta();
 }
 
 void ScriptEngine::update(float deltaTime) {

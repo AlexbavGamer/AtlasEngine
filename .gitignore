@@ -6,6 +6,8 @@ out/
 
 imgui.ini
 
+MyProject/
+
 # IDE
 # .vscode/
 .vs/

@@ -543,7 +543,9 @@ void UIManager::render(ImTextureID viewportTexture, ImTextureID gameViewportText
         }
     }
 
-    // Reset every frame; renderViewport()/renderGameViewport() set these when visible.
+    // Keep previous frame focus info so Play and game input can react to prior focus.
+    m_ViewportFocusedPrevFrame = m_ViewportFocusedLastFrame;
+    m_GameViewportFocusedPrevFrame = m_GameViewportFocusedLastFrame;
     m_ViewportAllowCameraInput = false;
     m_ViewportFocusedLastFrame = false;
     m_GameViewportFocusedLastFrame = false;
@@ -903,9 +905,27 @@ void UIManager::renderViewport(ImTextureID viewportTexture) {
     if (primary != entt::null && m_Scene && m_Scene->getRegistry().valid(primary) &&
         (m_Scene->getRegistry().all_of<Camera>(primary) || m_Scene->getRegistry().all_of<EditorCamera>(primary))) {
         auto& registry = m_Scene->getRegistry();
-        const CameraBase& cam = registry.all_of<Camera>(primary)
-            ? static_cast<const CameraBase&>(registry.get<Camera>(primary))
-            : static_cast<const CameraBase&>(registry.get<EditorCamera>(primary));
+        CameraBase cam;
+        if (registry.all_of<Camera>(primary)) {
+            cam = registry.get<Camera>(primary);
+
+            if (registry.all_of<Atlas::ECS::GameCameraComponent>(primary) && registry.all_of<Transform>(primary)) {
+                glm::mat4 world = m_Scene->getWorldTransform(primary);
+                glm::vec3 position = glm::vec3(world[3]);
+                glm::vec3 forwardFromTransform = glm::vec3(world * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+                glm::vec3 upFromTransform = glm::vec3(world * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
+
+                if (glm::length(forwardFromTransform) > 1e-5f) {
+                    cam.position = position;
+                    cam.target = position + glm::normalize(forwardFromTransform);
+                }
+                if (glm::length(upFromTransform) > 1e-5f) {
+                    cam.up = glm::normalize(upFromTransform);
+                }
+            }
+        } else {
+            cam = registry.get<EditorCamera>(primary);
+        }
 
         glm::vec3 forward = glm::normalize(cam.target - cam.position);
         if (glm::length(forward) < 1e-5f) {
@@ -1185,7 +1205,7 @@ void UIManager::renderGameViewport(ImTextureID viewportTexture) {
     ImGui::Image(viewportTexture, contentSize);
 
     ImGuiIO& io = ImGui::GetIO();
-    const bool gameFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    bool gameFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     m_GameViewportFocusedLastFrame = gameFocused;
 
     if (gameFocused && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -1193,6 +1213,7 @@ void UIManager::renderGameViewport(ImTextureID viewportTexture) {
             onReleaseGameFocus();
         }
         ImGui::SetWindowFocus("Toolbar");
+        m_GameViewportFocusedLastFrame = false;
     }
 
     ImGui::End();
@@ -2527,8 +2548,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             }
         }
 
+        auto& registry = m_Scene->getRegistry();
         if (m_Scene->getRegistry().all_of<Camera>(selectedEntity) || m_Scene->getRegistry().all_of<EditorCamera>(selectedEntity)) {
-            auto& registry = m_Scene->getRegistry();
             const bool isRuntimeCamera = registry.all_of<Camera>(selectedEntity);
             const bool isEditorCamera = registry.all_of<EditorCamera>(selectedEntity);
 
@@ -2616,6 +2637,90 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 renderComponent(m_Scene->getRegistry().get<Camera>(selectedEntity), "Runtime Camera");
             } else if (isEditorCamera) {
                 renderComponent(m_Scene->getRegistry().get<EditorCamera>(selectedEntity), "Editor Camera");
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const bool hasRigidBody = registry.all_of<Atlas::ECS::RigidBodyComponent>(selectedEntity);
+            const bool hasBox = registry.all_of<Atlas::ECS::BoxColliderComponent>(selectedEntity);
+            const bool hasSphere = registry.all_of<Atlas::ECS::SphereColliderComponent>(selectedEntity);
+            const bool hasCapsule = registry.all_of<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
+            const bool hasAnyCollider = hasBox || hasSphere || hasCapsule;
+
+            if (!hasRigidBody) {
+                if (ImGui::Button("Add Rigid Body")) {
+                    registry.emplace<Atlas::ECS::RigidBodyComponent>(selectedEntity);
+                }
+            } else {
+                auto& rb = registry.get<Atlas::ECS::RigidBodyComponent>(selectedEntity);
+                const char* motionItems[] = {"Static", "Dynamic", "Kinematic"};
+                int motion = static_cast<int>(rb.motionType);
+                if (ImGui::Combo("Motion Type", &motion, motionItems, IM_ARRAYSIZE(motionItems))) {
+                    rb.motionType = static_cast<Atlas::ECS::PhysicsMotionType>(motion);
+                }
+                ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f, "%.2f");
+                ImGui::DragFloat("Restitution", &rb.restitution, 0.01f, 0.0f, 2.0f, "%.2f");
+                ImGui::DragFloat("Linear Damping", &rb.linearDamping, 0.01f, 0.0f, 10.0f, "%.2f");
+                ImGui::DragFloat("Angular Damping", &rb.angularDamping, 0.01f, 0.0f, 10.0f, "%.2f");
+                ImGui::DragFloat("Gravity Scale", &rb.gravityScale, 0.01f, -10.0f, 10.0f, "%.2f");
+                ImGui::Checkbox("Continuous Collision", &rb.continuous);
+                ImGui::Checkbox("Allow Sleep", &rb.allowSleep);
+                if (ImGui::Button("Remove Rigid Body")) {
+                    registry.remove<Atlas::ECS::RigidBodyComponent>(selectedEntity);
+                }
+            }
+
+            ImGui::SeparatorText("Collider");
+            if (!hasAnyCollider) {
+                if (ImGui::Button("Add Box Collider")) {
+                    Atlas::ECS::BoxColliderComponent c;
+                    if (registry.all_of<::Mesh>(selectedEntity)) {
+                        const auto& mesh = registry.get<::Mesh>(selectedEntity);
+                        if (mesh.hasBounds) {
+                            c.halfExtent = glm::max((mesh.boundsMax - mesh.boundsMin) * 0.5f, glm::vec3(0.01f));
+                        }
+                    }
+                    registry.emplace<Atlas::ECS::BoxColliderComponent>(selectedEntity, c);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add Sphere Collider")) {
+                    registry.emplace<Atlas::ECS::SphereColliderComponent>(selectedEntity);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add Capsule Collider")) {
+                    registry.emplace<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
+                }
+            }
+
+            if (hasBox) {
+                auto& c = registry.get<Atlas::ECS::BoxColliderComponent>(selectedEntity);
+                ImGui::DragFloat3("Box Half Extent", &c.halfExtent.x, 0.01f, 0.01f, 100.0f, "%.2f");
+                ImGui::DragFloat3("Box Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                ImGui::Checkbox("Box Trigger", &c.isTrigger);
+                if (ImGui::Button("Remove Box Collider")) {
+                    registry.remove<Atlas::ECS::BoxColliderComponent>(selectedEntity);
+                }
+            }
+
+            if (hasSphere) {
+                auto& c = registry.get<Atlas::ECS::SphereColliderComponent>(selectedEntity);
+                ImGui::DragFloat("Sphere Radius", &c.radius, 0.01f, 0.01f, 100.0f, "%.2f");
+                ImGui::DragFloat3("Sphere Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                ImGui::Checkbox("Sphere Trigger", &c.isTrigger);
+                if (ImGui::Button("Remove Sphere Collider")) {
+                    registry.remove<Atlas::ECS::SphereColliderComponent>(selectedEntity);
+                }
+            }
+
+            if (hasCapsule) {
+                auto& c = registry.get<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
+                ImGui::DragFloat("Capsule Radius", &c.radius, 0.01f, 0.01f, 100.0f, "%.2f");
+                ImGui::DragFloat("Capsule Half Height", &c.halfHeight, 0.01f, 0.01f, 100.0f, "%.2f");
+                ImGui::DragFloat3("Capsule Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                ImGui::Checkbox("Capsule Trigger", &c.isTrigger);
+                if (ImGui::Button("Remove Capsule Collider")) {
+                    registry.remove<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
+                }
             }
         }
     } else {

@@ -2797,22 +2797,28 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 glm::mat4 proj = glm::mat4(1.0f);
                 glm::vec3 cameraPos = glm::vec3(0.0f);
 
-                entt::entity cameraEntity = choosePreviewCameraEntity(registry, preferGameCamera);
-                if (cameraEntity != entt::null) {
-                    if (registry.all_of<Camera>(cameraEntity)) {
-                        auto& camera = registry.get<Camera>(cameraEntity);
-                        camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
-                        proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
-                        proj[1][1] = -proj[1][1];
-                        view = camera.getViewMatrix();
-                        cameraPos = camera.position;
-                    } else if (registry.all_of<EditorCamera>(cameraEntity)) {
-                        auto& camera = registry.get<EditorCamera>(cameraEntity);
-                        camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
-                        proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
-                        proj[1][1] = -proj[1][1];
-                        view = camera.getViewMatrix();
-                        cameraPos = camera.position;
+                if (!preferGameCamera && m_ScenePreviewCameraOverrideEnabled) {
+                    view = m_ScenePreviewView;
+                    proj = m_ScenePreviewProj;
+                    cameraPos = m_ScenePreviewPosition;
+                } else {
+                    entt::entity cameraEntity = choosePreviewCameraEntity(registry, preferGameCamera);
+                    if (cameraEntity != entt::null) {
+                        if (registry.all_of<Camera>(cameraEntity)) {
+                            auto& camera = registry.get<Camera>(cameraEntity);
+                            camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+                            proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
+                            proj[1][1] = -proj[1][1];
+                            view = camera.getViewMatrix();
+                            cameraPos = camera.position;
+                        } else if (registry.all_of<EditorCamera>(cameraEntity)) {
+                            auto& camera = registry.get<EditorCamera>(cameraEntity);
+                            camera.aspectRatio = static_cast<float>(m_SwapChainExtent.width) / static_cast<float>(m_SwapChainExtent.height);
+                            proj = glm::perspective(glm::radians(camera.fov), camera.aspectRatio, camera.nearPlane, camera.farPlane);
+                            proj[1][1] = -proj[1][1];
+                            view = camera.getViewMatrix();
+                            cameraPos = camera.position;
+                        }
                     }
                 }
 

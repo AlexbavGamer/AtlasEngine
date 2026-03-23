@@ -116,6 +116,12 @@ public:
     using RenderCallback = std::function<void(VkCommandBuffer commandBuffer)>;
     void setRenderCallback(RenderCallback callback) { m_RenderCallback = std::move(callback); }
     void setPreferGameCamera(bool prefer) { m_PreferGameCamera = prefer; }
+    void setScenePreviewCameraOverride(bool enabled, const glm::mat4& view, const glm::mat4& proj, const glm::vec3& position) {
+        m_ScenePreviewCameraOverrideEnabled = enabled;
+        m_ScenePreviewView = view;
+        m_ScenePreviewProj = proj;
+        m_ScenePreviewPosition = position;
+    }
 
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
     uint32_t bindTexture(VkImageView imageView, VkSampler sampler);
@@ -337,6 +343,10 @@ private:
     ResizeCallback m_ResizeCallback;
     RenderCallback m_RenderCallback;
     bool m_PreferGameCamera = false;
+    bool m_ScenePreviewCameraOverrideEnabled = false;
+    glm::mat4 m_ScenePreviewView = glm::mat4(1.0f);
+    glm::mat4 m_ScenePreviewProj = glm::mat4(1.0f);
+    glm::vec3 m_ScenePreviewPosition{0.0f};
 
     struct DeletionQueue {
         std::deque<std::function<void()>> deletors;

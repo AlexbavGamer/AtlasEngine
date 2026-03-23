@@ -23,6 +23,7 @@
 #include "../renderer/renderer.h"
 #include "../scene/scene.h"
 #include "../scene/scene_serializer.h"
+#include "../physics/physics_system.h"
 #include "../scripting/script_engine.h"
 #include "../ui/ui_manager.h"
 #include "../utils/camera_controller.h"
@@ -243,6 +244,9 @@ EditorApp::EditorApp() {
     m_ProjectManager = std::make_unique<::ProjectManager>();
     m_UIManager->setProjectManager(m_ProjectManager.get());
 
+    m_PhysicsSystem = std::make_unique<Atlas::Physics::PhysicsSystem>();
+    m_PhysicsSystem->initialize();
+
     m_ScriptEngine = std::make_unique<Atlas::Scripting::ScriptEngine>();
     m_ScriptEngine->setWindow(m_Window->getGLFWWindow());
     m_ScriptEngine->initialize();
@@ -263,6 +267,7 @@ EditorApp::EditorApp() {
     m_UIManager->setOnReleaseGameFocus([this]() {
         if (m_ScriptEngine) {
             m_ScriptEngine->setMouseCaptured(false);
+            m_ScriptEngine->setInputEnabled(false);
         }
     });
     m_UIManager->setOnCreatePrimitive([this](const std::string& primitiveType, Entity parent) { createPrimitiveEntity(primitiveType, parent); });
@@ -301,7 +306,7 @@ EditorApp::~EditorApp() {
     }
 }
 
-void EditorApp::resetEditorScene() {
+void EditorApp::resetEditorScene(bool createEditorCamera) {
     stopPlayMode();
 
     m_Scene = std::make_unique<Scene>();
@@ -317,7 +322,9 @@ void EditorApp::resetEditorScene() {
         m_WorldPartition->markDirty();
     }
 
-    ensureEditorCamera();
+    if (createEditorCamera) {
+        ensureEditorCamera();
+    }
     rebindEditorCameraController();
 }
 
@@ -388,7 +395,7 @@ bool EditorApp::loadProjectScene() {
         return false;
     }
 
-    resetEditorScene();
+    resetEditorScene(false);
 
     const std::string scenePath = m_ProjectManager->getDefaultScenePath();
     SerializedScene data;
@@ -397,6 +404,11 @@ bool EditorApp::loadProjectScene() {
         entityMap.reserve(data.entities.size());
 
         auto& registry = m_Scene->getRegistry();
+
+        auto isLegacyEditorCamera = [&](const SerializedEntity& src) {
+            return src.name == "Editor Camera" && src.hasCamera && !src.hasGameCamera;
+        };
+
         for (const auto& src : data.entities) {
             entt::entity entity = entt::null;
             if (!src.primitiveType.empty()) {
@@ -418,8 +430,20 @@ bool EditorApp::loadProjectScene() {
             if (src.hasRenderable) {
                 registry.emplace_or_replace<Renderable>(entity, src.renderable);
             }
-            if (src.hasCamera) {
-                registry.emplace_or_replace<Camera>(entity, src.camera);
+            if (src.hasEditorCamera) {
+                registry.emplace_or_replace<EditorCamera>(entity, src.editorCamera);
+                if (registry.all_of<Camera>(entity)) {
+                    registry.remove<Camera>(entity);
+                }
+            } else if (src.hasCamera) {
+                if (isLegacyEditorCamera(src)) {
+                    registry.emplace_or_replace<EditorCamera>(entity, EditorCamera{src.camera});
+                    if (registry.all_of<Camera>(entity)) {
+                        registry.remove<Camera>(entity);
+                    }
+                } else {
+                    registry.emplace_or_replace<Camera>(entity, src.camera);
+                }
             } else if (registry.all_of<Camera>(entity) && src.primitiveType.empty()) {
                 registry.remove<Camera>(entity);
             }
@@ -430,6 +454,18 @@ bool EditorApp::loadProjectScene() {
             }
             if (src.hidden) {
                 registry.emplace_or_replace<ECS::EditorHiddenComponent>(entity, ECS::EditorHiddenComponent{true});
+            }
+            if (src.hasRigidBody) {
+                registry.emplace_or_replace<ECS::RigidBodyComponent>(entity, src.rigidBody);
+            }
+            if (src.hasBoxCollider) {
+                registry.emplace_or_replace<ECS::BoxColliderComponent>(entity, src.boxCollider);
+            }
+            if (src.hasSphereCollider) {
+                registry.emplace_or_replace<ECS::SphereColliderComponent>(entity, src.sphereCollider);
+            }
+            if (src.hasCapsuleCollider) {
+                registry.emplace_or_replace<ECS::CapsuleColliderComponent>(entity, src.capsuleCollider);
             }
             if (src.hasMaterial) {
                 ECS::MaterialComponent material;
@@ -540,6 +576,10 @@ void EditorApp::cloneSceneToRuntime() {
     copyIfPresent(Atlas::ECS::ScriptComponent{});
     copyIfPresent(Atlas::ECS::FollowCameraComponent{});
     copyIfPresent(Atlas::ECS::GameCameraComponent{});
+    copyIfPresent(Atlas::ECS::RigidBodyComponent{});
+    copyIfPresent(Atlas::ECS::BoxColliderComponent{});
+    copyIfPresent(Atlas::ECS::SphereColliderComponent{});
+    copyIfPresent(Atlas::ECS::CapsuleColliderComponent{});
     copyIfPresent(Atlas::ECS::SkeletonComponent{});
     copyIfPresent(Atlas::ECS::AnimationPlayerComponent{});
     copyIfPresent(Atlas::ECS::BonePoseOverrideComponent{});
@@ -612,6 +652,18 @@ void EditorApp::cloneSceneToRuntime() {
     m_RuntimeScene->updateWorldTransforms();
 }
 
+void EditorApp::rebuildRuntimePhysics() {
+    if (m_PhysicsSystem) {
+        m_PhysicsSystem->rebuild(m_RuntimeScene.get());
+    }
+}
+
+void EditorApp::updateRuntimePhysics(Scene* scene, float deltaTime) {
+    if (m_PhysicsSystem) {
+        m_PhysicsSystem->step(scene, deltaTime);
+    }
+}
+
 void EditorApp::startPlayMode() {
     const bool focusGameOnPlay = (m_UIManager && m_UIManager->wasViewportFocused());
 
@@ -619,8 +671,17 @@ void EditorApp::startPlayMode() {
     m_GameModePlaying = (m_RuntimeScene != nullptr);
     m_GameModePaused = false;
 
+    if (m_GameModePlaying && m_UIManager) {
+        m_UIManager->setScene(m_RuntimeScene.get());
+        m_UIManager->clearSelection();
+    }
+
     if (m_GameModePlaying && focusGameOnPlay && m_UIManager) {
         m_UIManager->requestFocusGameViewport();
+    }
+
+    if (m_GameModePlaying) {
+        rebuildRuntimePhysics();
     }
 
     if (m_GameModePlaying && m_ScriptEngine) {
@@ -643,11 +704,20 @@ void EditorApp::togglePausePlayMode() {
 
 void EditorApp::stopPlayMode() {
     if (m_ScriptEngine) {
+        m_ScriptEngine->setInputEnabled(false);
         m_ScriptEngine->destroyScene();
+    }
+    if (m_PhysicsSystem) {
+        m_PhysicsSystem->clear();
     }
     m_GameModePaused = false;
     m_GameModePlaying = false;
     m_RuntimeScene.reset();
+
+    if (m_UIManager) {
+        m_UIManager->setScene(m_Scene.get());
+        m_UIManager->clearSelection();
+    }
 }
 
 void EditorApp::updateGameCameras(Scene* scene) {
@@ -662,14 +732,19 @@ void EditorApp::updateGameCameras(Scene* scene) {
 
         glm::mat4 world = scene->getWorldTransform(entity);
         glm::vec3 position = glm::vec3(world[3]);
-        glm::vec3 forward = glm::normalize(glm::vec3(world * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
-        glm::vec3 up = glm::normalize(glm::vec3(world * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f)));
+        glm::vec3 forward = glm::vec3(world * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
+        glm::vec3 up = glm::vec3(world * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
 
         if (glm::length(forward) < 1e-5f) {
             forward = glm::vec3(0.0f, 0.0f, -1.0f);
+        } else {
+            forward = glm::normalize(forward);
         }
+
         if (glm::length(up) < 1e-5f) {
             up = glm::vec3(0.0f, 1.0f, 0.0f);
+        } else {
+            up = glm::normalize(up);
         }
 
         camera.position = position;
@@ -1554,7 +1629,7 @@ void EditorApp::run() {
             m_Renderer->beginFrame();
         }
 
-        if (!m_GameModePlaying && m_CameraController && !m_UIManager->isGizmoUsing()) {
+        if (m_CameraController && !m_UIManager->isGizmoUsing()) {
             bool uiAllow = (m_UIManager && m_UIManager->allowViewportCameraInput());
             bool allow = uiAllow || m_CameraController->isCapturing();
             m_CameraController->update(deltaTime, allow);
@@ -1563,53 +1638,46 @@ void EditorApp::run() {
         m_ImGuiManager->newFrame();
         ImGuizmo::BeginFrame();
 
-        Scene* cameraScene = m_GameModePlaying ? m_RuntimeScene.get() : m_Scene.get();
-        if (m_UIManager && cameraScene) {
-            auto& registry = cameraScene->getRegistry();
+        if (m_UIManager) {
+            bool haveScenePreviewCamera = false;
+            glm::mat4 scenePreviewView(1.0f);
+            glm::mat4 scenePreviewProj(1.0f);
+            glm::mat4 scenePreviewRenderProj(1.0f);
+            glm::vec3 scenePreviewPos(0.0f);
 
-            auto chooseRuntimeCameraEntity = [&]() -> entt::entity {
-                if (m_GameModePlaying) {
-                    auto gameCams = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
-                    entt::entity fallback = entt::null;
-                    for (auto e : gameCams) {
-                        const auto& gcc = gameCams.get<Atlas::ECS::GameCameraComponent>(e);
-                        if (fallback == entt::null) {
-                            fallback = e;
-                        }
-                        if (gcc.primary) {
-                            return e;
-                        }
-                    }
-                    if (fallback != entt::null) {
-                        return fallback;
-                    }
-                }
-
-                auto camView = registry.view<Camera>();
-                return (camView.begin() == camView.end()) ? entt::null : *camView.begin();
-            };
-
-            entt::entity camEnt = m_GameModePlaying ? chooseRuntimeCameraEntity() : entt::null;
-            if (camEnt == entt::null && !m_GameModePlaying) {
-                auto editorCamView = registry.view<EditorCamera>();
+            if (m_Scene) {
+                auto& editorRegistry = m_Scene->getRegistry();
+                auto editorCamView = editorRegistry.view<EditorCamera>();
                 if (editorCamView.begin() != editorCamView.end()) {
-                    camEnt = *editorCamView.begin();
-                    auto& cam = registry.get<EditorCamera>(camEnt);
+                    auto camEnt = *editorCamView.begin();
+                    auto& cam = editorRegistry.get<EditorCamera>(camEnt);
                     VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
                     if (extent.width > 0 && extent.height > 0) {
                         cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
                     }
-                    m_UIManager->setCameraMatrices(cam.getViewMatrix(), cam.getProjectionMatrix());
+                    scenePreviewView = cam.getViewMatrix();
+                    scenePreviewProj = cam.getProjectionMatrix();
+                    scenePreviewRenderProj = scenePreviewProj;
+                    scenePreviewRenderProj[1][1] = -scenePreviewRenderProj[1][1];
+                    scenePreviewPos = cam.position;
+                    haveScenePreviewCamera = true;
+                    m_UIManager->setCameraMatrices(scenePreviewView, scenePreviewProj);
                 }
-            } else if (camEnt != entt::null) {
-                auto& cam = registry.get<Camera>(camEnt);
-                VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
-                if (extent.width > 0 && extent.height > 0) {
-                    cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-                }
-                m_UIManager->setCameraMatrices(cam.getViewMatrix(), cam.getProjectionMatrix());
-            } else if (!m_GameModePlaying && m_CameraController) {
-                m_UIManager->setCameraMatrices(m_CameraController->getViewMatrix(), m_CameraController->getProjMatrix());
+            }
+
+            if (!haveScenePreviewCamera && m_CameraController) {
+                scenePreviewView = m_CameraController->getViewMatrix();
+                scenePreviewProj = m_CameraController->getProjMatrix();
+                scenePreviewRenderProj = scenePreviewProj;
+                scenePreviewRenderProj[1][1] = -scenePreviewRenderProj[1][1];
+                glm::mat4 invView = glm::inverse(scenePreviewView);
+                scenePreviewPos = glm::vec3(invView[3]);
+                haveScenePreviewCamera = true;
+                m_UIManager->setCameraMatrices(scenePreviewView, scenePreviewProj);
+            }
+
+            if (m_Renderer) {
+                m_Renderer->setScenePreviewCameraOverride(haveScenePreviewCamera, scenePreviewView, scenePreviewRenderProj, scenePreviewPos);
             }
         }
 
@@ -1647,6 +1715,11 @@ void EditorApp::run() {
         renderImportOptionsPopup();
         processPendingModels();
 
+        if (m_ScriptEngine) {
+            const bool gameInputEnabled = m_GameModePlaying && !m_GameModePaused && m_UIManager && m_UIManager->wasGameViewportFocused();
+            m_ScriptEngine->setInputEnabled(gameInputEnabled);
+        }
+
         if (m_GameModePlaying) {
             updateGameCameras(m_RuntimeScene.get());
             if (!m_GameModePaused) {
@@ -1654,6 +1727,7 @@ void EditorApp::run() {
                 if (m_ScriptEngine) {
                     m_ScriptEngine->update(deltaTime);
                 }
+                updateRuntimePhysics(m_RuntimeScene.get(), deltaTime);
             }
             updateFollowCameras(m_RuntimeScene.get(), deltaTime);
         } else {

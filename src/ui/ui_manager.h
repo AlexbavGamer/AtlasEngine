@@ -54,7 +54,8 @@ public:
     void setOnStop(std::function<void()> callback) { onStop = std::move(callback); }
     void setOnReleaseGameFocus(std::function<void()> callback) { onReleaseGameFocus = std::move(callback); }
     void requestFocusGameViewport() { m_RequestFocusGameViewport = true; }
-    bool wasViewportFocused() const { return m_ViewportFocusedLastFrame; }
+    bool wasViewportFocused() const { return m_ViewportFocusedPrevFrame; }
+    bool wasGameViewportFocused() const { return m_GameViewportFocusedPrevFrame; }
     void setOnCreatePrimitive(std::function<void(const std::string&, Entity)> callback) { onCreatePrimitive = std::move(callback); }
     void setOnCreateGameCamera(std::function<void(Entity)> callback) { onCreateGameCamera = std::move(callback); }
 
@@ -176,9 +177,11 @@ private:
     bool m_ViewportPickAdditive = false;
     bool m_ViewportPickDeselectOnMiss = false;
 
-    // Cached from last frame's Viewport/Game windows.
+    // Cached from recent Viewport/Game window focus state.
     bool m_ViewportAllowCameraInput = false;
+    bool m_ViewportFocusedPrevFrame = false;
     bool m_ViewportFocusedLastFrame = false;
+    bool m_GameViewportFocusedPrevFrame = false;
     bool m_GameViewportFocusedLastFrame = false;
     bool m_RequestFocusGameViewport = false;
     bool showNewProjectDialog = false;

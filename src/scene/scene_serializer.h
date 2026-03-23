@@ -48,6 +48,9 @@ struct SerializedEntity {
     bool hasCamera = false;
     Camera camera{};
 
+    bool hasEditorCamera = false;
+    EditorCamera editorCamera{};
+
     bool hidden = false;
 
     bool hasFollowCamera = false;
@@ -58,6 +61,18 @@ struct SerializedEntity {
 
     bool hasGameCamera = false;
     bool gameCameraPrimary = true;
+
+    bool hasRigidBody = false;
+    ECS::RigidBodyComponent rigidBody{};
+
+    bool hasBoxCollider = false;
+    ECS::BoxColliderComponent boxCollider{};
+
+    bool hasSphereCollider = false;
+    ECS::SphereColliderComponent sphereCollider{};
+
+    bool hasCapsuleCollider = false;
+    ECS::CapsuleColliderComponent capsuleCollider{};
 
     std::vector<SerializedScriptComponent> scripts;
 

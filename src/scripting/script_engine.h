@@ -8,6 +8,7 @@
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
 
+#include "../core/game_input.h"
 #include "script_types.h"
 
 struct GLFWwindow;
@@ -28,16 +29,19 @@ public:
     bool initialize();
     void shutdown();
 
-    void setWindow(GLFWwindow* window) { m_Window = window; }
+    void setWindow(GLFWwindow* window);
     GLFWwindow* getWindow() const { return m_Window; }
     void setAssetsRoot(const std::string& assetsRoot) { m_AssetsRoot = assetsRoot; }
+    void setInputEnabled(bool enabled);
+    bool isInputEnabled() const;
+    const Atlas::GameInput& getGameInput() const { return m_GameInput; }
 
     bool instantiateScene(Scene* scene);
     void updateMouseState();
     void setMouseCaptured(bool captured);
-    bool isMouseCaptured() const { return m_MouseCaptured; }
-    glm::vec2 getMousePosition() const { return m_MousePosition; }
-    glm::vec2 getMouseDelta() const { return m_MouseDelta; }
+    bool isMouseCaptured() const;
+    glm::vec2 getMousePosition() const;
+    glm::vec2 getMouseDelta() const;
 
     void callStart();
     void update(float deltaTime);
@@ -93,10 +97,7 @@ private:
     std::string m_AssetsRoot;
     std::vector<ScriptInstance> m_Instances;
     std::unordered_map<uint32_t, std::string> m_Errors;
-    glm::vec2 m_MousePosition{0.0f, 0.0f};
-    glm::vec2 m_MouseDelta{0.0f, 0.0f};
-    bool m_HasMousePosition = false;
-    bool m_MouseCaptured = false;
+    Atlas::GameInput m_GameInput;
     bool m_Initialized = false;
 };
 

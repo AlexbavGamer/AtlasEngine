@@ -98,6 +98,34 @@ if(NOT lua_src_POPULATED)
     FetchContent_Populate(lua_src)
 endif()
 
+# Jolt Physics
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+set(TARGET_TEST_FRAMEWORK OFF CACHE BOOL "" FORCE)
+set(TARGET_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(USE_ASSERTS OFF CACHE BOOL "" FORCE)
+set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(DEBUG_RENDERER_IN_DISTRIBUTION OFF CACHE BOOL "" FORCE)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(PROFILER_IN_DISTRIBUTION OFF CACHE BOOL "" FORCE)
+set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    joltphysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG v5.3.0
+    SOURCE_DIR "${DEPS_SRC_DIR}/joltphysics"
+    BINARY_DIR "${DEPS_BUILD_DIR}/joltphysics"
+)
+FetchContent_GetProperties(joltphysics)
+if(NOT joltphysics_POPULATED)
+    FetchContent_Populate(joltphysics)
+    add_subdirectory(${joltphysics_SOURCE_DIR}/Build ${joltphysics_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
+
 # VMA
 set(VMA_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 atlas_fetch(vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git v3.3.0)
@@ -305,6 +333,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     imguizmo_lib
     assimp
     lua_lib
+    Jolt
 )
 
 if(ENABLE_TRACY)

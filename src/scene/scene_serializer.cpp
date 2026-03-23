@@ -192,6 +192,15 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
                 << c.fov << ' ' << c.aspectRatio << ' ' << c.nearPlane << ' ' << c.farPlane << '\n';
         }
 
+        if (registry.all_of<EditorCamera>(entity)) {
+            const auto& c = registry.get<EditorCamera>(entity);
+            out << "editor_camera "
+                << c.position.x << ' ' << c.position.y << ' ' << c.position.z << ' '
+                << c.target.x << ' ' << c.target.y << ' ' << c.target.z << ' '
+                << c.up.x << ' ' << c.up.y << ' ' << c.up.z << ' '
+                << c.fov << ' ' << c.aspectRatio << ' ' << c.nearPlane << ' ' << c.farPlane << '\n';
+        }
+
         if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
             const auto& h = registry.get<ECS::EditorHiddenComponent>(entity);
             out << "hidden " << (h.hidden ? 1 : 0) << '\n';
@@ -212,6 +221,40 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
         if (registry.all_of<ECS::GameCameraComponent>(entity)) {
             const auto& g = registry.get<ECS::GameCameraComponent>(entity);
             out << "game_camera " << (g.primary ? 1 : 0) << '\n';
+        }
+
+        if (registry.all_of<ECS::RigidBodyComponent>(entity)) {
+            const auto& rb = registry.get<ECS::RigidBodyComponent>(entity);
+            out << "rigidbody "
+                << static_cast<int>(rb.motionType) << ' '
+                << rb.friction << ' ' << rb.restitution << ' '
+                << rb.linearDamping << ' ' << rb.angularDamping << ' '
+                << rb.gravityScale << ' '
+                << (rb.continuous ? 1 : 0) << ' ' << (rb.allowSleep ? 1 : 0) << '\n';
+        }
+
+        if (registry.all_of<ECS::BoxColliderComponent>(entity)) {
+            const auto& c = registry.get<ECS::BoxColliderComponent>(entity);
+            out << "box_collider "
+                << c.halfExtent.x << ' ' << c.halfExtent.y << ' ' << c.halfExtent.z << ' '
+                << c.offset.x << ' ' << c.offset.y << ' ' << c.offset.z << ' '
+                << (c.isTrigger ? 1 : 0) << '\n';
+        }
+
+        if (registry.all_of<ECS::SphereColliderComponent>(entity)) {
+            const auto& c = registry.get<ECS::SphereColliderComponent>(entity);
+            out << "sphere_collider "
+                << c.radius << ' '
+                << c.offset.x << ' ' << c.offset.y << ' ' << c.offset.z << ' '
+                << (c.isTrigger ? 1 : 0) << '\n';
+        }
+
+        if (registry.all_of<ECS::CapsuleColliderComponent>(entity)) {
+            const auto& c = registry.get<ECS::CapsuleColliderComponent>(entity);
+            out << "capsule_collider "
+                << c.radius << ' ' << c.halfHeight << ' '
+                << c.offset.x << ' ' << c.offset.y << ' ' << c.offset.z << ' '
+                << (c.isTrigger ? 1 : 0) << '\n';
         }
 
         if (registry.all_of<::Mesh>(entity)) {
@@ -306,6 +349,13 @@ bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& out
                >> current->camera.target.x >> current->camera.target.y >> current->camera.target.z
                >> current->camera.up.x >> current->camera.up.y >> current->camera.up.z
                >> current->camera.fov >> current->camera.aspectRatio >> current->camera.nearPlane >> current->camera.farPlane;
+        } else if (token == "editor_camera") {
+            if (!current) return false;
+            current->hasEditorCamera = true;
+            in >> current->editorCamera.position.x >> current->editorCamera.position.y >> current->editorCamera.position.z
+               >> current->editorCamera.target.x >> current->editorCamera.target.y >> current->editorCamera.target.z
+               >> current->editorCamera.up.x >> current->editorCamera.up.y >> current->editorCamera.up.z
+               >> current->editorCamera.fov >> current->editorCamera.aspectRatio >> current->editorCamera.nearPlane >> current->editorCamera.farPlane;
         } else if (token == "hidden") {
             if (!current) return false;
             int hidden = 0;
@@ -325,6 +375,44 @@ bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& out
             int primary = 1;
             in >> primary;
             current->gameCameraPrimary = (primary != 0);
+        } else if (token == "rigidbody") {
+            if (!current) return false;
+            current->hasRigidBody = true;
+            int motionType = 0;
+            int continuous = 0;
+            int allowSleep = 1;
+            in >> motionType
+               >> current->rigidBody.friction >> current->rigidBody.restitution
+               >> current->rigidBody.linearDamping >> current->rigidBody.angularDamping
+               >> current->rigidBody.gravityScale
+               >> continuous >> allowSleep;
+            current->rigidBody.motionType = static_cast<ECS::PhysicsMotionType>(motionType);
+            current->rigidBody.continuous = (continuous != 0);
+            current->rigidBody.allowSleep = (allowSleep != 0);
+        } else if (token == "box_collider") {
+            if (!current) return false;
+            current->hasBoxCollider = true;
+            int isTrigger = 0;
+            in >> current->boxCollider.halfExtent.x >> current->boxCollider.halfExtent.y >> current->boxCollider.halfExtent.z
+               >> current->boxCollider.offset.x >> current->boxCollider.offset.y >> current->boxCollider.offset.z
+               >> isTrigger;
+            current->boxCollider.isTrigger = (isTrigger != 0);
+        } else if (token == "sphere_collider") {
+            if (!current) return false;
+            current->hasSphereCollider = true;
+            int isTrigger = 0;
+            in >> current->sphereCollider.radius
+               >> current->sphereCollider.offset.x >> current->sphereCollider.offset.y >> current->sphereCollider.offset.z
+               >> isTrigger;
+            current->sphereCollider.isTrigger = (isTrigger != 0);
+        } else if (token == "capsule_collider") {
+            if (!current) return false;
+            current->hasCapsuleCollider = true;
+            int isTrigger = 0;
+            in >> current->capsuleCollider.radius >> current->capsuleCollider.halfHeight
+               >> current->capsuleCollider.offset.x >> current->capsuleCollider.offset.y >> current->capsuleCollider.offset.z
+               >> isTrigger;
+            current->capsuleCollider.isTrigger = (isTrigger != 0);
         } else if (token == "primitive") {
             if (!current || !readQuoted(in, current->primitiveType)) return false;
         } else if (token == "material") {

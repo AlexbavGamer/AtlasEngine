@@ -20,6 +20,7 @@
 #include "../utils/model_loader.h"
 
 namespace Atlas { class WorldPartition; }
+namespace Atlas::Physics { class PhysicsSystem; }
 namespace Atlas::Scripting { class ScriptEngine; }
 
 namespace Atlas {
@@ -64,13 +65,15 @@ private:
     void startPlayMode();
     void togglePausePlayMode();
     void stopPlayMode();
+    void rebuildRuntimePhysics();
+    void updateRuntimePhysics(Scene* scene, float deltaTime);
     void updateAnimationRuntime(Scene* scene, float deltaTime);
     void updateFollowCameras(Scene* scene, float deltaTime);
     void updateGameCameras(Scene* scene);
     void cloneSceneToRuntime();
     Entity createPrimitiveEntity(const std::string& primitiveType, Entity parent = entt::null);
     Entity createGameCameraEntity(Entity parent = entt::null);
-    void resetEditorScene();
+    void resetEditorScene(bool createEditorCamera = true);
     void ensureEditorCamera();
     void rebindEditorCameraController();
     bool saveProjectScene();
@@ -105,6 +108,7 @@ private:
     std::unique_ptr<AssetManager> m_AssetManager;
     std::unique_ptr<Scene> m_Scene;
     std::unique_ptr<Scene> m_RuntimeScene;
+    std::unique_ptr<Atlas::Physics::PhysicsSystem> m_PhysicsSystem;
     std::unique_ptr<Atlas::Scripting::ScriptEngine> m_ScriptEngine;
     std::unique_ptr<::UIManager> m_UIManager;
     std::unique_ptr<::ProjectManager> m_ProjectManager;
