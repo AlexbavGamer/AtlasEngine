@@ -32,6 +32,17 @@ struct SerializedMaterialComponent {
     float alphaCutoff = 0.5f;
     bool doubleSided = false;
     bool invertCulling = false;
+
+    bool useAlbedoTexture = false;
+    std::string albedoTexturePath;
+    bool useNormalTexture = false;
+    std::string normalTexturePath;
+    bool useMetallicRoughnessTexture = false;
+    std::string metallicRoughnessTexturePath;
+    bool useAOTexture = false;
+    std::string aoTexturePath;
+    bool useEmissiveTexture = false;
+    std::string emissiveTexturePath;
 };
 
 struct SerializedEntity {

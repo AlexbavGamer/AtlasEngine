@@ -34,6 +34,7 @@ namespace Atlas::Physics {
 namespace {
 
 using namespace JPH;
+using PhysicsMotionType = ECS::PhysicsMotionType;
 
 namespace Layers {
     static constexpr ObjectLayer NON_MOVING = 0;

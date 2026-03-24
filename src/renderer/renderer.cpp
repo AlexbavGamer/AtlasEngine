@@ -14,6 +14,9 @@
 #include <iostream>
 #include <algorithm>
 #include <unordered_map>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -3202,7 +3205,13 @@ std::vector<char> Renderer::readFile(const std::string& filename) {
         fs::path(filename),
         fs::current_path() / filename
     };
-#ifdef __linux__
+#ifdef _WIN32
+    char buffer[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        candidates.push_back(fs::path(std::string(buffer, len)).parent_path() / filename);
+    }
+#elif defined(__linux__)
     std::error_code ec;
     fs::path exePath = fs::read_symlink("/proc/self/exe", ec);
     if (!ec) {

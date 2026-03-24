@@ -78,6 +78,12 @@ private:
     void rebindEditorCameraController();
     bool saveProjectScene();
     bool loadProjectScene();
+    bool exportGamePackage();
+
+    void newScene();
+    bool loadSceneFromAssetPath(const std::string& assetRelativePath);
+
+    std::string m_CurrentSceneAssetPath = "scenes/main.scene";
 
     struct ImportRequest {
         std::string assetPath;

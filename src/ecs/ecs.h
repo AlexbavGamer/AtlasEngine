@@ -47,6 +47,9 @@ struct Mesh {
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
     VkDeviceMemory indexMemory = VK_NULL_HANDLE;
 
+    // Ownership of GPU buffers/memory. Cloned/runtime scenes should not free shared handles.
+    bool ownsGpuResources = true;
+
     // Local-space bounds (computed on import when vertex data is available).
     bool hasBounds = false;
     glm::vec3 boundsMin{0.0f};

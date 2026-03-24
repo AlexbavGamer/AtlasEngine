@@ -8,13 +8,11 @@
 
 namespace Atlas {
 
-using namespace ECS;
-
 entt::entity Scene::createEntity(const std::string& name) {
     entt::entity entity = m_Registry.create();
     m_Registry.emplace<Transform>(entity);
     m_Registry.emplace<Renderable>(entity);
-    m_Registry.emplace<TagComponent>(entity, name);
+    m_Registry.emplace<Atlas::ECS::TagComponent>(entity, name);
     m_Dirty = true;
     return entity;
 }
@@ -23,22 +21,22 @@ void Scene::destroyEntity(entt::entity entity) {
     if (!m_Registry.valid(entity)) return;
 
     // Detach from parent
-    if (m_Registry.all_of<ParentComponent>(entity)) {
-        auto parent = m_Registry.get<ParentComponent>(entity).parent;
-        if (m_Registry.valid(parent) && m_Registry.all_of<ChildrenComponent>(parent)) {
-            auto &siblings = m_Registry.get<ChildrenComponent>(parent).children;
+    if (m_Registry.all_of<Atlas::ECS::ParentComponent>(entity)) {
+        auto parent = m_Registry.get<Atlas::ECS::ParentComponent>(entity).parent;
+        if (m_Registry.valid(parent) && m_Registry.all_of<Atlas::ECS::ChildrenComponent>(parent)) {
+            auto &siblings = m_Registry.get<Atlas::ECS::ChildrenComponent>(parent).children;
             siblings.erase(std::remove(siblings.begin(), siblings.end(), entity), siblings.end());
         }
-        m_Registry.remove<ParentComponent>(entity);
+        m_Registry.remove<Atlas::ECS::ParentComponent>(entity);
     }
 
     // Recursively destroy child entities
-    if (m_Registry.all_of<ChildrenComponent>(entity)) {
-        auto children = m_Registry.get<ChildrenComponent>(entity).children;
+    if (m_Registry.all_of<Atlas::ECS::ChildrenComponent>(entity)) {
+        auto children = m_Registry.get<Atlas::ECS::ChildrenComponent>(entity).children;
         for (auto child : children) {
             destroyEntity(child);
         }
-        m_Registry.remove<ChildrenComponent>(entity);
+        m_Registry.remove<Atlas::ECS::ChildrenComponent>(entity);
     }
 
     // Destroy the entity itself
@@ -46,15 +44,15 @@ void Scene::destroyEntity(entt::entity entity) {
     m_Dirty = true;
 }
 
-CameraComponent* Scene::getActiveCamera() {
-    if (m_ActiveCamera != entt::null && m_Registry.valid(m_ActiveCamera)) {
-        return &m_Registry.get<CameraComponent>(m_ActiveCamera);
+Camera* Scene::getActiveCamera() {
+    if (m_ActiveCamera != entt::null && m_Registry.valid(m_ActiveCamera) && m_Registry.all_of<Camera>(m_ActiveCamera)) {
+        return &m_Registry.get<Camera>(m_ActiveCamera);
     }
     return nullptr;
 }
 
 void Scene::setActiveCamera(entt::entity entity) {
-    if (m_Registry.all_of<CameraComponent>(entity)) {
+    if (m_Registry.valid(entity) && m_Registry.all_of<Camera>(entity)) {
         m_ActiveCamera = entity;
     }
 }
@@ -68,21 +66,39 @@ std::vector<entt::entity> Scene::getAllEntities() {
 }
 
 std::vector<entt::entity> Scene::getEntitiesWithMesh() {
-    return getAllEntities();
+    std::vector<entt::entity> entities;
+    auto view = m_Registry.view<::Mesh>();
+    entities.reserve(static_cast<size_t>(view.size()));
+    for (auto e : view) {
+        entities.push_back(e);
+    }
+    return entities;
 }
 
 std::vector<entt::entity> Scene::getEntitiesWithCamera() {
-    return getAllEntities();
+    std::vector<entt::entity> entities;
+    auto view = m_Registry.view<Camera>();
+    entities.reserve(static_cast<size_t>(view.size()));
+    for (auto e : view) {
+        entities.push_back(e);
+    }
+    return entities;
 }
 
 std::vector<entt::entity> Scene::getEntitiesWithLight() {
-    return getAllEntities();
+    std::vector<entt::entity> entities;
+    auto view = m_Registry.view<Atlas::ECS::LightComponent>();
+    entities.reserve(static_cast<size_t>(view.size()));
+    for (auto e : view) {
+        entities.push_back(e);
+    }
+    return entities;
 }
 
 std::vector<entt::entity> Scene::getRootEntities() {
     std::vector<entt::entity> roots;
     for (auto [entity] : m_Registry.storage<entt::entity>().each()) {
-        if (!m_Registry.all_of<ParentComponent>(entity)) {
+        if (!m_Registry.all_of<Atlas::ECS::ParentComponent>(entity)) {
             roots.push_back(entity);
         }
     }
@@ -93,8 +109,8 @@ const std::vector<entt::entity>& Scene::getChildren(entt::entity parent) const {
     static const std::vector<entt::entity> empty;
 
     if (!m_Registry.valid(parent)) return empty;
-    if (!m_Registry.all_of<ChildrenComponent>(parent)) return empty;
-    return m_Registry.get<ChildrenComponent>(parent).children;
+    if (!m_Registry.all_of<Atlas::ECS::ChildrenComponent>(parent)) return empty;
+    return m_Registry.get<Atlas::ECS::ChildrenComponent>(parent).children;
 }
 
 void Scene::setParent(entt::entity child, entt::entity parent) {
@@ -105,8 +121,8 @@ void Scene::setParent(entt::entity child, entt::entity parent) {
     // Prevent cycles: parent cannot be a descendant of child.
     if (parent != entt::null) {
         entt::entity p = parent;
-        while (p != entt::null && m_Registry.valid(p) && m_Registry.all_of<ParentComponent>(p)) {
-            entt::entity pp = m_Registry.get<ParentComponent>(p).parent;
+        while (p != entt::null && m_Registry.valid(p) && m_Registry.all_of<Atlas::ECS::ParentComponent>(p)) {
+            entt::entity pp = m_Registry.get<Atlas::ECS::ParentComponent>(p).parent;
             if (pp == child) {
                 return;
             }
@@ -123,8 +139,8 @@ void Scene::setParent(entt::entity child, entt::entity parent) {
     }
 
     entt::entity oldParent = entt::null;
-    if (m_Registry.all_of<ParentComponent>(child)) {
-        oldParent = m_Registry.get<ParentComponent>(child).parent;
+    if (m_Registry.all_of<Atlas::ECS::ParentComponent>(child)) {
+        oldParent = m_Registry.get<Atlas::ECS::ParentComponent>(child).parent;
     }
 
     // No-op.
@@ -133,30 +149,30 @@ void Scene::setParent(entt::entity child, entt::entity parent) {
     }
 
     // Remove from previous parent's children list.
-    if (oldParent != entt::null && m_Registry.valid(oldParent) && m_Registry.all_of<ChildrenComponent>(oldParent)) {
-        auto& children = m_Registry.get<ChildrenComponent>(oldParent).children;
+    if (oldParent != entt::null && m_Registry.valid(oldParent) && m_Registry.all_of<Atlas::ECS::ChildrenComponent>(oldParent)) {
+        auto& children = m_Registry.get<Atlas::ECS::ChildrenComponent>(oldParent).children;
         children.erase(std::remove(children.begin(), children.end(), child), children.end());
     }
 
     if (parent == entt::null) {
-        if (m_Registry.all_of<ParentComponent>(child)) {
-            m_Registry.remove<ParentComponent>(child);
+        if (m_Registry.all_of<Atlas::ECS::ParentComponent>(child)) {
+            m_Registry.remove<Atlas::ECS::ParentComponent>(child);
         }
         m_Dirty = true;
         return;
     }
 
-    if (!m_Registry.all_of<ParentComponent>(child)) {
-        m_Registry.emplace<ParentComponent>(child, ParentComponent{parent});
+    if (!m_Registry.all_of<Atlas::ECS::ParentComponent>(child)) {
+        m_Registry.emplace<Atlas::ECS::ParentComponent>(child, Atlas::ECS::ParentComponent{parent});
     } else {
-        m_Registry.get<ParentComponent>(child).parent = parent;
+        m_Registry.get<Atlas::ECS::ParentComponent>(child).parent = parent;
     }
 
-    if (!m_Registry.all_of<ChildrenComponent>(parent)) {
-        m_Registry.emplace<ChildrenComponent>(parent, ChildrenComponent{});
+    if (!m_Registry.all_of<Atlas::ECS::ChildrenComponent>(parent)) {
+        m_Registry.emplace<Atlas::ECS::ChildrenComponent>(parent, Atlas::ECS::ChildrenComponent{});
     }
 
-    auto& list = m_Registry.get<ChildrenComponent>(parent).children;
+    auto& list = m_Registry.get<Atlas::ECS::ChildrenComponent>(parent).children;
     if (std::find(list.begin(), list.end(), child) == list.end()) {
         list.push_back(child);
     }
@@ -184,8 +200,8 @@ bool Scene::updateWorldTransforms() {
     // Roots: entities with Transform but no valid parent.
     for (auto e : view) {
         entt::entity p = entt::null;
-        if (m_Registry.all_of<ParentComponent>(e)) {
-            p = m_Registry.get<ParentComponent>(e).parent;
+        if (m_Registry.all_of<Atlas::ECS::ParentComponent>(e)) {
+            p = m_Registry.get<Atlas::ECS::ParentComponent>(e).parent;
         }
         if (p == entt::null || !m_Registry.valid(p)) {
             stack.push_back(e);
@@ -205,8 +221,8 @@ bool Scene::updateWorldTransforms() {
         glm::mat4 local = m_Registry.get<Transform>(e).getModelMatrix();
         glm::mat4 world = local;
 
-        if (m_Registry.all_of<ParentComponent>(e)) {
-            entt::entity p = m_Registry.get<ParentComponent>(e).parent;
+        if (m_Registry.all_of<Atlas::ECS::ParentComponent>(e)) {
+            entt::entity p = m_Registry.get<Atlas::ECS::ParentComponent>(e).parent;
             if (p != entt::null && m_Registry.valid(p) && m_Registry.all_of<WorldTransform>(p)) {
                 world = m_Registry.get<WorldTransform>(p).matrix * local;
             }
@@ -228,8 +244,8 @@ bool Scene::updateWorldTransforms() {
             }
         }
 
-        if (m_Registry.all_of<ChildrenComponent>(e)) {
-            const auto& children = m_Registry.get<ChildrenComponent>(e).children;
+        if (m_Registry.all_of<Atlas::ECS::ChildrenComponent>(e)) {
+            const auto& children = m_Registry.get<Atlas::ECS::ChildrenComponent>(e).children;
             for (auto c : children) {
                 if (c != entt::null && m_Registry.valid(c) && m_Registry.all_of<Transform>(c)) {
                     stack.push_back(c);
@@ -291,11 +307,11 @@ glm::mat4 Scene::getWorldTransform(entt::entity entity) const {
         }
         chain.push_back(local);
 
-        if (!m_Registry.all_of<ParentComponent>(e)) {
+        if (!m_Registry.all_of<Atlas::ECS::ParentComponent>(e)) {
             break;
         }
 
-        entt::entity p = m_Registry.get<ParentComponent>(e).parent;
+        entt::entity p = m_Registry.get<Atlas::ECS::ParentComponent>(e).parent;
         if (p == entt::null || !m_Registry.valid(p)) {
             break;
         }

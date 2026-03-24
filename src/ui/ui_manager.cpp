@@ -1,10 +1,10 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "ui_manager.h"
+#include "../platform/native_file_dialog.h"
 #include <imgui.h>
 #include "../utils/camera_controller.h"
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
-#include <ImGuiFileDialog.h>
 #include <ImGuizmo.h>
 #include "../ecs/ecs.h"
 #include "../ecs/components.h"
@@ -248,6 +248,317 @@ void UIManager::redo() {
 
     cmd->redo(m_Scene);
     m_UndoStack.push_back(std::move(cmd));
+}
+
+void UIManager::copySelectedEntitiesToClipboard() {
+    if (!m_Scene) return;
+    auto& registry = m_Scene->getRegistry();
+
+    m_EntityClipboard.items.clear();
+    m_EntityClipboard.hasData = false;
+
+    if (m_SelectedEntities.empty()) {
+        return;
+    }
+
+    auto isHidden = [&](Entity e) -> bool {
+        return registry.all_of<Atlas::ECS::EditorHiddenComponent>(e);
+    };
+
+    auto hasSelectedAncestor = [&](Entity e) -> bool {
+        if (!registry.all_of<Atlas::ECS::ParentComponent>(e)) return false;
+        Entity p = registry.get<Atlas::ECS::ParentComponent>(e).parent;
+        while (p != entt::null) {
+            if (isSelected(p)) return true;
+            if (!registry.all_of<Atlas::ECS::ParentComponent>(p)) break;
+            p = registry.get<Atlas::ECS::ParentComponent>(p).parent;
+        }
+        return false;
+    };
+
+    std::vector<Entity> roots;
+    roots.reserve(m_SelectedEntities.size());
+    for (auto e : m_SelectedEntities) {
+        if (e == entt::null) continue;
+        if (!registry.valid(e)) continue;
+        if (isHidden(e)) continue;
+        if (registry.all_of<EditorCamera>(e)) continue;
+        if (hasSelectedAncestor(e)) continue;
+        roots.push_back(e);
+    }
+
+    if (roots.empty()) {
+        return;
+    }
+
+    std::unordered_set<Entity> visited;
+    visited.reserve(256);
+
+    std::vector<Entity> ordered;
+    ordered.reserve(256);
+
+    const auto gather = [&](auto&& self, Entity e) -> void {
+        if (e == entt::null) return;
+        if (!registry.valid(e)) return;
+        if (isHidden(e)) return;
+        if (registry.all_of<EditorCamera>(e)) return;
+        if (visited.find(e) != visited.end()) return;
+
+        visited.insert(e);
+        ordered.push_back(e);
+
+        for (auto child : m_Scene->getChildren(e)) {
+            self(self, child);
+        }
+    };
+
+    for (auto r : roots) {
+        gather(gather, r);
+    }
+
+    m_EntityClipboard.items.reserve(ordered.size());
+    for (auto e : ordered) {
+        EntityClipboardItem item;
+        item.source = e;
+
+        if (registry.all_of<Atlas::ECS::TagComponent>(e)) {
+            item.name = registry.get<Atlas::ECS::TagComponent>(e).name;
+        } else {
+            item.name = "Entity";
+        }
+
+        if (registry.all_of<Atlas::ECS::ParentComponent>(e)) {
+            Entity p = registry.get<Atlas::ECS::ParentComponent>(e).parent;
+            // Preserve parent if it exists; may be outside the copied subtree.
+            item.parent = (p != entt::null && registry.valid(p)) ? p : entt::null;
+        }
+
+        if (registry.all_of<Transform>(e)) {
+            item.hasTransform = true;
+            item.transform = registry.get<Transform>(e);
+        }
+        if (registry.all_of<Renderable>(e)) {
+            item.hasRenderable = true;
+            item.renderable = registry.get<Renderable>(e);
+        }
+        if (registry.all_of<Camera>(e)) {
+            item.hasCamera = true;
+            item.camera = registry.get<Camera>(e);
+        }
+        if (registry.all_of<::Mesh>(e)) {
+            item.hasMesh = true;
+            item.mesh = registry.get<::Mesh>(e);
+        }
+        if (registry.all_of<Atlas::ECS::MaterialComponent>(e)) {
+            item.hasMaterial = true;
+            item.material = registry.get<Atlas::ECS::MaterialComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::RigidBodyComponent>(e)) {
+            item.hasRigidBody = true;
+            item.rigidBody = registry.get<Atlas::ECS::RigidBodyComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::BoxColliderComponent>(e)) {
+            item.hasBoxCollider = true;
+            item.boxCollider = registry.get<Atlas::ECS::BoxColliderComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::SphereColliderComponent>(e)) {
+            item.hasSphereCollider = true;
+            item.sphereCollider = registry.get<Atlas::ECS::SphereColliderComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::CapsuleColliderComponent>(e)) {
+            item.hasCapsuleCollider = true;
+            item.capsuleCollider = registry.get<Atlas::ECS::CapsuleColliderComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::LightComponent>(e)) {
+            item.hasLight = true;
+            item.light = registry.get<Atlas::ECS::LightComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::ScriptComponent>(e)) {
+            item.hasScript = true;
+            item.script = registry.get<Atlas::ECS::ScriptComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::FollowCameraComponent>(e)) {
+            item.hasFollowCamera = true;
+            item.followCamera = registry.get<Atlas::ECS::FollowCameraComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::GameCameraComponent>(e)) {
+            item.hasGameCamera = true;
+            item.gameCamera = registry.get<Atlas::ECS::GameCameraComponent>(e);
+        }
+        if (registry.all_of<::WorldChunk>(e)) {
+            item.hasWorldChunk = true;
+            item.worldChunk = registry.get<::WorldChunk>(e);
+        }
+        if (registry.all_of<::WorldTransform>(e)) {
+            item.hasWorldTransform = true;
+            item.worldTransform = registry.get<::WorldTransform>(e);
+        }
+        if (registry.all_of<Atlas::ECS::SkinnedMeshComponent>(e)) {
+            item.hasSkinnedMesh = true;
+            item.skinnedMesh = registry.get<Atlas::ECS::SkinnedMeshComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::SkeletonComponent>(e)) {
+            item.hasSkeleton = true;
+            item.skeleton = registry.get<Atlas::ECS::SkeletonComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::AnimationPlayerComponent>(e)) {
+            item.hasAnimationPlayer = true;
+            item.animPlayer = registry.get<Atlas::ECS::AnimationPlayerComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::BonePoseOverrideComponent>(e)) {
+            item.hasBonePoseOverride = true;
+            item.bonePoseOverride = registry.get<Atlas::ECS::BonePoseOverrideComponent>(e);
+        }
+
+        m_EntityClipboard.items.push_back(std::move(item));
+    }
+
+    m_EntityClipboard.hasData = !m_EntityClipboard.items.empty();
+}
+
+void UIManager::pasteEntitiesFromClipboard() {
+    if (!m_Scene) return;
+    if (!m_EntityClipboard.hasData) return;
+
+    auto& registry = m_Scene->getRegistry();
+
+    std::unordered_map<Entity, Entity> remap;
+    remap.reserve(m_EntityClipboard.items.size());
+
+    // Small offset so paste isn't exactly overlapping.
+    m_EntityPasteSerial++;
+    const float step = 0.35f;
+    const float k = static_cast<float>((m_EntityPasteSerial % 10) + 1);
+    const glm::vec3 rootOffset(step * k, 0.0f, step * k);
+
+    // First pass: create entities and copy components.
+    for (const auto& item : m_EntityClipboard.items) {
+        if (item.source == entt::null) continue;
+
+        std::string newName = item.name.empty() ? "Entity" : item.name;
+        newName += " Copy";
+
+        Entity e = m_Scene->createEntity(newName);
+        remap[item.source] = e;
+
+        // Ensure visible and not hidden.
+        if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(e)) {
+            registry.remove<Atlas::ECS::EditorHiddenComponent>(e);
+        }
+
+        // Copy core components.
+        if (item.hasTransform && registry.all_of<Transform>(e)) {
+            auto t = item.transform;
+            // Apply offset only to roots (children keep local offsets).
+            if (item.parent == entt::null) {
+                t.position += rootOffset;
+            }
+            registry.get<Transform>(e) = t;
+        }
+
+        if (item.hasRenderable) {
+            registry.emplace_or_replace<Renderable>(e, item.renderable);
+        }
+
+        if (item.hasCamera) {
+            registry.emplace_or_replace<Camera>(e, item.camera);
+        }
+
+        if (item.hasMesh) {
+            ::Mesh meshCopy = item.mesh;
+            // For editor copy/paste, treat pasted meshes as owning; free happens when the last ref is destroyed.
+            meshCopy.ownsGpuResources = true;
+            registry.emplace_or_replace<::Mesh>(e, meshCopy);
+        }
+
+        if (item.hasMaterial) registry.emplace_or_replace<Atlas::ECS::MaterialComponent>(e, item.material);
+        if (item.hasRigidBody) registry.emplace_or_replace<Atlas::ECS::RigidBodyComponent>(e, item.rigidBody);
+        if (item.hasBoxCollider) registry.emplace_or_replace<Atlas::ECS::BoxColliderComponent>(e, item.boxCollider);
+        if (item.hasSphereCollider) registry.emplace_or_replace<Atlas::ECS::SphereColliderComponent>(e, item.sphereCollider);
+        if (item.hasCapsuleCollider) registry.emplace_or_replace<Atlas::ECS::CapsuleColliderComponent>(e, item.capsuleCollider);
+        if (item.hasLight) registry.emplace_or_replace<Atlas::ECS::LightComponent>(e, item.light);
+        if (item.hasScript) registry.emplace_or_replace<Atlas::ECS::ScriptComponent>(e, item.script);
+        if (item.hasFollowCamera) registry.emplace_or_replace<Atlas::ECS::FollowCameraComponent>(e, item.followCamera);
+        if (item.hasGameCamera) registry.emplace_or_replace<Atlas::ECS::GameCameraComponent>(e, item.gameCamera);
+        if (item.hasWorldChunk) registry.emplace_or_replace<::WorldChunk>(e, item.worldChunk);
+        if (item.hasWorldTransform) registry.emplace_or_replace<::WorldTransform>(e, item.worldTransform);
+        if (item.hasSkinnedMesh) registry.emplace_or_replace<Atlas::ECS::SkinnedMeshComponent>(e, item.skinnedMesh);
+        if (item.hasSkeleton) registry.emplace_or_replace<Atlas::ECS::SkeletonComponent>(e, item.skeleton);
+        if (item.hasAnimationPlayer) registry.emplace_or_replace<Atlas::ECS::AnimationPlayerComponent>(e, item.animPlayer);
+        if (item.hasBonePoseOverride) registry.emplace_or_replace<Atlas::ECS::BonePoseOverrideComponent>(e, item.bonePoseOverride);
+
+        // Tag component
+        if (registry.all_of<Atlas::ECS::TagComponent>(e)) {
+            registry.get<Atlas::ECS::TagComponent>(e).name = newName;
+        } else {
+            registry.emplace<Atlas::ECS::TagComponent>(e, newName);
+        }
+    }
+
+    // Second pass: restore parent relationships.
+    for (const auto& item : m_EntityClipboard.items) {
+        auto it = remap.find(item.source);
+        if (it == remap.end()) continue;
+        Entity newEntity = it->second;
+
+        if (item.parent == entt::null) {
+            continue;
+        }
+
+        // If parent was copied, parent to the cloned parent; else parent to original parent.
+        Entity newParent = entt::null;
+        auto pit = remap.find(item.parent);
+        if (pit != remap.end()) {
+            newParent = pit->second;
+        } else if (registry.valid(item.parent) && !registry.all_of<Atlas::ECS::EditorHiddenComponent>(item.parent)) {
+            newParent = item.parent;
+        }
+
+        if (newParent != entt::null) {
+            m_Scene->setParent(newEntity, newParent);
+        }
+    }
+
+    // Third pass: fix-up entity references.
+    for (const auto& item : m_EntityClipboard.items) {
+        auto it = remap.find(item.source);
+        if (it == remap.end()) continue;
+        Entity newEntity = it->second;
+
+        if (item.hasFollowCamera && registry.all_of<Atlas::ECS::FollowCameraComponent>(newEntity)) {
+            auto fc = registry.get<Atlas::ECS::FollowCameraComponent>(newEntity);
+            if (fc.target != entt::null) {
+                auto tit = remap.find(fc.target);
+                fc.target = (tit != remap.end()) ? tit->second : entt::null;
+            }
+            registry.emplace_or_replace<Atlas::ECS::FollowCameraComponent>(newEntity, fc);
+        }
+
+        if (item.hasSkinnedMesh && registry.all_of<Atlas::ECS::SkinnedMeshComponent>(newEntity)) {
+            auto sm = registry.get<Atlas::ECS::SkinnedMeshComponent>(newEntity);
+            if (sm.skeletonEntity != entt::null) {
+                auto sit = remap.find(sm.skeletonEntity);
+                sm.skeletonEntity = (sit != remap.end()) ? sit->second : entt::null;
+            }
+            registry.emplace_or_replace<Atlas::ECS::SkinnedMeshComponent>(newEntity, sm);
+        }
+    }
+
+    // Update selection to the pasted roots.
+    m_SelectedEntities.clear();
+    m_PrimarySelected = entt::null;
+
+    for (const auto& item : m_EntityClipboard.items) {
+        if (item.parent != entt::null) continue;
+        auto it = remap.find(item.source);
+        if (it == remap.end()) continue;
+        m_SelectedEntities.push_back(it->second);
+    }
+    if (!m_SelectedEntities.empty()) {
+        m_PrimarySelected = m_SelectedEntities.back();
+    }
+
+    m_Scene->setDirty(true);
 }
 
 void UIManager::renderToolbar(bool gameModeActive, bool gameModePaused) {
@@ -499,6 +810,13 @@ void UIManager::render(ImTextureID viewportTexture, ImTextureID gameViewportText
             if (ImGui::IsKeyPressed(ImGuiKey_Y)) {
                 redo();
             }
+
+            if (ImGui::IsKeyPressed(ImGuiKey_C)) {
+                copySelectedEntitiesToClipboard();
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_V)) {
+                pasteEntitiesFromClipboard();
+            }
         }
 
         // Delete selected entity (soft delete)
@@ -575,27 +893,6 @@ void UIManager::render(ImTextureID viewportTexture, ImTextureID gameViewportText
 
     renderProfilerWindow();
     renderCameraWindow();
-
-    if (ImGuiFileDialog::Instance()->Display("OpenProject")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string folderPath = ImGuiFileDialog::Instance()->GetCurrentPath();
-            ImGuiFileDialog::Instance()->Close();
-            if (projectManager && !folderPath.empty()) {
-                projectManager->openProject(folderPath);
-                if (onOpenProject) onOpenProject();
-            }
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    
-    if (ImGuiFileDialog::Instance()->Display("SaveProject")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
-            ImGuiFileDialog::Instance()->Close();
-            if (onSaveProject) onSaveProject();
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
 }
 
 void UIManager::setSelectionSingle(Entity entity) {
@@ -2469,19 +2766,12 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                             ImGui::SameLine();
 
                             if (ImGui::Button("Browse")) {
-                                IGFD::FileDialogConfig cfg;
-                                cfg.path = ".";
-                                ImGuiFileDialog::Instance()->OpenDialog(dialogId, label, filter, cfg);
-                            }
-
-                            if (ImGuiFileDialog::Instance()->Display(dialogId)) {
-                                if (ImGuiFileDialog::Instance()->IsOk()) {
-                                    std::string filePath = ImGuiFileDialog::Instance()->GetFilePathName();
+                                auto file = Atlas::Platform::openFileDialog(label, ".");
+                                if (file) {
                                     std::memset(pathBuf, 0, pathBufSize);
-                                    std::strncpy(pathBuf, filePath.c_str(), pathBufSize - 1);
+                                    std::strncpy(pathBuf, file->c_str(), pathBufSize - 1);
                                     picked = true;
                                 }
-                                ImGuiFileDialog::Instance()->Close();
                             }
 
                             applyNow = ImGui::Button("Apply") || picked;
@@ -2860,12 +3150,21 @@ void UIManager::renderContentExplorer()
             if (ImGui::MenuItem("Open")) {
                 if (m_ContentCtxTarget.isFolder) {
                     folderStack.push_back(m_ContentCtxTarget.name);
-                }
+                } else {
+                    std::string ext = fs::path(m_ContentCtxTarget.name).extension().string();
+                    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+                    if (ext == ".scene") {
+                        if (onOpenSceneAsset) {
+                            onOpenSceneAsset(m_ContentCtxTarget.relativePath);
+                        }
+                    }
 #ifdef _WIN32
-                else {
-                    openWithDefaultApp(m_ContentCtxTarget.fullPath);
-                }
+                    else {
+                        openWithDefaultApp(m_ContentCtxTarget.fullPath);
+                    }
 #endif
+                }
             }
 
             if (ImGui::MenuItem("Open File Location")) {
@@ -3056,6 +3355,22 @@ void UIManager::renderContentExplorer()
                     folderStack.push_back(child.name);
                 }
             } else {
+                const bool doubleClicked = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+                if (doubleClicked) {
+                    std::string ext = fs::path(child.name).extension().string();
+                    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (ext == ".scene") {
+                        if (onOpenSceneAsset) {
+                            onOpenSceneAsset(child.relativePath);
+                        }
+                    }
+#ifdef _WIN32
+                    else {
+                        openWithDefaultApp(child.fullPath);
+                    }
+#endif
+                }
+
                 if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
                     ImGui::SetDragDropPayload("ASSET_DROP", child.relativePath.c_str(), child.relativePath.length() + 1);
                     ImGui::TextUnformatted(child.name.c_str());
@@ -3187,15 +3502,18 @@ void UIManager::renderMenuBar() {
                 showNewProjectDialog = true;
             }
             if (ImGui::MenuItem("Open Project", "Ctrl+O")) {
-                IGFD::FileDialogConfig config;
-                config.path = ".";
-                ImGuiFileDialog::Instance()->OpenDialog("OpenProject", "Open Project Folder", nullptr, config);
+                auto folder = Atlas::Platform::openFolderDialog("Open Project Folder", ".");
+                if (folder && projectManager) {
+                    projectManager->openProject(*folder);
+                    if (onOpenProject) onOpenProject();
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                IGFD::FileDialogConfig saveConfig;
-                saveConfig.path = ".";
-                ImGuiFileDialog::Instance()->OpenDialog("SaveProject", "Save Project", nullptr, saveConfig);
+                if (onSaveProject) onSaveProject();
+            }
+            if (ImGui::MenuItem("Export Game")) {
+                if (onExportGame) onExportGame();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -3204,6 +3522,33 @@ void UIManager::renderMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("File")) {
+            if (projectManager && projectManager->hasProject()) {
+                if (ImGui::MenuItem("New Scene")) {
+                    if (onNewScene) onNewScene();
+                }
+                if (ImGui::MenuItem("Load Scene...")) {
+                    std::vector<Atlas::Platform::FileDialogFilter> filters;
+                    filters.push_back({"Scenes", {"scene"}});
+
+                    auto file = Atlas::Platform::openFileDialog("Load Scene", projectManager->getAssetsPath(), filters);
+                    if (file && onOpenSceneAsset) {
+                        std::error_code ec;
+                        std::filesystem::path assetsRoot(projectManager->getAssetsPath());
+                        std::filesystem::path sceneFull(*file);
+                        assetsRoot = assetsRoot.lexically_normal();
+                        sceneFull = sceneFull.lexically_normal();
+                        std::filesystem::path rel = std::filesystem::relative(sceneFull, assetsRoot, ec);
+                        if (!ec && !rel.empty()) {
+                            onOpenSceneAsset(rel.generic_string());
+                        }
+                    }
+                }
+                if (ImGui::MenuItem("Save Scene", "Ctrl+S")) {
+                    if (onSaveProject) onSaveProject();
+                }
+                ImGui::Separator();
+            }
+
             if (ImGui::MenuItem("Import Model...", "Ctrl+I")) {
             }
             if (ImGui::MenuItem("Import Texture...", "Ctrl+T")) {
@@ -3378,16 +3723,6 @@ void UIManager::renderCameraWindow() {
 }
 
 void UIManager::renderNewProjectDialog() {
-    if (ImGuiFileDialog::Instance()->Display("SelectNewProjectFolder")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string folderPath = ImGuiFileDialog::Instance()->GetFilePathName();
-            ImGuiFileDialog::Instance()->Close();
-            strncpy(newProjectPath, folderPath.c_str(), sizeof(newProjectPath) - 1);
-            showNewProjectDialog = true;
-        }
-        ImGuiFileDialog::Instance()->Close();
-    }
-    
     if (!showNewProjectDialog) return;
     
     ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_Always);
@@ -3400,10 +3735,11 @@ void UIManager::renderNewProjectDialog() {
         ImGui::InputText("##path", newProjectPath, IM_ARRAYSIZE(newProjectPath));
         ImGui::SameLine();
         if (ImGui::Button("Browse...")) {
-            showNewProjectDialog = false;
-            IGFD::FileDialogConfig config;
-            config.path = ".";
-            ImGuiFileDialog::Instance()->OpenDialog("SelectNewProjectFolder", "Select Project Folder", nullptr, config);
+            auto folder = Atlas::Platform::openFolderDialog("Select Project Folder", ".");
+            if (folder) {
+                std::memset(newProjectPath, 0, IM_ARRAYSIZE(newProjectPath));
+                std::strncpy(newProjectPath, folder->c_str(), IM_ARRAYSIZE(newProjectPath) - 1);
+            }
         }
         
         ImGui::Separator();

@@ -1,14 +1,22 @@
 #include "scene_serializer.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 
 namespace Atlas {
 namespace {
-constexpr const char* kMagic = "ATLAS_SCENE_V1";
+// Legacy text format magic
+constexpr const char* kMagicText = "ATLAS_SCENE_V1";
+
+// Binary format magic/version
+constexpr uint8_t kMagicBin[] = {'A','T','L','A','S','_','S','C','N','_','B','I','N'};
+constexpr uint32_t kBinVersion = 1;
 
 std::string escapeString(const std::string& value) {
     std::ostringstream oss;
@@ -21,7 +29,7 @@ bool readQuoted(std::istream& is, std::string& out) {
     return !is.fail();
 }
 
-void writeFieldValue(std::ostream& os, const Scripting::ScriptFieldValue& value) {
+void writeFieldValueText(std::ostream& os, const Scripting::ScriptFieldValue& value) {
     using namespace Scripting;
     const ScriptFieldType type = getFieldType(value);
     os << getFieldTypeName(type) << ' ';
@@ -59,7 +67,7 @@ void writeFieldValue(std::ostream& os, const Scripting::ScriptFieldValue& value)
     }
 }
 
-bool readFieldValue(std::istream& is, const std::string& typeName, Scripting::ScriptFieldValue& outValue) {
+bool readFieldValueText(std::istream& is, const std::string& typeName, Scripting::ScriptFieldValue& outValue) {
     using namespace Scripting;
     if (typeName == "bool") {
         int v = 0;
@@ -126,17 +134,191 @@ SerializedMaterialComponent toSerializedMaterial(const ECS::MaterialComponent& m
     out.alphaCutoff = material.alphaCutoff;
     out.doubleSided = material.doubleSided;
     out.invertCulling = material.invertCulling;
+    out.useAlbedoTexture = material.useAlbedoTexture;
+    out.albedoTexturePath = material.albedoTexturePath;
+    out.useNormalTexture = material.useNormalTexture;
+    out.normalTexturePath = material.normalTexturePath;
+    out.useMetallicRoughnessTexture = material.useMetallicRoughnessTexture;
+    out.metallicRoughnessTexturePath = material.metallicRoughnessTexturePath;
+    out.useAOTexture = material.useAOTexture;
+    out.aoTexturePath = material.aoTexturePath;
+    out.useEmissiveTexture = material.useEmissiveTexture;
+    out.emissiveTexturePath = material.emissiveTexturePath;
     return out;
 }
 
-} // namespace
+// ---- Binary IO helpers (little endian) ----
 
-bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
-    std::ofstream out(path, std::ios::trunc);
-    if (!out.is_open()) {
+template <typename T>
+bool writePod(std::ostream& os, const T& v) {
+    os.write(reinterpret_cast<const char*>(&v), sizeof(T));
+    return !os.fail();
+}
+
+template <typename T>
+bool readPod(std::istream& is, T& v) {
+    is.read(reinterpret_cast<char*>(&v), sizeof(T));
+    return !is.fail();
+}
+
+bool writeU8(std::ostream& os, uint8_t v) { return writePod(os, v); }
+bool writeU32(std::ostream& os, uint32_t v) { return writePod(os, v); }
+bool writeI32(std::ostream& os, int32_t v) { return writePod(os, v); }
+bool writeU64(std::ostream& os, uint64_t v) { return writePod(os, v); }
+bool writeF32(std::ostream& os, float v) { return writePod(os, v); }
+
+bool readU8(std::istream& is, uint8_t& v) { return readPod(is, v); }
+bool readU32(std::istream& is, uint32_t& v) { return readPod(is, v); }
+bool readI32(std::istream& is, int32_t& v) { return readPod(is, v); }
+bool readU64(std::istream& is, uint64_t& v) { return readPod(is, v); }
+bool readF32(std::istream& is, float& v) { return readPod(is, v); }
+
+bool writeVec2(std::ostream& os, const glm::vec2& v) {
+    return writeF32(os, v.x) && writeF32(os, v.y);
+}
+
+bool writeVec3(std::ostream& os, const glm::vec3& v) {
+    return writeF32(os, v.x) && writeF32(os, v.y) && writeF32(os, v.z);
+}
+
+bool writeVec4(std::ostream& os, const glm::vec4& v) {
+    return writeF32(os, v.x) && writeF32(os, v.y) && writeF32(os, v.z) && writeF32(os, v.w);
+}
+
+bool readVec2(std::istream& is, glm::vec2& v) {
+    return readF32(is, v.x) && readF32(is, v.y);
+}
+
+bool readVec3(std::istream& is, glm::vec3& v) {
+    return readF32(is, v.x) && readF32(is, v.y) && readF32(is, v.z);
+}
+
+bool readVec4(std::istream& is, glm::vec4& v) {
+    return readF32(is, v.x) && readF32(is, v.y) && readF32(is, v.z) && readF32(is, v.w);
+}
+
+bool writeString(std::ostream& os, const std::string& s) {
+    if (s.size() > std::numeric_limits<uint32_t>::max()) {
         return false;
     }
+    const uint32_t len = static_cast<uint32_t>(s.size());
+    if (!writeU32(os, len)) return false;
+    if (len == 0) return true;
+    os.write(s.data(), static_cast<std::streamsize>(len));
+    return !os.fail();
+}
 
+bool readString(std::istream& is, std::string& out) {
+    uint32_t len = 0;
+    if (!readU32(is, len)) return false;
+    out.clear();
+    if (len == 0) return true;
+    out.resize(len);
+    is.read(out.data(), static_cast<std::streamsize>(len));
+    return !is.fail();
+}
+
+enum EntityBinFlags : uint32_t {
+    kHasTransform = 1u << 0,
+    kHasRenderable = 1u << 1,
+    kHasCamera = 1u << 2,
+    kHasEditorCamera = 1u << 3,
+    kIsHidden = 1u << 4,
+    kHasFollowCamera = 1u << 5,
+    kHasGameCamera = 1u << 6,
+    kHasRigidBody = 1u << 7,
+    kHasBoxCollider = 1u << 8,
+    kHasSphereCollider = 1u << 9,
+    kHasCapsuleCollider = 1u << 10,
+    kHasPrimitive = 1u << 11,
+    kHasMaterial = 1u << 12,
+    kHasScripts = 1u << 13,
+};
+
+bool writeScriptFieldBin(std::ostream& os, const SerializedScriptField& field) {
+    using namespace Scripting;
+    if (!writeString(os, field.name)) return false;
+
+    const ScriptFieldType type = getFieldType(field.value);
+    if (!writeU8(os, static_cast<uint8_t>(type))) return false;
+
+    switch (type) {
+    case ScriptFieldType::Bool:
+        return writeU8(os, std::get<bool>(field.value) ? 1 : 0);
+    case ScriptFieldType::Int:
+        return writeI32(os, static_cast<int32_t>(std::get<int>(field.value)));
+    case ScriptFieldType::Float:
+        return writeF32(os, std::get<float>(field.value));
+    case ScriptFieldType::String:
+        return writeString(os, std::get<std::string>(field.value));
+    case ScriptFieldType::Vec2:
+        return writeVec2(os, std::get<glm::vec2>(field.value));
+    case ScriptFieldType::Vec3:
+        return writeVec3(os, std::get<glm::vec3>(field.value));
+    case ScriptFieldType::Vec4:
+        return writeVec4(os, std::get<glm::vec4>(field.value));
+    default:
+        return false;
+    }
+}
+
+bool readScriptFieldBin(std::istream& is, SerializedScriptField& outField) {
+    using namespace Scripting;
+    if (!readString(is, outField.name)) return false;
+
+    uint8_t typeByte = 0;
+    if (!readU8(is, typeByte)) return false;
+
+    const ScriptFieldType type = static_cast<ScriptFieldType>(typeByte);
+    switch (type) {
+    case ScriptFieldType::Bool: {
+        uint8_t v = 0;
+        if (!readU8(is, v)) return false;
+        outField.value = (v != 0);
+        return true;
+    }
+    case ScriptFieldType::Int: {
+        int32_t v = 0;
+        if (!readI32(is, v)) return false;
+        outField.value = static_cast<int>(v);
+        return true;
+    }
+    case ScriptFieldType::Float: {
+        float v = 0.0f;
+        if (!readF32(is, v)) return false;
+        outField.value = v;
+        return true;
+    }
+    case ScriptFieldType::String: {
+        std::string v;
+        if (!readString(is, v)) return false;
+        outField.value = std::move(v);
+        return true;
+    }
+    case ScriptFieldType::Vec2: {
+        glm::vec2 v(0.0f);
+        if (!readVec2(is, v)) return false;
+        outField.value = v;
+        return true;
+    }
+    case ScriptFieldType::Vec3: {
+        glm::vec3 v(0.0f);
+        if (!readVec3(is, v)) return false;
+        outField.value = v;
+        return true;
+    }
+    case ScriptFieldType::Vec4: {
+        glm::vec4 v(0.0f);
+        if (!readVec4(is, v)) return false;
+        outField.value = v;
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+bool saveToBinary(Scene& scene, std::ostream& out) {
     const auto entities = scene.getAllEntities();
     std::unordered_map<entt::entity, uint32_t> idMap;
     idMap.reserve(entities.size());
@@ -146,19 +328,41 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
 
     const auto& registry = scene.getRegistry();
 
-    out << kMagic << '\n';
-    out << "scene_name " << escapeString(scene.getName()) << '\n';
-    out << "entity_count " << entities.size() << '\n';
+    // Header
+    out.write(reinterpret_cast<const char*>(kMagicBin), sizeof(kMagicBin));
+    if (!out.good()) return false;
+    if (!writeU32(out, kBinVersion)) return false;
+    if (!writeString(out, scene.getName())) return false;
+    if (!writeU32(out, static_cast<uint32_t>(entities.size()))) return false;
 
     for (auto entity : entities) {
         const uint32_t id = idMap[entity];
-        out << "entity " << id << '\n';
 
-        std::string tag = "Entity";
-        if (registry.all_of<ECS::TagComponent>(entity)) {
-            tag = registry.get<ECS::TagComponent>(entity).name;
+        uint32_t flags = 0;
+        if (registry.all_of<Transform>(entity)) flags |= kHasTransform;
+        if (registry.all_of<Renderable>(entity)) flags |= kHasRenderable;
+        if (registry.all_of<Camera>(entity)) flags |= kHasCamera;
+        if (registry.all_of<EditorCamera>(entity)) flags |= kHasEditorCamera;
+        if (registry.all_of<ECS::EditorHiddenComponent>(entity) && registry.get<ECS::EditorHiddenComponent>(entity).hidden) flags |= kIsHidden;
+        if (registry.all_of<ECS::FollowCameraComponent>(entity)) flags |= kHasFollowCamera;
+        if (registry.all_of<ECS::GameCameraComponent>(entity)) flags |= kHasGameCamera;
+        if (registry.all_of<ECS::RigidBodyComponent>(entity)) flags |= kHasRigidBody;
+        if (registry.all_of<ECS::BoxColliderComponent>(entity)) flags |= kHasBoxCollider;
+        if (registry.all_of<ECS::SphereColliderComponent>(entity)) flags |= kHasSphereCollider;
+        if (registry.all_of<ECS::CapsuleColliderComponent>(entity)) flags |= kHasCapsuleCollider;
+        if (registry.all_of<ECS::MaterialComponent>(entity)) flags |= kHasMaterial;
+        if (registry.all_of<ECS::ScriptComponent>(entity)) flags |= kHasScripts;
+
+        std::string primitiveType;
+        if (registry.all_of<::Mesh>(entity)) {
+            const auto& mesh = registry.get<::Mesh>(entity);
+            if (isPrimitiveMeshPath(mesh.meshPath, primitiveType)) {
+                flags |= kHasPrimitive;
+            }
         }
-        out << "tag " << escapeString(tag) << '\n';
+
+        // Entity header
+        if (!writeU32(out, id)) return false;
 
         int32_t parentId = -1;
         if (registry.all_of<ECS::ParentComponent>(entity)) {
@@ -168,116 +372,116 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
                 parentId = static_cast<int32_t>(it->second);
             }
         }
-        out << "parent " << parentId << '\n';
+        if (!writeI32(out, parentId)) return false;
 
-        if (registry.all_of<Transform>(entity)) {
+        std::string tag = "Entity";
+        if (registry.all_of<ECS::TagComponent>(entity)) {
+            tag = registry.get<ECS::TagComponent>(entity).name;
+        }
+        if (!writeString(out, tag)) return false;
+
+        if (!writeU32(out, flags)) return false;
+
+        if (flags & kHasTransform) {
             const auto& t = registry.get<Transform>(entity);
-            out << "transform "
-                << t.position.x << ' ' << t.position.y << ' ' << t.position.z << ' '
-                << t.rotation.x << ' ' << t.rotation.y << ' ' << t.rotation.z << ' '
-                << t.scale.x << ' ' << t.scale.y << ' ' << t.scale.z << '\n';
+            if (!writeVec3(out, t.position) || !writeVec3(out, t.rotation) || !writeVec3(out, t.scale)) return false;
         }
 
-        if (registry.all_of<Renderable>(entity)) {
+        if (flags & kHasRenderable) {
             const auto& r = registry.get<Renderable>(entity);
-            out << "renderable " << (r.visible ? 1 : 0) << ' ' << r.materialID << '\n';
+            if (!writeU8(out, r.visible ? 1 : 0)) return false;
+            if (!writeU32(out, static_cast<uint32_t>(r.materialID))) return false;
         }
 
-        if (registry.all_of<Camera>(entity)) {
+        if (flags & kHasCamera) {
             const auto& c = registry.get<Camera>(entity);
-            out << "camera "
-                << c.position.x << ' ' << c.position.y << ' ' << c.position.z << ' '
-                << c.target.x << ' ' << c.target.y << ' ' << c.target.z << ' '
-                << c.up.x << ' ' << c.up.y << ' ' << c.up.z << ' '
-                << c.fov << ' ' << c.aspectRatio << ' ' << c.nearPlane << ' ' << c.farPlane << '\n';
+            if (!writeVec3(out, c.position) || !writeVec3(out, c.target) || !writeVec3(out, c.up)) return false;
+            if (!writeF32(out, c.fov) || !writeF32(out, c.aspectRatio) || !writeF32(out, c.nearPlane) || !writeF32(out, c.farPlane)) return false;
         }
 
-        if (registry.all_of<EditorCamera>(entity)) {
+        if (flags & kHasEditorCamera) {
             const auto& c = registry.get<EditorCamera>(entity);
-            out << "editor_camera "
-                << c.position.x << ' ' << c.position.y << ' ' << c.position.z << ' '
-                << c.target.x << ' ' << c.target.y << ' ' << c.target.z << ' '
-                << c.up.x << ' ' << c.up.y << ' ' << c.up.z << ' '
-                << c.fov << ' ' << c.aspectRatio << ' ' << c.nearPlane << ' ' << c.farPlane << '\n';
+            if (!writeVec3(out, c.position) || !writeVec3(out, c.target) || !writeVec3(out, c.up)) return false;
+            if (!writeF32(out, c.fov) || !writeF32(out, c.aspectRatio) || !writeF32(out, c.nearPlane) || !writeF32(out, c.farPlane)) return false;
         }
 
-        if (registry.all_of<ECS::EditorHiddenComponent>(entity)) {
-            const auto& h = registry.get<ECS::EditorHiddenComponent>(entity);
-            out << "hidden " << (h.hidden ? 1 : 0) << '\n';
-        }
-
-        if (registry.all_of<ECS::FollowCameraComponent>(entity)) {
+        if (flags & kHasFollowCamera) {
             const auto& f = registry.get<ECS::FollowCameraComponent>(entity);
             int32_t targetId = -1;
             auto it = idMap.find(f.target);
             if (it != idMap.end()) {
                 targetId = static_cast<int32_t>(it->second);
             }
-            out << "follow_camera " << targetId << ' '
-                << f.offset.x << ' ' << f.offset.y << ' ' << f.offset.z << ' '
-                << f.smoothness << ' ' << (f.lookAtTarget ? 1 : 0) << '\n';
+            if (!writeI32(out, targetId)) return false;
+            if (!writeVec3(out, f.offset)) return false;
+            if (!writeF32(out, f.smoothness)) return false;
+            if (!writeU8(out, f.lookAtTarget ? 1 : 0)) return false;
         }
 
-        if (registry.all_of<ECS::GameCameraComponent>(entity)) {
+        if (flags & kHasGameCamera) {
             const auto& g = registry.get<ECS::GameCameraComponent>(entity);
-            out << "game_camera " << (g.primary ? 1 : 0) << '\n';
+            if (!writeU8(out, g.primary ? 1 : 0)) return false;
         }
 
-        if (registry.all_of<ECS::RigidBodyComponent>(entity)) {
+        if (flags & kHasRigidBody) {
             const auto& rb = registry.get<ECS::RigidBodyComponent>(entity);
-            out << "rigidbody "
-                << static_cast<int>(rb.motionType) << ' '
-                << rb.friction << ' ' << rb.restitution << ' '
-                << rb.linearDamping << ' ' << rb.angularDamping << ' '
-                << rb.gravityScale << ' '
-                << (rb.continuous ? 1 : 0) << ' ' << (rb.allowSleep ? 1 : 0) << '\n';
+            if (!writeI32(out, static_cast<int32_t>(rb.motionType))) return false;
+            if (!writeF32(out, rb.friction) || !writeF32(out, rb.restitution)) return false;
+            if (!writeF32(out, rb.linearDamping) || !writeF32(out, rb.angularDamping)) return false;
+            if (!writeF32(out, rb.gravityScale)) return false;
+            if (!writeU8(out, rb.continuous ? 1 : 0)) return false;
+            if (!writeU8(out, rb.allowSleep ? 1 : 0)) return false;
         }
 
-        if (registry.all_of<ECS::BoxColliderComponent>(entity)) {
+        if (flags & kHasBoxCollider) {
             const auto& c = registry.get<ECS::BoxColliderComponent>(entity);
-            out << "box_collider "
-                << c.halfExtent.x << ' ' << c.halfExtent.y << ' ' << c.halfExtent.z << ' '
-                << c.offset.x << ' ' << c.offset.y << ' ' << c.offset.z << ' '
-                << (c.isTrigger ? 1 : 0) << '\n';
+            if (!writeVec3(out, c.halfExtent)) return false;
+            if (!writeVec3(out, c.offset)) return false;
+            if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
         }
 
-        if (registry.all_of<ECS::SphereColliderComponent>(entity)) {
+        if (flags & kHasSphereCollider) {
             const auto& c = registry.get<ECS::SphereColliderComponent>(entity);
-            out << "sphere_collider "
-                << c.radius << ' '
-                << c.offset.x << ' ' << c.offset.y << ' ' << c.offset.z << ' '
-                << (c.isTrigger ? 1 : 0) << '\n';
+            if (!writeF32(out, c.radius)) return false;
+            if (!writeVec3(out, c.offset)) return false;
+            if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
         }
 
-        if (registry.all_of<ECS::CapsuleColliderComponent>(entity)) {
+        if (flags & kHasCapsuleCollider) {
             const auto& c = registry.get<ECS::CapsuleColliderComponent>(entity);
-            out << "capsule_collider "
-                << c.radius << ' ' << c.halfHeight << ' '
-                << c.offset.x << ' ' << c.offset.y << ' ' << c.offset.z << ' '
-                << (c.isTrigger ? 1 : 0) << '\n';
+            if (!writeF32(out, c.radius) || !writeF32(out, c.halfHeight)) return false;
+            if (!writeVec3(out, c.offset)) return false;
+            if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
         }
 
-        if (registry.all_of<::Mesh>(entity)) {
-            const auto& mesh = registry.get<::Mesh>(entity);
-            std::string primitiveType;
-            if (isPrimitiveMeshPath(mesh.meshPath, primitiveType)) {
-                out << "primitive " << escapeString(primitiveType) << '\n';
-            }
+        if (flags & kHasPrimitive) {
+            if (!writeString(out, primitiveType)) return false;
         }
 
-        if (registry.all_of<ECS::MaterialComponent>(entity)) {
+        if (flags & kHasMaterial) {
             const auto material = toSerializedMaterial(registry.get<ECS::MaterialComponent>(entity));
-            out << "material "
-                << material.baseColor.r << ' ' << material.baseColor.g << ' ' << material.baseColor.b << ' ' << material.baseColor.a << ' '
-                << material.metallic << ' ' << material.roughness << ' ' << material.ambientOcclusion << ' '
-                << material.emissiveFactor.x << ' ' << material.emissiveFactor.y << ' ' << material.emissiveFactor.z << ' '
-                << material.alphaMode << ' ' << material.alphaCutoff << ' '
-                << (material.doubleSided ? 1 : 0) << ' ' << (material.invertCulling ? 1 : 0) << '\n';
+            if (!writeVec4(out, material.baseColor)) return false;
+            if (!writeF32(out, material.metallic) || !writeF32(out, material.roughness) || !writeF32(out, material.ambientOcclusion)) return false;
+            if (!writeVec3(out, material.emissiveFactor)) return false;
+            if (!writeU32(out, material.alphaMode) || !writeF32(out, material.alphaCutoff)) return false;
+            if (!writeU8(out, material.doubleSided ? 1 : 0) || !writeU8(out, material.invertCulling ? 1 : 0)) return false;
+
+            if (!writeU8(out, material.useAlbedoTexture ? 1 : 0) || !writeString(out, material.albedoTexturePath)) return false;
+            if (!writeU8(out, material.useNormalTexture ? 1 : 0) || !writeString(out, material.normalTexturePath)) return false;
+            if (!writeU8(out, material.useMetallicRoughnessTexture ? 1 : 0) || !writeString(out, material.metallicRoughnessTexturePath)) return false;
+            if (!writeU8(out, material.useAOTexture ? 1 : 0) || !writeString(out, material.aoTexturePath)) return false;
+            if (!writeU8(out, material.useEmissiveTexture ? 1 : 0) || !writeString(out, material.emissiveTexturePath)) return false;
         }
 
-        if (registry.all_of<ECS::ScriptComponent>(entity)) {
+        if (flags & kHasScripts) {
             const auto& scriptComponent = registry.get<ECS::ScriptComponent>(entity);
+            if (scriptComponent.scripts.size() > std::numeric_limits<uint32_t>::max()) return false;
+            if (!writeU32(out, static_cast<uint32_t>(scriptComponent.scripts.size()))) return false;
+
             for (const auto& script : scriptComponent.scripts) {
+                if (!writeU8(out, script.enabled ? 1 : 0)) return false;
+                if (!writeString(out, script.scriptPath)) return false;
+
                 std::vector<std::string> fieldNames;
                 fieldNames.reserve(script.fields.size());
                 for (const auto& [name, _] : script.fields) {
@@ -285,30 +489,209 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
                 }
                 std::sort(fieldNames.begin(), fieldNames.end());
 
-                out << "script " << (script.enabled ? 1 : 0) << ' ' << escapeString(script.scriptPath) << ' ' << fieldNames.size() << '\n';
+                if (fieldNames.size() > std::numeric_limits<uint32_t>::max()) return false;
+                if (!writeU32(out, static_cast<uint32_t>(fieldNames.size()))) return false;
+
                 for (const auto& fieldName : fieldNames) {
-                    out << "field " << escapeString(fieldName) << ' ';
-                    writeFieldValue(out, script.fields.at(fieldName));
-                    out << '\n';
+                    SerializedScriptField f;
+                    f.name = fieldName;
+                    f.value = script.fields.at(fieldName);
+                    if (!writeScriptFieldBin(out, f)) return false;
                 }
-                out << "endscript\n";
             }
         }
-
-        out << "endentity\n";
     }
 
-    return true;
+    return !out.fail();
 }
 
-bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& outScene) {
-    std::ifstream in(path);
-    if (!in.is_open()) {
+bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
+    uint32_t version = 0;
+    if (!readU32(in, version) || version != kBinVersion) {
         return false;
     }
 
+    outScene = {};
+    if (!readString(in, outScene.name)) return false;
+
+    uint32_t entityCount = 0;
+    if (!readU32(in, entityCount)) return false;
+
+    outScene.entities.clear();
+    outScene.entities.reserve(entityCount);
+
+    for (uint32_t i = 0; i < entityCount; ++i) {
+        SerializedEntity e;
+        if (!readU32(in, e.id)) return false;
+        if (!readI32(in, e.parentId)) return false;
+        if (!readString(in, e.name)) return false;
+
+        uint32_t flags = 0;
+        if (!readU32(in, flags)) return false;
+
+        if (flags & kHasTransform) {
+            e.hasTransform = true;
+            if (!readVec3(in, e.transform.position) || !readVec3(in, e.transform.rotation) || !readVec3(in, e.transform.scale)) return false;
+        }
+
+        if (flags & kHasRenderable) {
+            e.hasRenderable = true;
+            uint8_t visible = 1;
+            uint32_t materialID = 0;
+            if (!readU8(in, visible) || !readU32(in, materialID)) return false;
+            e.renderable.visible = (visible != 0);
+            e.renderable.materialID = static_cast<int>(materialID);
+        }
+
+        if (flags & kHasCamera) {
+            e.hasCamera = true;
+            if (!readVec3(in, e.camera.position) || !readVec3(in, e.camera.target) || !readVec3(in, e.camera.up)) return false;
+            if (!readF32(in, e.camera.fov) || !readF32(in, e.camera.aspectRatio) || !readF32(in, e.camera.nearPlane) || !readF32(in, e.camera.farPlane)) return false;
+        }
+
+        if (flags & kHasEditorCamera) {
+            e.hasEditorCamera = true;
+            if (!readVec3(in, e.editorCamera.position) || !readVec3(in, e.editorCamera.target) || !readVec3(in, e.editorCamera.up)) return false;
+            if (!readF32(in, e.editorCamera.fov) || !readF32(in, e.editorCamera.aspectRatio) || !readF32(in, e.editorCamera.nearPlane) || !readF32(in, e.editorCamera.farPlane)) return false;
+        }
+
+        if (flags & kIsHidden) {
+            e.hidden = true;
+        }
+
+        if (flags & kHasFollowCamera) {
+            e.hasFollowCamera = true;
+            uint8_t lookAt = 1;
+            if (!readI32(in, e.followTargetId)) return false;
+            if (!readVec3(in, e.followOffset)) return false;
+            if (!readF32(in, e.followSmoothness)) return false;
+            if (!readU8(in, lookAt)) return false;
+            e.followLookAtTarget = (lookAt != 0);
+        }
+
+        if (flags & kHasGameCamera) {
+            e.hasGameCamera = true;
+            uint8_t primary = 1;
+            if (!readU8(in, primary)) return false;
+            e.gameCameraPrimary = (primary != 0);
+        }
+
+        if (flags & kHasRigidBody) {
+            e.hasRigidBody = true;
+            int32_t motionType = 0;
+            uint8_t continuous = 0;
+            uint8_t allowSleep = 1;
+            if (!readI32(in, motionType)) return false;
+            if (!readF32(in, e.rigidBody.friction) || !readF32(in, e.rigidBody.restitution)) return false;
+            if (!readF32(in, e.rigidBody.linearDamping) || !readF32(in, e.rigidBody.angularDamping)) return false;
+            if (!readF32(in, e.rigidBody.gravityScale)) return false;
+            if (!readU8(in, continuous) || !readU8(in, allowSleep)) return false;
+            e.rigidBody.motionType = static_cast<ECS::PhysicsMotionType>(motionType);
+            e.rigidBody.continuous = (continuous != 0);
+            e.rigidBody.allowSleep = (allowSleep != 0);
+        }
+
+        if (flags & kHasBoxCollider) {
+            e.hasBoxCollider = true;
+            uint8_t isTrigger = 0;
+            if (!readVec3(in, e.boxCollider.halfExtent)) return false;
+            if (!readVec3(in, e.boxCollider.offset)) return false;
+            if (!readU8(in, isTrigger)) return false;
+            e.boxCollider.isTrigger = (isTrigger != 0);
+        }
+
+        if (flags & kHasSphereCollider) {
+            e.hasSphereCollider = true;
+            uint8_t isTrigger = 0;
+            if (!readF32(in, e.sphereCollider.radius)) return false;
+            if (!readVec3(in, e.sphereCollider.offset)) return false;
+            if (!readU8(in, isTrigger)) return false;
+            e.sphereCollider.isTrigger = (isTrigger != 0);
+        }
+
+        if (flags & kHasCapsuleCollider) {
+            e.hasCapsuleCollider = true;
+            uint8_t isTrigger = 0;
+            if (!readF32(in, e.capsuleCollider.radius) || !readF32(in, e.capsuleCollider.halfHeight)) return false;
+            if (!readVec3(in, e.capsuleCollider.offset)) return false;
+            if (!readU8(in, isTrigger)) return false;
+            e.capsuleCollider.isTrigger = (isTrigger != 0);
+        }
+
+        if (flags & kHasPrimitive) {
+            if (!readString(in, e.primitiveType)) return false;
+        }
+
+        if (flags & kHasMaterial) {
+            e.hasMaterial = true;
+            if (!readVec4(in, e.material.baseColor)) return false;
+            if (!readF32(in, e.material.metallic) || !readF32(in, e.material.roughness) || !readF32(in, e.material.ambientOcclusion)) return false;
+            if (!readVec3(in, e.material.emissiveFactor)) return false;
+            if (!readU32(in, e.material.alphaMode) || !readF32(in, e.material.alphaCutoff)) return false;
+            uint8_t doubleSided = 0;
+            uint8_t invertCulling = 0;
+            if (!readU8(in, doubleSided) || !readU8(in, invertCulling)) return false;
+            e.material.doubleSided = (doubleSided != 0);
+            e.material.invertCulling = (invertCulling != 0);
+
+            uint8_t useAlbedoTexture = 0;
+            uint8_t useNormalTexture = 0;
+            uint8_t useMetallicRoughnessTexture = 0;
+            uint8_t useAOTexture = 0;
+            uint8_t useEmissiveTexture = 0;
+
+            if (!readU8(in, useAlbedoTexture) || !readString(in, e.material.albedoTexturePath)) return false;
+            if (!readU8(in, useNormalTexture) || !readString(in, e.material.normalTexturePath)) return false;
+            if (!readU8(in, useMetallicRoughnessTexture) || !readString(in, e.material.metallicRoughnessTexturePath)) return false;
+            if (!readU8(in, useAOTexture) || !readString(in, e.material.aoTexturePath)) return false;
+            if (!readU8(in, useEmissiveTexture) || !readString(in, e.material.emissiveTexturePath)) return false;
+
+            e.material.useAlbedoTexture = (useAlbedoTexture != 0);
+            e.material.useNormalTexture = (useNormalTexture != 0);
+            e.material.useMetallicRoughnessTexture = (useMetallicRoughnessTexture != 0);
+            e.material.useAOTexture = (useAOTexture != 0);
+            e.material.useEmissiveTexture = (useEmissiveTexture != 0);
+        }
+
+        if (flags & kHasScripts) {
+            uint32_t scriptCount = 0;
+            if (!readU32(in, scriptCount)) return false;
+
+            e.scripts.clear();
+            e.scripts.reserve(scriptCount);
+
+            for (uint32_t si = 0; si < scriptCount; ++si) {
+                SerializedScriptComponent script;
+                uint8_t enabled = 1;
+                if (!readU8(in, enabled)) return false;
+                if (!readString(in, script.scriptPath)) return false;
+                script.enabled = (enabled != 0);
+
+                uint32_t fieldCount = 0;
+                if (!readU32(in, fieldCount)) return false;
+
+                script.fields.clear();
+                script.fields.reserve(fieldCount);
+
+                for (uint32_t fi = 0; fi < fieldCount; ++fi) {
+                    SerializedScriptField field;
+                    if (!readScriptFieldBin(in, field)) return false;
+                    script.fields.push_back(std::move(field));
+                }
+
+                e.scripts.push_back(std::move(script));
+            }
+        }
+
+        outScene.entities.push_back(std::move(e));
+    }
+
+    return !in.fail();
+}
+
+bool loadFromText(std::istream& in, SerializedScene& outScene) {
     std::string token;
-    if (!(in >> token) || token != kMagic) {
+    if (!(in >> token) || token != kMagicText) {
         return false;
     }
 
@@ -420,12 +803,32 @@ bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& out
             current->hasMaterial = true;
             int doubleSided = 0;
             int invertCulling = 0;
+            int useAlbedoTexture = 0;
+            int useNormalTexture = 0;
+            int useMetallicRoughnessTexture = 0;
+            int useAOTexture = 0;
+            int useEmissiveTexture = 0;
             in >> current->material.baseColor.r >> current->material.baseColor.g >> current->material.baseColor.b >> current->material.baseColor.a
                >> current->material.metallic >> current->material.roughness >> current->material.ambientOcclusion
                >> current->material.emissiveFactor.x >> current->material.emissiveFactor.y >> current->material.emissiveFactor.z
-               >> current->material.alphaMode >> current->material.alphaCutoff >> doubleSided >> invertCulling;
+               >> current->material.alphaMode >> current->material.alphaCutoff >> doubleSided >> invertCulling
+               >> useAlbedoTexture;
+            if (!readQuoted(in, current->material.albedoTexturePath)) return false;
+            in >> useNormalTexture;
+            if (!readQuoted(in, current->material.normalTexturePath)) return false;
+            in >> useMetallicRoughnessTexture;
+            if (!readQuoted(in, current->material.metallicRoughnessTexturePath)) return false;
+            in >> useAOTexture;
+            if (!readQuoted(in, current->material.aoTexturePath)) return false;
+            in >> useEmissiveTexture;
+            if (!readQuoted(in, current->material.emissiveTexturePath)) return false;
             current->material.doubleSided = (doubleSided != 0);
             current->material.invertCulling = (invertCulling != 0);
+            current->material.useAlbedoTexture = (useAlbedoTexture != 0);
+            current->material.useNormalTexture = (useNormalTexture != 0);
+            current->material.useMetallicRoughnessTexture = (useMetallicRoughnessTexture != 0);
+            current->material.useAOTexture = (useAOTexture != 0);
+            current->material.useEmissiveTexture = (useEmissiveTexture != 0);
         } else if (token == "script") {
             if (!current) return false;
             SerializedScriptComponent script;
@@ -445,7 +848,7 @@ bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& out
                 std::string typeName;
                 if (!readQuoted(in, field.name)) return false;
                 in >> typeName;
-                if (!readFieldValue(in, typeName, field.value)) return false;
+                if (!readFieldValueText(in, typeName, field.value)) return false;
                 script.fields.push_back(std::move(field));
             }
             std::string endToken;
@@ -464,6 +867,43 @@ bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& out
     }
 
     return true;
+}
+
+} // namespace
+
+bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    return saveToBinary(scene, out);
+}
+
+bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& outScene) {
+    // Detect format
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in.is_open()) {
+            return false;
+        }
+
+        uint8_t magic[sizeof(kMagicBin)] = {};
+        in.read(reinterpret_cast<char*>(magic), sizeof(magic));
+        if (in.gcount() == static_cast<std::streamsize>(sizeof(magic)) &&
+            std::memcmp(magic, kMagicBin, sizeof(kMagicBin)) == 0) {
+            return loadFromBinary(in, outScene);
+        }
+    }
+
+    // Try legacy text
+    {
+        std::ifstream in(path);
+        if (!in.is_open()) {
+            return false;
+        }
+        return loadFromText(in, outScene);
+    }
 }
 
 } // namespace Atlas

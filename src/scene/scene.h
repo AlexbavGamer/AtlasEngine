@@ -10,7 +10,7 @@
 #include "../ecs/components/components.h"
 
 namespace Atlas {
-using namespace ECS;
+
 class Scene {
 public:
     Scene() = default;
@@ -19,11 +19,9 @@ public:
     entt::registry& getRegistry() { return m_Registry; }
     const entt::registry& getRegistry() const { return m_Registry; }
 
-    // Entity creation
     entt::entity createEntity(const std::string& name = "Entity");
-    void destroyEntity(entt::entity entity); // recursive with child cleanup
+    void destroyEntity(entt::entity entity);
 
-    // Transform component
     Transform& getTransform(entt::entity entity) {
         return m_Registry.get<Transform>(entity);
     }
@@ -32,11 +30,9 @@ public:
         return m_Registry.all_of<Transform>(entity);
     }
 
-    // Camera
-    CameraComponent* getActiveCamera();
+    Camera* getActiveCamera();
     void setActiveCamera(entt::entity entity);
 
-    // Hierarchy
     std::vector<entt::entity> getAllEntities();
     std::vector<entt::entity> getRootEntities();
     const std::vector<entt::entity>& getChildren(entt::entity parent) const;
@@ -46,18 +42,14 @@ public:
     std::vector<entt::entity> getEntitiesWithCamera();
     std::vector<entt::entity> getEntitiesWithLight();
 
-    // Computes world transform on demand (safe for editor manipulation).
     glm::mat4 getWorldTransform(entt::entity entity) const;
 
-    // Cached world transforms (call updateWorldTransforms() once per frame after edits).
     bool updateWorldTransforms();
     glm::mat4 getCachedWorldTransform(entt::entity entity) const;
 
-    // Scene name
     const std::string& getName() const { return m_Name; }
     void setName(const std::string& name) { m_Name = name; }
 
-    // Dirty flag
     bool isDirty() const { return m_Dirty; }
     void setDirty(bool dirty) { m_Dirty = dirty; }
 

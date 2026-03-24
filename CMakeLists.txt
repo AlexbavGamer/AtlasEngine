@@ -312,37 +312,56 @@ if(MSVC)
 endif()
 
 # ============================================================================
-# Main executable: AtlasEngine
+# Executables
 # ============================================================================
 file(GLOB_RECURSE ATLAS_SOURCES
     "${CMAKE_SOURCE_DIR}/src/*.cpp"
 )
 
-add_executable(${PROJECT_NAME} ${ATLAS_SOURCES})
+set(ATLAS_COMMON_SOURCES ${ATLAS_SOURCES})
+list(FILTER ATLAS_COMMON_SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
+list(FILTER ATLAS_COMMON_SOURCES EXCLUDE REGEX ".*/runtime_main\\.cpp$")
 
-target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${ATLAS_INCLUDE_DIRS}
-    ${lua_src_SOURCE_DIR}
+add_executable(${PROJECT_NAME}
+    ${CMAKE_SOURCE_DIR}/src/main.cpp
+    ${ATLAS_COMMON_SOURCES}
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    Vulkan::Vulkan
-    glfw
-    imgui_lib
-    imguizmo_lib
-    assimp
-    lua_lib
-    Jolt
+add_executable(AtlasRuntime
+    ${CMAKE_SOURCE_DIR}/src/runtime/runtime_main.cpp
+    ${ATLAS_COMMON_SOURCES}
 )
 
-if(ENABLE_TRACY)
-    target_link_libraries(${PROJECT_NAME} PRIVATE TracyClient tracy_lib)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE TRACY_ENABLE TRACY_NO_FRAME_IMAGE)
-endif()
+set(ATLAS_TARGETS ${PROJECT_NAME} AtlasRuntime)
+foreach(target_name IN LISTS ATLAS_TARGETS)
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${ATLAS_INCLUDE_DIRS}
+        ${lua_src_SOURCE_DIR}
+    )
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE VMA_STATIC)
-target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
+    target_link_libraries(${target_name} PRIVATE
+        Vulkan::Vulkan
+        glfw
+        imgui_lib
+        imguizmo_lib
+        assimp
+        lua_lib
+        Jolt
+        Threads::Threads
+    )
+
+    if(WIN32)
+        target_link_libraries(${target_name} PRIVATE ole32 shell32 shlwapi uuid)
+    endif()
+
+    if(ENABLE_TRACY)
+        target_link_libraries(${target_name} PRIVATE TracyClient tracy_lib)
+        target_compile_definitions(${target_name} PRIVATE TRACY_ENABLE TRACY_NO_FRAME_IMAGE)
+    endif()
+
+    target_compile_definitions(${target_name} PRIVATE VMA_STATIC)
+endforeach()
 
 # ============================================================================
 # Shader compilation
@@ -402,7 +421,9 @@ if(GLSLC_EXECUTABLE)
     endforeach()
 
     add_custom_target(shaders ALL DEPENDS ${ATLAS_SHADER_OUTPUTS})
-    add_dependencies(${PROJECT_NAME} shaders)
+    foreach(target_name IN LISTS ATLAS_TARGETS)
+        add_dependencies(${target_name} shaders)
+    endforeach()
 
     if(ATLAS_EMBED_SHADERS)
         file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
@@ -425,9 +446,12 @@ if(GLSLC_EXECUTABLE)
         )
 
         add_custom_target(embedded_shaders ALL DEPENDS "${ATLAS_EMBEDDED_SHADERS_CPP}")
-        add_dependencies(${PROJECT_NAME} embedded_shaders)
-        target_sources(${PROJECT_NAME} PRIVATE "${ATLAS_EMBEDDED_SHADERS_CPP}")
-        target_compile_definitions(${PROJECT_NAME} PRIVATE ATLAS_EMBED_SHADERS=1)
+
+        foreach(target_name IN LISTS ATLAS_TARGETS)
+            add_dependencies(${target_name} embedded_shaders)
+            target_sources(${target_name} PRIVATE "${ATLAS_EMBEDDED_SHADERS_CPP}")
+            target_compile_definitions(${target_name} PRIVATE ATLAS_EMBED_SHADERS=1)
+        endforeach()
     endif()
 else()
     message(WARNING "glslc not found. Shaders will not be compiled automatically.")
@@ -435,8 +459,10 @@ else()
 endif()
 
 # Copy compiled shaders next to the executable runtime directory
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${SHADER_OUTPUT_DIR}"
-            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders"
-)
+foreach(target_name IN LISTS ATLAS_TARGETS)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${SHADER_OUTPUT_DIR}"
+                "$<TARGET_FILE_DIR:${target_name}>/shaders"
+    )
+endforeach()

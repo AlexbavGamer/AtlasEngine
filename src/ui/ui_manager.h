@@ -8,13 +8,13 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 #include <filesystem>
 #include "../ecs/ecs.h"
 #include "../scene/scene.h"
 #include "../project/project_manager.h"
 #include "../renderer/renderer.h"
-#include <ImGuiFileDialog.h>
 
 namespace Atlas { class AssetManager; }
 class CameraController;
@@ -46,6 +46,9 @@ public:
     void setOnNewProject(std::function<void()> callback) { onNewProject = std::move(callback); }
     void setOnOpenProject(std::function<void()> callback) { onOpenProject = std::move(callback); }
     void setOnSaveProject(std::function<void()> callback) { onSaveProject = std::move(callback); }
+    void setOnExportGame(std::function<void()> callback) { onExportGame = std::move(callback); }
+    void setOnNewScene(std::function<void()> callback) { onNewScene = std::move(callback); }
+    void setOnOpenSceneAsset(std::function<void(const std::string&)> callback) { onOpenSceneAsset = std::move(callback); }
     void setOnExit(std::function<void()> callback) { onExit = std::move(callback); }
     void setCameraMatrices(glm::mat4 view, glm::mat4 proj);
     void setCameraController(CameraController* controller);
@@ -77,6 +80,9 @@ public:
 
     void undo();
     void redo();
+
+    void copySelectedEntitiesToClipboard();
+    void pasteEntitiesFromClipboard();
 
 private:
     struct ContentTextureThumb {
@@ -118,6 +124,78 @@ private:
 
     bool m_ShowDeleteAssetPopup = false;
 
+    struct EntityClipboardItem {
+        Entity source = entt::null;
+        Entity parent = entt::null;
+
+        std::string name;
+
+        bool hasTransform = false;
+        Transform transform;
+
+        bool hasRenderable = false;
+        Renderable renderable;
+
+        bool hasCamera = false;
+        Camera camera;
+
+        bool hasMesh = false;
+        ::Mesh mesh;
+
+        bool hasMaterial = false;
+        Atlas::ECS::MaterialComponent material;
+
+        bool hasRigidBody = false;
+        Atlas::ECS::RigidBodyComponent rigidBody;
+
+        bool hasBoxCollider = false;
+        Atlas::ECS::BoxColliderComponent boxCollider;
+
+        bool hasSphereCollider = false;
+        Atlas::ECS::SphereColliderComponent sphereCollider;
+
+        bool hasCapsuleCollider = false;
+        Atlas::ECS::CapsuleColliderComponent capsuleCollider;
+
+        bool hasLight = false;
+        Atlas::ECS::LightComponent light;
+
+        bool hasScript = false;
+        Atlas::ECS::ScriptComponent script;
+
+        bool hasFollowCamera = false;
+        Atlas::ECS::FollowCameraComponent followCamera;
+
+        bool hasGameCamera = false;
+        Atlas::ECS::GameCameraComponent gameCamera;
+
+        bool hasWorldChunk = false;
+        ::WorldChunk worldChunk;
+
+        bool hasWorldTransform = false;
+        ::WorldTransform worldTransform;
+
+        bool hasSkinnedMesh = false;
+        Atlas::ECS::SkinnedMeshComponent skinnedMesh;
+
+        bool hasSkeleton = false;
+        Atlas::ECS::SkeletonComponent skeleton;
+
+        bool hasAnimationPlayer = false;
+        Atlas::ECS::AnimationPlayerComponent animPlayer;
+
+        bool hasBonePoseOverride = false;
+        Atlas::ECS::BonePoseOverrideComponent bonePoseOverride;
+    };
+
+    struct EntityClipboard {
+        bool hasData = false;
+        std::vector<EntityClipboardItem> items;
+    };
+
+    EntityClipboard m_EntityClipboard;
+    uint32_t m_EntityPasteSerial = 0;
+
     // Hierarchy context actions
     bool m_ShowHierarchyRenamePopup = false;
     uint32_t m_HierarchyRenameEntityId = 0;
@@ -149,6 +227,9 @@ private:
     std::function<void()> onNewProject;
     std::function<void()> onOpenProject;
     std::function<void()> onSaveProject;
+    std::function<void()> onExportGame;
+    std::function<void()> onNewScene;
+    std::function<void(const std::string&)> onOpenSceneAsset;
     std::function<void()> onExit;
     std::function<void()> onPlay;
     std::function<void()> onPause;

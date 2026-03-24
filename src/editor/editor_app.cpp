@@ -17,6 +17,7 @@
 #include "../assets/asset_manager.h"
 #include "../core/profiler.h"
 #include "../core/threading/async_loader.h"
+#include "../export/package_manifest.h"
 #include "../imgui/imgui_manager.h"
 #include "../platform/window.h"
 #include "../project/project_manager.h"
@@ -32,6 +33,10 @@
 #include "../world/world_partition.h"
 #include "../utils/frustum.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace Atlas {
 using namespace ecs;
 
@@ -43,6 +48,28 @@ uint32_t primitiveFindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags prop
         }
     }
     return uint32_t(~0u);
+}
+
+std::filesystem::path getCurrentExecutablePath() {
+#ifdef _WIN32
+    char buffer[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return std::filesystem::path(std::string(buffer, len));
+    }
+    return std::filesystem::current_path() / "AtlasEngine.exe";
+#else
+    std::error_code ec;
+    auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+        return exe;
+    }
+    return std::filesystem::current_path() / "AtlasEngine";
+#endif
+}
+
+bool isPrimitiveMeshPath(const std::string& meshPath) {
+    return meshPath.rfind("primitive://", 0) == 0;
 }
 
 MeshData createPlanePrimitive(float size = 1.0f) {
@@ -261,6 +288,9 @@ EditorApp::EditorApp() {
     m_UIManager->setOnNewProject([this]() { loadProjectScene(); });
     m_UIManager->setOnOpenProject([this]() { loadProjectScene(); });
     m_UIManager->setOnSaveProject([this]() { saveProjectScene(); });
+    m_UIManager->setOnExportGame([this]() { exportGamePackage(); });
+    m_UIManager->setOnNewScene([this]() { newScene(); });
+    m_UIManager->setOnOpenSceneAsset([this](const std::string& assetPath) { loadSceneFromAssetPath(assetPath); });
     m_UIManager->setOnPlay([this]() { startPlayMode(); });
     m_UIManager->setOnPause([this]() { togglePausePlayMode(); });
     m_UIManager->setOnStop([this]() { stopPlayMode(); });
@@ -375,7 +405,18 @@ bool EditorApp::saveProjectScene() {
     }
 
     m_ProjectManager->ensureProjectDirectories();
-    const std::string scenePath = m_ProjectManager->getDefaultScenePath();
+
+    std::string assetRel = m_CurrentSceneAssetPath;
+    if (assetRel.empty()) {
+        // Fall back to default.
+        std::string defaultFull = m_ProjectManager->getDefaultScenePath();
+        if (defaultFull.empty()) {
+            return false;
+        }
+        assetRel = "scenes/main.scene";
+    }
+
+    const std::string scenePath = m_ProjectManager->getAssetFullPath(assetRel);
     if (scenePath.empty()) {
         return false;
     }
@@ -390,16 +431,46 @@ bool EditorApp::saveProjectScene() {
     return ok;
 }
 
+void EditorApp::newScene() {
+    if (!m_ProjectManager || !m_ProjectManager->hasProject()) {
+        return;
+    }
+
+    resetEditorScene(true);
+
+    m_CurrentSceneAssetPath = "scenes/untitled.scene";
+    if (m_Scene) {
+        m_Scene->setName("Untitled");
+        m_Scene->setDirty(true);
+    }
+}
+
 bool EditorApp::loadProjectScene() {
     if (!m_ProjectManager || !m_ProjectManager->hasProject()) {
         return false;
     }
 
+    return loadSceneFromAssetPath("scenes/main.scene");
+}
+
+bool EditorApp::loadSceneFromAssetPath(const std::string& assetRelativePath) {
+    if (!m_ProjectManager || !m_ProjectManager->hasProject()) {
+        return false;
+    }
+
+    if (assetRelativePath.empty()) {
+        return false;
+    }
+
+    const std::string scenePath = m_ProjectManager->getAssetFullPath(assetRelativePath);
+    if (scenePath.empty()) {
+        return false;
+    }
+
     resetEditorScene(false);
 
-    const std::string scenePath = m_ProjectManager->getDefaultScenePath();
     SerializedScene data;
-    if (!scenePath.empty() && std::filesystem::exists(scenePath) && SceneSerializer::loadFromFile(scenePath, data)) {
+    if (std::filesystem::exists(scenePath) && SceneSerializer::loadFromFile(scenePath, data)) {
         std::unordered_map<uint32_t, entt::entity> entityMap;
         entityMap.reserve(data.entities.size());
 
@@ -478,6 +549,16 @@ bool EditorApp::loadProjectScene() {
                 material.alphaCutoff = src.material.alphaCutoff;
                 material.doubleSided = src.material.doubleSided;
                 material.invertCulling = src.material.invertCulling;
+                material.useAlbedoTexture = src.material.useAlbedoTexture;
+                material.albedoTexturePath = src.material.albedoTexturePath;
+                material.useNormalTexture = src.material.useNormalTexture;
+                material.normalTexturePath = src.material.normalTexturePath;
+                material.useMetallicRoughnessTexture = src.material.useMetallicRoughnessTexture;
+                material.metallicRoughnessTexturePath = src.material.metallicRoughnessTexturePath;
+                material.useAOTexture = src.material.useAOTexture;
+                material.aoTexturePath = src.material.aoTexturePath;
+                material.useEmissiveTexture = src.material.useEmissiveTexture;
+                material.emissiveTexturePath = src.material.emissiveTexturePath;
                 registry.emplace_or_replace<ECS::MaterialComponent>(entity, material);
             }
             if (!src.scripts.empty()) {
@@ -486,6 +567,7 @@ bool EditorApp::loadProjectScene() {
                 for (const auto& srcScript : src.scripts) {
                     ECS::ScriptEntry entry;
                     entry.enabled = srcScript.enabled;
+
                     entry.scriptPath = srcScript.scriptPath;
                     for (const auto& field : srcScript.fields) {
                         entry.fields[field.name] = field.value;
@@ -528,10 +610,90 @@ bool EditorApp::loadProjectScene() {
         m_Scene->setName(data.name.empty() ? "Untitled" : data.name);
     }
 
+    m_CurrentSceneAssetPath = assetRelativePath;
+
     ensureEditorCamera();
     rebindEditorCameraController();
     m_Scene->updateWorldTransforms();
     m_Scene->setDirty(false);
+
+    if (m_ProjectManager) {
+        m_ProjectManager->invalidateAssetTreeCache();
+    }
+
+    return true;
+}
+
+bool EditorApp::exportGamePackage() {
+    if (!m_ProjectManager || !m_ProjectManager->hasProject() || !m_Scene) {
+        return false;
+    }
+
+    if (!saveProjectScene()) {
+        std::cerr << "[Export] Failed to save project scene before export" << std::endl;
+        return false;
+    }
+
+    const auto& registry = m_Scene->getRegistry();
+    auto meshView = registry.view<::Mesh>();
+    for (auto entity : meshView) {
+        const auto& mesh = meshView.get<::Mesh>(entity);
+        if (!isPrimitiveMeshPath(mesh.meshPath)) {
+            std::cerr << "[Export] Unsupported non-primitive mesh in scene: " << mesh.meshPath << std::endl;
+            return false;
+        }
+    }
+
+    std::filesystem::path exportRoot = std::filesystem::path(m_ProjectManager->getProjectPath()) / "export" / m_ProjectManager->getCurrentProject().name;
+    std::filesystem::path packageRoot = exportRoot / "game";
+    std::filesystem::path runtimeExeSrc = getCurrentExecutablePath().parent_path() / "AtlasRuntime.exe";
+    std::filesystem::path runtimeExeDst = exportRoot / (m_ProjectManager->getCurrentProject().name + ".exe");
+
+    std::error_code ec;
+    std::filesystem::remove_all(exportRoot, ec);
+    ec.clear();
+    std::filesystem::create_directories(packageRoot, ec);
+    if (ec) {
+        std::cerr << "[Export] Failed to create export directory: " << exportRoot.string() << std::endl;
+        return false;
+    }
+
+    if (!std::filesystem::exists(runtimeExeSrc)) {
+        std::cerr << "[Export] Missing runtime executable: " << runtimeExeSrc.string() << std::endl;
+        return false;
+    }
+
+    std::filesystem::copy_file(runtimeExeSrc, runtimeExeDst, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[Export] Failed to copy runtime executable: " << runtimeExeSrc.string() << std::endl;
+        return false;
+    }
+
+    std::filesystem::copy(m_ProjectManager->getAssetsPath(), packageRoot / "assets",
+        std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[Export] Failed to copy assets folder" << std::endl;
+        return false;
+    }
+
+    Atlas::Export::PackageManifest manifest;
+    manifest.startupScene = "assets/" + (m_CurrentSceneAssetPath.empty() ? std::string("scenes/main.scene") : m_CurrentSceneAssetPath);
+    manifest.assetsRoot = "assets";
+    manifest.useEmbeddedShaders = true;
+    manifest.shadersPath = "shaders";
+    if (!Atlas::Export::savePackageManifest(manifest, (packageRoot / "package.manifest").string())) {
+        std::cerr << "[Export] Failed to write package manifest" << std::endl;
+        return false;
+    }
+
+    std::filesystem::path shaderDir = getCurrentExecutablePath().parent_path() / "shaders";
+    if (std::filesystem::exists(shaderDir)) {
+        ec.clear();
+        std::filesystem::copy(shaderDir, packageRoot / "shaders",
+            std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+    }
+
+    std::cout << "[Export] Game exported to: " << exportRoot.string() << std::endl;
     return true;
 }
 
@@ -569,7 +731,6 @@ void EditorApp::cloneSceneToRuntime() {
     copyIfPresent(Camera{});
     copyIfPresent(WorldChunk{});
     copyIfPresent(WorldTransform{});
-    copyIfPresent(::Mesh{});
     copyIfPresent(Atlas::ECS::TagComponent{});
     copyIfPresent(Atlas::ECS::MaterialComponent{});
     copyIfPresent(Atlas::ECS::EditorHiddenComponent{});
@@ -584,6 +745,15 @@ void EditorApp::cloneSceneToRuntime() {
     copyIfPresent(Atlas::ECS::AnimationPlayerComponent{});
     copyIfPresent(Atlas::ECS::BonePoseOverrideComponent{});
     copyIfPresent(Atlas::ECS::SkinnedMeshComponent{});
+
+    // Copy meshes but mark them as non-owning so runtime clones do not free shared GPU handles.
+    for (const auto& pair : remap) {
+        if (src.all_of<::Mesh>(pair.first)) {
+            ::Mesh meshCopy = src.get<::Mesh>(pair.first);
+            meshCopy.ownsGpuResources = false;
+            dst.emplace_or_replace<::Mesh>(pair.second, meshCopy);
+        }
+    }
 
     for (const auto& pair : remap) {
         if (src.all_of<Atlas::ECS::ParentComponent>(pair.first)) {
@@ -651,6 +821,7 @@ void EditorApp::cloneSceneToRuntime() {
 
     m_RuntimeScene->updateWorldTransforms();
 }
+
 
 void EditorApp::rebuildRuntimePhysics() {
     if (m_PhysicsSystem) {
@@ -1059,6 +1230,10 @@ void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
     if (device == VK_NULL_HANDLE) return;
 
     auto& mesh = registry.get<::Mesh>(entity);
+
+    if (!mesh.ownsGpuResources) {
+        return;
+    }
 
     VkBuffer vb = mesh.vertexBuffer;
     VkDeviceMemory vm = mesh.vertexMemory;
