@@ -1,6 +1,6 @@
 # AtlasEngine
 
-**Um motor de jogo / renderizador leve, moderno e em desenvolvimento.**
+**A lightweight, modern, and performant game engine / rendering framework in development.**
 
 ![License](https://img.shields.io/github/license/AlexbavGamer/AtlasEngine)
 ![Language](https://img.shields.io/github/languages/top/AlexbavGamer/AtlasEngine)
@@ -8,39 +8,48 @@
 
 ---
 
-## Sobre o Projeto
+## About the Project
 
-**AtlasEngine** é um motor de jogo / engine de renderização em desenvolvimento focado em **performance**, **simplicidade** e **modernidade**.
+**AtlasEngine** is a game engine / rendering framework focused on **performance**, **simplicity**, and **modern C++ practices**.
 
-O objetivo é criar uma base leve e flexível para protótipos, jogos indie e experimentações técnicas, utilizando tecnologias atuais.
+The goal is to create a clean, flexible, and lightweight foundation for game prototypes, indie games, and technical experiments using current industry standards.
 
-### Principais Características
+### Key Features
 
-- **Linguagem principal**: C++20 / C++23
-- **API de Gráficos**: Vulkan (foco principal)
-- **Cross-platform**: Windows, Linux (macOS planejado)
-- **Entity Component System** (ECS)
-- **Renderização baseada em Física (PBR)**
-- **Asset Pipeline** moderno
-- **Editor** (em planejamento)
-
----
-
-## Status Atual
-
-Em fase inicial de desenvolvimento.
+- **Language**: C++20 / C++23
+- **Graphics API**: Vulkan (primary) • OpenGL • DirectX 12 (planned)
+- **Platforms**: Windows, Linux (macOS planned)
+- **Architecture**: Entity Component System (ECS)
+- **Rendering**: Physically Based Rendering (PBR)
+- **Ray Tracing**: Planned support
+- **Asset Pipeline**: Modern and asynchronous
+- **Editor**: In development
+- **Scripting**: Lua / C# bindings (planned)
 
 ---
 
-## Como Compilar
+## Current Status
 
-### Pré-requisitos
+> **Phase**: Early Development / Prototyping
 
-- CMake 3.22+
-- Vulkan SDK
-- Compilador com suporte a C++20+
+- [ ] Window and Vulkan context initialization
+- [ ] Basic rendering pipeline
+- [ ] Camera system
+- [ ] glTF model loading
+- [ ] ECS implementation
+- [ ] Asset management system
 
-### Compilação
+---
+
+## How to Build
+
+### Prerequisites
+
+- CMake 3.22 or higher
+- C++20 compatible compiler (MSVC, GCC 11+, Clang 13+)
+- Vulkan SDK (recommended)
+
+### Build Instructions
 
 ```bash
 git clone https://github.com/AlexbavGamer/AtlasEngine.git
@@ -54,10 +63,58 @@ cmake --build . --config Release
 
 ---
 
-## Contribuindo
+## Project Structure
 
-Pull requests são bem-vindos!
+```
+AtlasEngine/
+├── src/                 # Source code
+├── include/             # Public headers
+├── assets/              # Sample models, textures, and shaders
+├── external/            # Third-party dependencies (submodules)
+├── CMakeLists.txt
+├── docs/
+└── tools/
+```
 
 ---
 
-**Feito com ❤️ por [Alexsandre](https://github.com/AlexbavGamer)**
+## Roadmap
+
+- [ ] MVP - Triangle with camera movement
+- [ ] Asynchronous asset loading
+- [ ] Full PBR + Image-Based Lighting
+- [ ] ImGui Editor
+- [ ] Lua scripting integration
+- [ ] Physics system (Jolt / PhysX)
+- [ ] Build & packaging for final games
+
+---
+
+## Contributing
+
+Contributions are **welcome**!
+
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## License
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## Acknowledgments
+
+Inspired by great engines and frameworks:
+- [Hazel](https://github.com/TheCherno/Hazel) by The Cherno
+- [Diligent Engine](https://github.com/DiligentGraphics/DiligentEngine)
+- [Falcor](https://github.com/NVIDIAGameWorks/Falcor)
+
+---
+
+**Made with ❤️ by [Alexsandre](https://github.com/AlexbavGamer)**
