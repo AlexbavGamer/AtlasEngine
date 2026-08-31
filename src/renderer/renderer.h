@@ -116,6 +116,11 @@ public:
     using RenderCallback = std::function<void(VkCommandBuffer commandBuffer)>;
     void setRenderCallback(RenderCallback callback) { m_RenderCallback = std::move(callback); }
     void setPreferGameCamera(bool prefer) { m_PreferGameCamera = prefer; }
+
+    // When set, the renderer renders the scene directly to the swapchain
+    // (instead of an offscreen image) and skips the UI pass. Used by the
+    // standalone game executable.
+    void setGameMode(bool mode) { m_GameMode = mode; }
     void setScenePreviewCameraOverride(bool enabled, const glm::mat4& view, const glm::mat4& proj, const glm::vec3& position) {
         m_ScenePreviewCameraOverrideEnabled = enabled;
         m_ScenePreviewView = view;
@@ -343,6 +348,7 @@ private:
     ResizeCallback m_ResizeCallback;
     RenderCallback m_RenderCallback;
     bool m_PreferGameCamera = false;
+    bool m_GameMode = false;
     bool m_ScenePreviewCameraOverrideEnabled = false;
     glm::mat4 m_ScenePreviewView = glm::mat4(1.0f);
     glm::mat4 m_ScenePreviewProj = glm::mat4(1.0f);

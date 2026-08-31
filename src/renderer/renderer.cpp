@@ -2774,10 +2774,10 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         return entt::null;
     };
 
-    auto renderPreviewPass = [&](VkFramebuffer framebuffer, VkImageLayout& imageLayout, bool preferGameCamera) {
+    auto renderPreviewPass = [&](VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageLayout& imageLayout, bool preferGameCamera) {
         VkRenderPassBeginInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = m_OffscreenRenderPass;
+        renderPassInfo.renderPass = renderPass;
         renderPassInfo.framebuffer = framebuffer;
         renderPassInfo.renderArea.offset = {0, 0};
         renderPassInfo.renderArea.extent = m_SwapChainExtent;
@@ -3020,28 +3020,35 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
         imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     };
 
-    renderPreviewPass(m_OffscreenFramebuffer, m_OffscreenImageLayout, false);
-    renderPreviewPass(m_GameOffscreenFramebuffer, m_GameOffscreenImageLayout, true);
+    if (m_GameMode) {
+        // Standalone game: render the scene directly to the swapchain with the
+        // game camera and skip the editor UI pass entirely.
+        VkImageLayout dummyLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        renderPreviewPass(m_RenderPass, m_SwapChainFramebuffers[imageIndex], dummyLayout, true);
+    } else {
+        renderPreviewPass(m_OffscreenRenderPass, m_OffscreenFramebuffer, m_OffscreenImageLayout, false);
+        renderPreviewPass(m_OffscreenRenderPass, m_GameOffscreenFramebuffer, m_GameOffscreenImageLayout, true);
 
-    // Render UI to swapchain
-    VkRenderPassBeginInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = m_RenderPass;
-    renderPassInfo.framebuffer = m_SwapChainFramebuffers[imageIndex];
-    renderPassInfo.renderArea.offset = {0, 0};
-    renderPassInfo.renderArea.extent = m_SwapChainExtent;
-    VkClearValue clearValues[2];
-    clearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
-    clearValues[1].depthStencil = {1.0f, 0};
-    renderPassInfo.clearValueCount = 2;
-    renderPassInfo.pClearValues = clearValues;
-    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    
-    if (m_RenderCallback) {
-       m_RenderCallback(commandBuffer);
+        // Render UI to swapchain
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = m_RenderPass;
+        renderPassInfo.framebuffer = m_SwapChainFramebuffers[imageIndex];
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = m_SwapChainExtent;
+        VkClearValue clearValues[2];
+        clearValues[0].color = {{m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a}};
+        clearValues[1].depthStencil = {1.0f, 0};
+        renderPassInfo.clearValueCount = 2;
+        renderPassInfo.pClearValues = clearValues;
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        if (m_RenderCallback) {
+           m_RenderCallback(commandBuffer);
+        }
+
+        vkCmdEndRenderPass(commandBuffer);
     }
-    
-    vkCmdEndRenderPass(commandBuffer);
 
     } // end TracyVkZone scope
 
