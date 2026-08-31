@@ -47,6 +47,7 @@ public:
     void setOnOpenProject(std::function<void()> callback) { onOpenProject = std::move(callback); }
     void setOnSaveProject(std::function<void()> callback) { onSaveProject = std::move(callback); }
     void setOnExportGame(std::function<void()> callback) { onExportGame = std::move(callback); }
+    void setOnExportGameLinux(std::function<void()> callback) { onExportGameLinux = std::move(callback); }
     void setOnNewScene(std::function<void()> callback) { onNewScene = std::move(callback); }
     void setOnOpenSceneAsset(std::function<void(const std::string&)> callback) { onOpenSceneAsset = std::move(callback); }
     void setOnExit(std::function<void()> callback) { onExit = std::move(callback); }
@@ -228,6 +229,7 @@ private:
     std::function<void()> onOpenProject;
     std::function<void()> onSaveProject;
     std::function<void()> onExportGame;
+    std::function<void()> onExportGameLinux;
     std::function<void()> onNewScene;
     std::function<void(const std::string&)> onOpenSceneAsset;
     std::function<void()> onExit;

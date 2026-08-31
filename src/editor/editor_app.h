@@ -79,6 +79,7 @@ private:
     bool saveProjectScene();
     bool loadProjectScene();
     bool exportGamePackage();
+    bool exportGamePackageLinux();
 
     void newScene();
     bool loadSceneFromAssetPath(const std::string& assetRelativePath);

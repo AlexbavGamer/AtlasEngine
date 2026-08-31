@@ -10,6 +10,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 
 #include <ImGuizmo.h>
 #include <imgui.h>
@@ -29,6 +30,7 @@
 #include "../ui/ui_manager.h"
 #include "../utils/camera_controller.h"
 #include "../utils/model_loader.h"
+#include "../utils/primitive_helpers.h"
 #include "../ecs/ecs.h"
 #include "../world/world_partition.h"
 #include "../utils/frustum.h"
@@ -41,15 +43,6 @@ namespace Atlas {
 using namespace ecs;
 
 namespace {
-uint32_t primitiveFindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) {
-    for (uint32_t i = 0; i < memProperties->memoryTypeCount; ++i) {
-        if ((typeFilter & (1u << i)) && (memProperties->memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
-    }
-    return uint32_t(~0u);
-}
-
 std::filesystem::path getCurrentExecutablePath() {
 #ifdef _WIN32
     char buffer[MAX_PATH] = {};
@@ -70,159 +63,6 @@ std::filesystem::path getCurrentExecutablePath() {
 
 bool isPrimitiveMeshPath(const std::string& meshPath) {
     return meshPath.rfind("primitive://", 0) == 0;
-}
-
-MeshData createPlanePrimitive(float size = 1.0f) {
-    MeshData mesh;
-    const float h = size * 0.5f;
-    mesh.name = "Plane";
-    mesh.vertices = {
-        Vertex{{-h, 0.0f, -h}, {0.85f, 0.85f, 0.85f}, {0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-        Vertex{{ h, 0.0f, -h}, {0.85f, 0.85f, 0.85f}, {1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-        Vertex{{ h, 0.0f,  h}, {0.85f, 0.85f, 0.85f}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
-        Vertex{{-h, 0.0f,  h}, {0.85f, 0.85f, 0.85f}, {0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
-    };
-    mesh.indices = {0, 1, 2, 2, 3, 0};
-    mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
-    mesh.indexCount = static_cast<uint32_t>(mesh.indices.size());
-    return mesh;
-}
-
-MeshData createSpherePrimitive(float radius = 0.5f, int segments = 24, int rings = 16) {
-    MeshData mesh;
-    mesh.name = "Sphere";
-
-    for (int y = 0; y <= rings; ++y) {
-        const float v = static_cast<float>(y) / static_cast<float>(rings);
-        const float phi = v * glm::pi<float>();
-        for (int x = 0; x <= segments; ++x) {
-            const float u = static_cast<float>(x) / static_cast<float>(segments);
-            const float theta = u * glm::two_pi<float>();
-
-            glm::vec3 normal(
-                std::sin(phi) * std::cos(theta),
-                std::cos(phi),
-                std::sin(phi) * std::sin(theta));
-            glm::vec3 pos = normal * radius;
-            glm::vec3 color(0.92f, 0.92f, 0.92f);
-            mesh.vertices.push_back(Vertex{pos, color, glm::vec2(u, v), glm::normalize(normal)});
-        }
-    }
-
-    for (int y = 0; y < rings; ++y) {
-        for (int x = 0; x < segments; ++x) {
-            const uint32_t i0 = static_cast<uint32_t>(y * (segments + 1) + x);
-            const uint32_t i1 = i0 + 1;
-            const uint32_t i2 = i0 + static_cast<uint32_t>(segments + 1);
-            const uint32_t i3 = i2 + 1;
-            mesh.indices.insert(mesh.indices.end(), {i0, i2, i1, i1, i2, i3});
-        }
-    }
-
-    mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
-    mesh.indexCount = static_cast<uint32_t>(mesh.indices.size());
-    return mesh;
-}
-
-MeshData createCylinderPrimitive(float radius = 0.5f, float height = 1.0f, int segments = 24) {
-    MeshData mesh;
-    mesh.name = "Cylinder";
-    const float halfHeight = height * 0.5f;
-    const glm::vec3 color(0.9f, 0.9f, 0.92f);
-
-    for (int i = 0; i <= segments; ++i) {
-        const float u = static_cast<float>(i) / static_cast<float>(segments);
-        const float theta = u * glm::two_pi<float>();
-        const float x = std::cos(theta);
-        const float z = std::sin(theta);
-        const glm::vec3 normal = glm::normalize(glm::vec3(x, 0.0f, z));
-
-        mesh.vertices.push_back(Vertex{{radius * x, -halfHeight, radius * z}, color, {u, 0.0f}, normal});
-        mesh.vertices.push_back(Vertex{{radius * x,  halfHeight, radius * z}, color, {u, 1.0f}, normal});
-    }
-
-    for (int i = 0; i < segments; ++i) {
-        const uint32_t i0 = static_cast<uint32_t>(i * 2);
-        const uint32_t i1 = i0 + 1;
-        const uint32_t i2 = i0 + 2;
-        const uint32_t i3 = i0 + 3;
-        mesh.indices.insert(mesh.indices.end(), {i0, i1, i2, i2, i1, i3});
-    }
-
-    const uint32_t topCenter = static_cast<uint32_t>(mesh.vertices.size());
-    mesh.vertices.push_back(Vertex{{0.0f, halfHeight, 0.0f}, color, {0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}});
-    const uint32_t topStart = static_cast<uint32_t>(mesh.vertices.size());
-    for (int i = 0; i <= segments; ++i) {
-        const float u = static_cast<float>(i) / static_cast<float>(segments);
-        const float theta = u * glm::two_pi<float>();
-        const float x = std::cos(theta);
-        const float z = std::sin(theta);
-        mesh.vertices.push_back(Vertex{{radius * x, halfHeight, radius * z}, color, {0.5f + 0.5f * x, 0.5f + 0.5f * z}, {0.0f, 1.0f, 0.0f}});
-    }
-    for (int i = 0; i < segments; ++i) {
-        mesh.indices.insert(mesh.indices.end(), {topCenter, topStart + static_cast<uint32_t>(i + 1), topStart + static_cast<uint32_t>(i)});
-    }
-
-    const uint32_t bottomCenter = static_cast<uint32_t>(mesh.vertices.size());
-    mesh.vertices.push_back(Vertex{{0.0f, -halfHeight, 0.0f}, color, {0.5f, 0.5f}, {0.0f, -1.0f, 0.0f}});
-    const uint32_t bottomStart = static_cast<uint32_t>(mesh.vertices.size());
-    for (int i = 0; i <= segments; ++i) {
-        const float u = static_cast<float>(i) / static_cast<float>(segments);
-        const float theta = u * glm::two_pi<float>();
-        const float x = std::cos(theta);
-        const float z = std::sin(theta);
-        mesh.vertices.push_back(Vertex{{radius * x, -halfHeight, radius * z}, color, {0.5f + 0.5f * x, 0.5f + 0.5f * z}, {0.0f, -1.0f, 0.0f}});
-    }
-    for (int i = 0; i < segments; ++i) {
-        mesh.indices.insert(mesh.indices.end(), {bottomCenter, bottomStart + static_cast<uint32_t>(i), bottomStart + static_cast<uint32_t>(i + 1)});
-    }
-
-    mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
-    mesh.indexCount = static_cast<uint32_t>(mesh.indices.size());
-    return mesh;
-}
-
-MeshData createCapsulePrimitive(float radius = 0.5f, float height = 2.0f, int segments = 24, int hemiRings = 8) {
-    MeshData mesh;
-    mesh.name = "Capsule";
-    const glm::vec3 color(0.91f, 0.91f, 0.93f);
-    const float cylinderHalf = std::max(0.0f, (height * 0.5f) - radius);
-    const uint32_t stride = static_cast<uint32_t>(segments + 1);
-    const uint32_t rows = static_cast<uint32_t>(hemiRings * 2 + 2);
-
-    for (uint32_t y = 0; y < rows; ++y) {
-        const float t = static_cast<float>(y) / static_cast<float>(rows - 1);
-        const float phi = t * glm::pi<float>();
-        const float sinPhi = std::sin(phi);
-        const float cosPhi = std::cos(phi);
-        const float centerOffset = (cosPhi >= 0.0f) ? cylinderHalf : -cylinderHalf;
-
-        for (int x = 0; x <= segments; ++x) {
-            const float u = static_cast<float>(x) / static_cast<float>(segments);
-            const float theta = u * glm::two_pi<float>();
-            const float cosTheta = std::cos(theta);
-            const float sinTheta = std::sin(theta);
-
-            glm::vec3 normal(cosTheta * sinPhi, cosPhi, sinTheta * sinPhi);
-            glm::vec3 pos = normal * radius;
-            pos.y += centerOffset;
-            mesh.vertices.push_back(Vertex{pos, color, glm::vec2(u, t), glm::normalize(normal)});
-        }
-    }
-
-    for (uint32_t y = 0; y < rows - 1; ++y) {
-        for (int x = 0; x < segments; ++x) {
-            const uint32_t i0 = y * stride + static_cast<uint32_t>(x);
-            const uint32_t i1 = i0 + 1;
-            const uint32_t i2 = i0 + stride;
-            const uint32_t i3 = i2 + 1;
-            mesh.indices.insert(mesh.indices.end(), {i0, i2, i1, i1, i2, i3});
-        }
-    }
-
-    mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
-    mesh.indexCount = static_cast<uint32_t>(mesh.indices.size());
-    return mesh;
 }
 } // namespace
 
@@ -289,6 +129,7 @@ EditorApp::EditorApp() {
     m_UIManager->setOnOpenProject([this]() { loadProjectScene(); });
     m_UIManager->setOnSaveProject([this]() { saveProjectScene(); });
     m_UIManager->setOnExportGame([this]() { exportGamePackage(); });
+    m_UIManager->setOnExportGameLinux([this]() { exportGamePackageLinux(); });
     m_UIManager->setOnNewScene([this]() { newScene(); });
     m_UIManager->setOnOpenSceneAsset([this](const std::string& assetPath) { loadSceneFromAssetPath(assetPath); });
     m_UIManager->setOnPlay([this]() { startPlayMode(); });
@@ -646,9 +487,10 @@ bool EditorApp::exportGamePackage() {
 
     std::filesystem::path exportRoot = std::filesystem::path(m_ProjectManager->getProjectPath()) / "export" / m_ProjectManager->getCurrentProject().name;
     std::filesystem::path packageRoot = exportRoot / "game";
-    std::filesystem::path runtimeExeSrc = getCurrentExecutablePath().parent_path() / "AtlasRuntime.exe";
-    std::filesystem::path runtimeExeDst = exportRoot / (m_ProjectManager->getCurrentProject().name + ".exe");
 
+    // Build the game executable natively — the editor invokes g++ directly
+    // on the engine source files (without editor-only code) and links against
+    // the prebuilt static libraries (glfw, assimp, etc.) from `premake5 ninja`.
     std::error_code ec;
     std::filesystem::remove_all(exportRoot, ec);
     ec.clear();
@@ -658,15 +500,79 @@ bool EditorApp::exportGamePackage() {
         return false;
     }
 
-    if (!std::filesystem::exists(runtimeExeSrc)) {
-        std::cerr << "[Export] Missing runtime executable: " << runtimeExeSrc.string() << std::endl;
-        return false;
-    }
+    // Build the game .exe natively.
+    {
+        // AtlasEngine.exe lives at <root>/bin/<cfg>/ — go up 3 levels to the repo root.
+        const std::string engineRoot = getCurrentExecutablePath().parent_path().parent_path().parent_path().string();
+        const std::string outputExe = (exportRoot / (m_ProjectManager->getCurrentProject().name + ".exe")).string();
 
-    std::filesystem::copy_file(runtimeExeSrc, runtimeExeDst, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-        std::cerr << "[Export] Failed to copy runtime executable: " << runtimeExeSrc.string() << std::endl;
-        return false;
+        // Collect game source files (all src/ except editor-only files).
+        std::vector<std::string> sources;
+        for (auto& entry : std::filesystem::recursive_directory_iterator(
+                 std::filesystem::path(engineRoot) / "src")) {
+            if (!entry.is_regular_file()) continue;
+            auto ext = entry.path().extension().string();
+            if (ext != ".cpp" && ext != ".c") continue;
+            // Use forward-slash normalized path so the exclusion checks below
+            // work identically on Windows (\ separators) and POSIX (/).
+            auto path = entry.path().lexically_normal().generic_string();
+            // Exclude editor-only files.
+            if (path.find("/main.cpp") != std::string::npos) continue;
+            if (path.find("/editor/") != std::string::npos) continue;
+            if (path.find("/ui/") != std::string::npos) continue;
+            if (path.find("/imgui/") != std::string::npos) continue;
+            if (path.find("/project/") != std::string::npos) continue;
+            if (path.find("native_file_dialog") != std::string::npos) continue;
+            if (path.find("camera_controller") != std::string::npos) continue;
+            sources.push_back(std::move(path));
+        }
+
+        // Also include the generated embedded shaders.
+        std::string embedCpp = (std::filesystem::path(engineRoot) / "build/generated/embedded_shaders.cpp").string();
+        if (std::filesystem::exists(embedCpp)) {
+            sources.push_back(std::move(embedCpp));
+        }
+
+        // Build include directories string.
+        auto q = [](const std::string& s) { return "\"" + s + "\""; };
+        std::string inc = "-I" + q(engineRoot + "/src");
+        inc += " -I" + q(engineRoot + "/deps/src/imgui");
+        inc += " -I" + q(engineRoot + "/deps/src/imgui/backends");
+        inc += " -I" + q(engineRoot + "/deps/src/imguifiledialog");
+        inc += " -I" + q(engineRoot + "/deps/src/imguizmo/src");
+        inc += " -I" + q(engineRoot + "/deps/src/glm");
+        inc += " -I" + q(engineRoot + "/deps/src/stb");
+        inc += " -I" + q(engineRoot + "/deps/src/entt/src");
+        inc += " -I" + q(engineRoot + "/deps/src/vma/include");
+        inc += " -I" + q(engineRoot + "/deps/src/assimp/include");
+        inc += " -I" + q(engineRoot + "/deps/src/lua");
+        inc += " -I" + q(engineRoot + "/deps/src/glfw/include");
+        inc += " -I" + q(engineRoot + "/deps/src/tracy/public");
+        inc += " -I" + q(std::string(getenv("VULKAN_SDK")) + "/Include");
+
+        // Build source files string.
+        std::string srcStr;
+        for (const auto& s : sources) {
+            srcStr += q(s) + " ";
+        }
+
+        // Link libraries.
+        std::string libDir = q(engineRoot + "/build/bin/Release");
+        std::string vkLib = q(std::string(getenv("VULKAN_SDK")) + "/Lib");
+
+        std::string cmd = "g++ -std=c++17 -O2 -DNDEBUG -DVMA_STATIC -DATLAS_EMBED_SHADERS=1 -mwindows "
+            + inc + " " + srcStr
+            + " -L" + libDir + " -lglfw -limgui_lib -limguizmo_lib -llua_lib -lassimp -lzlib -lTracyClient"
+            + " -L" + vkLib + " -lvulkan-1"
+            + " -lole32 -lshell32 -lshlwapi -luuid -lws2_32 -ldbghelp -lgdi32"
+            + " -o " + q(outputExe);
+
+        std::cout << "[Export] Building game..." << std::endl;
+        const int ret = std::system(cmd.c_str());
+        if (ret != 0) {
+            std::cerr << "[Export] Game build failed with exit code " << ret << std::endl;
+            return false;
+        }
     }
 
     std::filesystem::copy(m_ProjectManager->getAssetsPath(), packageRoot / "assets",
@@ -674,6 +580,35 @@ bool EditorApp::exportGamePackage() {
     if (ec) {
         std::cerr << "[Export] Failed to copy assets folder" << std::endl;
         return false;
+    }
+
+    // Copy the MinGW runtime DLLs next to the exported executable so the game
+    // runs on machines that don't have the MinGW toolchain in PATH.
+    {
+        const char* dllNames[] = {"libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll"};
+        std::string mingwBin = std::filesystem::path(getCurrentExecutablePath()).parent_path().parent_path().parent_path().parent_path().string();
+        // The editor exe runs from <root>/bin/<cfg>/; the MinGW bin dir is not
+        // derivable from there, so probe a few common locations.
+        std::vector<std::string> candidates = {
+            mingwBin + "/../mingw/bin",
+            mingwBin + "/../../scoop/apps/mingw/current/bin",
+            mingwBin + "/../../Users/" + std::string(getenv("USERNAME") ? getenv("USERNAME") : "") + "/scoop/apps/mingw/current/bin",
+            "C:/Users/" + std::string(getenv("USERNAME") ? getenv("USERNAME") : "") + "/scoop/apps/mingw/current/bin",
+        };
+        std::string foundDir;
+        for (const auto& c : candidates) {
+            if (std::filesystem::exists(std::filesystem::path(c) / "libstdc++-6.dll")) {
+                foundDir = c;
+                break;
+            }
+        }
+        if (!foundDir.empty()) {
+            for (const char* dll : dllNames) {
+                ec.clear();
+                std::filesystem::copy_file(std::filesystem::path(foundDir) / dll, exportRoot / dll,
+                    std::filesystem::copy_options::overwrite_existing, ec);
+            }
+        }
     }
 
     Atlas::Export::PackageManifest manifest;
@@ -694,6 +629,89 @@ bool EditorApp::exportGamePackage() {
     }
 
     std::cout << "[Export] Game exported to: " << exportRoot.string() << std::endl;
+    return true;
+}
+
+bool EditorApp::exportGamePackageLinux() {
+    if (!m_ProjectManager || !m_ProjectManager->hasProject() || !m_Scene) {
+        return false;
+    }
+
+    if (!saveProjectScene()) {
+        std::cerr << "[Export] Failed to save project scene before export" << std::endl;
+        return false;
+    }
+
+    const auto& registry = m_Scene->getRegistry();
+    auto meshView = registry.view<::Mesh>();
+    for (auto entity : meshView) {
+        const auto& mesh = meshView.get<::Mesh>(entity);
+        if (!isPrimitiveMeshPath(mesh.meshPath)) {
+            std::cerr << "[Export] Unsupported non-primitive mesh in scene: " << mesh.meshPath << std::endl;
+            return false;
+        }
+    }
+
+    std::filesystem::path exportRoot =
+        std::filesystem::path(m_ProjectManager->getProjectPath()) / "export" / (m_ProjectManager->getCurrentProject().name + "_linux");
+    std::filesystem::path packageRoot = exportRoot / "game";
+
+    std::error_code ec;
+    std::filesystem::remove_all(exportRoot, ec);
+    ec.clear();
+    std::filesystem::create_directories(packageRoot, ec);
+    if (ec) {
+        std::cerr << "[Export] Failed to create export directory: " << exportRoot.string() << std::endl;
+        return false;
+    }
+
+    // Copy assets into the package.
+    std::filesystem::copy(m_ProjectManager->getAssetsPath(), packageRoot / "assets",
+        std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[Export] Failed to copy assets folder" << std::endl;
+        return false;
+    }
+
+    // Write the package manifest.
+    Atlas::Export::PackageManifest manifest;
+    manifest.startupScene = "assets/" + (m_CurrentSceneAssetPath.empty() ? std::string("scenes/main.scene") : m_CurrentSceneAssetPath);
+    manifest.assetsRoot = "assets";
+    manifest.useEmbeddedShaders = true;
+    manifest.shadersPath = "shaders";
+    if (!Atlas::Export::savePackageManifest(manifest, (packageRoot / "package.manifest").string())) {
+        std::cerr << "[Export] Failed to write package manifest" << std::endl;
+        return false;
+    }
+
+    // Copy shaders into the package (embedded shaders are used, but keep the
+    // .spv files alongside for fallback / RenderDoc inspection).
+    std::filesystem::path shaderDir = getCurrentExecutablePath().parent_path() / "shaders";
+    if (std::filesystem::exists(shaderDir)) {
+        ec.clear();
+        std::filesystem::copy(shaderDir, packageRoot / "shaders",
+            std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+    }
+
+    // Copy the Linux build script and CI workflow next to the package.
+    std::filesystem::path engineRoot = getCurrentExecutablePath().parent_path().parent_path().parent_path();
+    std::filesystem::path scriptSrc = engineRoot / "scripts" / "build_linux.sh";
+    if (std::filesystem::exists(scriptSrc)) {
+        std::filesystem::copy_file(scriptSrc, exportRoot / "build_linux.sh",
+            std::filesystem::copy_options::overwrite_existing, ec);
+    }
+
+    std::filesystem::path workflowSrc = engineRoot / "scripts" / "workflows" / "build-linux.yml";
+    if (std::filesystem::exists(workflowSrc)) {
+        std::filesystem::create_directories(exportRoot / ".github" / "workflows", ec);
+        ec.clear();
+        std::filesystem::copy_file(workflowSrc, exportRoot / ".github" / "workflows" / "build-linux.yml",
+            std::filesystem::copy_options::overwrite_existing, ec);
+    }
+
+    std::cout << "[Export] Linux package exported to: " << exportRoot.string() << std::endl;
+    std::cout << "  To build the Linux game, run: ./build_linux.sh game ./game" << std::endl;
+    std::cout << "  or push this folder to GitHub and run the 'Build Linux Game' workflow." << std::endl;
     return true;
 }
 
@@ -1000,13 +1018,13 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         meshData = ModelLoader::createCube(1.0f);
         meshData.name = "Cube";
     } else if (primitiveType == "Plane") {
-        meshData = createPlanePrimitive(2.0f);
+        meshData = Atlas::PrimitiveHelpers::createPlane(2.0f);
     } else if (primitiveType == "Sphere") {
-        meshData = createSpherePrimitive(0.5f);
+        meshData = Atlas::PrimitiveHelpers::createSphere(0.5f);
     } else if (primitiveType == "Cylinder") {
-        meshData = createCylinderPrimitive(0.5f, 1.5f);
+        meshData = Atlas::PrimitiveHelpers::createCylinder(0.5f, 1.5f);
     } else if (primitiveType == "Capsule") {
-        meshData = createCapsulePrimitive(0.45f, 1.8f);
+        meshData = Atlas::PrimitiveHelpers::createCapsule(0.45f, 1.8f);
     } else {
         return entt::null;
     }
@@ -1024,8 +1042,9 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         hasBounds = true;
     }
 
+    // Create GPU buffers
     if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
-        ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(), primitiveFindMemoryType);
+        ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(), PrimitiveHelpers::findMemoryType);
         meshData.freeCPUMemory();
     }
 

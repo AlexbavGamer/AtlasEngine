@@ -3512,8 +3512,14 @@ void UIManager::renderMenuBar() {
             if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
                 if (onSaveProject) onSaveProject();
             }
-            if (ImGui::MenuItem("Export Game")) {
-                if (onExportGame) onExportGame();
+            if (ImGui::BeginMenu("Export Game")) {
+                if (ImGui::MenuItem("Windows")) {
+                    if (onExportGame) onExportGame();
+                }
+                if (ImGui::MenuItem("Linux")) {
+                    if (onExportGameLinux) onExportGameLinux();
+                }
+                ImGui::EndMenu();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4")) {
