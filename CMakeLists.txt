@@ -81,7 +81,10 @@ FetchContent_Declare(
     GIT_TAG master
     SOURCE_DIR "${DEPS_SRC_DIR}/imguizmo"
 )
-FetchContent_MakeAvailable(imguizmo)
+FetchContent_GetProperties(imguizmo)
+if(NOT imguizmo_POPULATED)
+    FetchContent_Populate(imguizmo)
+endif()
 
 # EnTT
 atlas_fetch(entt https://github.com/skypjack/entt.git v3.12.1)
@@ -112,20 +115,6 @@ set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
 set(DEBUG_RENDERER_IN_DISTRIBUTION OFF CACHE BOOL "" FORCE)
 set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
 set(PROFILER_IN_DISTRIBUTION OFF CACHE BOOL "" FORCE)
-set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    joltphysics
-    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
-    GIT_TAG v5.3.0
-    SOURCE_DIR "${DEPS_SRC_DIR}/joltphysics"
-    BINARY_DIR "${DEPS_BUILD_DIR}/joltphysics"
-)
-FetchContent_GetProperties(joltphysics)
-if(NOT joltphysics_POPULATED)
-    FetchContent_Populate(joltphysics)
-    add_subdirectory(${joltphysics_SOURCE_DIR}/Build ${joltphysics_BINARY_DIR} EXCLUDE_FROM_ALL)
-endif()
-
 # VMA
 set(VMA_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 atlas_fetch(vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git v3.3.0)
@@ -250,7 +239,7 @@ set(ATLAS_INCLUDE_DIRS
     ${entt_SOURCE_DIR}/src
     ${vma_SOURCE_DIR}/include
     ${assimp_SOURCE_DIR}/include
-    ${imguizmo_SOURCE_DIR}
+    ${imguizmo_SOURCE_DIR}/src
 )
 
 if(ENABLE_TRACY)
@@ -272,15 +261,15 @@ add_library(imgui_lib STATIC
 )
 target_compile_definitions(imgui_lib PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
 
-add_library(imguizmo_lib STATIC ${imguizmo_SOURCE_DIR}/ImGuizmo.cpp)
-target_include_directories(imguizmo_lib PUBLIC ${imguizmo_SOURCE_DIR} ${imgui_SOURCE_DIR})
+add_library(imguizmo_lib STATIC ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp)
+target_include_directories(imguizmo_lib PUBLIC ${imguizmo_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
 target_compile_definitions(imguizmo_lib PRIVATE IMGUI_DEFINE_MATH_OPERATORS)
 
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imguifiledialog_SOURCE_DIR}
-    ${imguizmo_SOURCE_DIR}
+    ${imguizmo_SOURCE_DIR}/src
 )
 
 add_library(imguifiledialog INTERFACE)
@@ -320,19 +309,13 @@ file(GLOB_RECURSE ATLAS_SOURCES
 
 set(ATLAS_COMMON_SOURCES ${ATLAS_SOURCES})
 list(FILTER ATLAS_COMMON_SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
-list(FILTER ATLAS_COMMON_SOURCES EXCLUDE REGEX ".*/runtime_main\\.cpp$")
 
 add_executable(${PROJECT_NAME}
     ${CMAKE_SOURCE_DIR}/src/main.cpp
     ${ATLAS_COMMON_SOURCES}
 )
 
-add_executable(AtlasRuntime
-    ${CMAKE_SOURCE_DIR}/src/runtime/runtime_main.cpp
-    ${ATLAS_COMMON_SOURCES}
-)
-
-set(ATLAS_TARGETS ${PROJECT_NAME} AtlasRuntime)
+set(ATLAS_TARGETS ${PROJECT_NAME})
 foreach(target_name IN LISTS ATLAS_TARGETS)
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
@@ -347,7 +330,6 @@ foreach(target_name IN LISTS ATLAS_TARGETS)
         imguizmo_lib
         assimp
         lua_lib
-        Jolt
         Threads::Threads
     )
 
