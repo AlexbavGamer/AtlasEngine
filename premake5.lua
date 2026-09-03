@@ -302,6 +302,29 @@ project "assimp"
     }
 
 -- ---------------------------------------------------------------------------
+-- Atlas UI — custom UI library (retained-mode widgets) as a static lib
+-- ---------------------------------------------------------------------------
+project "atlas_ui_lib"
+    kind "StaticLib"
+    language "C++"
+    cppdialect "C++17"
+
+    files {
+        "libs/atlas_ui/**.cpp",
+        "libs/atlas_ui/**.h",
+    }
+
+    includedirs {
+        "libs/atlas_ui/include",
+        path.join(deps_src, "glm"),
+        path.join(deps_src, "stb"),
+        path.join(deps_src, "vma/include"),
+        vulkan_inc,
+    }
+
+    links { "vulkan-1" }
+
+-- ---------------------------------------------------------------------------
 -- AtlasEngine — the final game executable
 -- ---------------------------------------------------------------------------
 project "AtlasEngine"
@@ -348,6 +371,7 @@ project "AtlasEngine"
         "zlib",
         "TracyClient",
         "vulkan-1",
+        "atlas_ui_lib",
     }
 
     libdirs { vulkan_lib }
