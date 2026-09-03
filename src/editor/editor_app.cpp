@@ -1375,6 +1375,7 @@ void EditorApp::renderImportOptionsPopup() {
         ImGui::SeparatorText("Options");
 
         ImGui::DragFloat("Uniform Scale", &m_ActiveImportOptions.uniformScale, 0.01f, 0.001f, 1000.0f, "%.3f");
+        ImGui::Checkbox("Import Textures", &m_ActiveImportOptions.loadTextures);
         ImGui::Checkbox("Import Animations", &m_ActiveImportOptions.importAnimations);
 
         ImGui::BeginDisabled(!m_ActiveImportOptions.importAnimations);
@@ -1478,9 +1479,9 @@ void EditorApp::startModelImportAt(const std::string& assetPath, const glm::vec3
     auto modelDataPtr = std::make_shared<::ModelData>();
     AsyncLoader::getInstance().loadModelAsync<::ModelData>(
         fullPath,
-        [fullPath, modelDataPtr]() -> std::shared_ptr<::ModelData> {
+        [fullPath, modelDataPtr, options]() -> std::shared_ptr<::ModelData> {
             PROFILE_SCOPE("ModelLoad");
-            ModelLoader::loadModelMultiMesh(fullPath, VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr, modelDataPtr.get(), false);
+            ModelLoader::loadModelMultiMesh(fullPath, VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr, modelDataPtr.get(), false, options.loadTextures);
             return modelDataPtr;
         },
         [this, modelName, fullPath, tempEntity, rootPosition, isWorldChunk, cellKey, options](AsyncLoader::LoadResult<::ModelData> result) {

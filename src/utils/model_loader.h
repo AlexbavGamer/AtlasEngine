@@ -425,7 +425,8 @@ public:
         VkPhysicalDevice physicalDevice, 
         uint32_t (*findMemoryType)(uint32_t, VkMemoryPropertyFlags, VkPhysicalDeviceMemoryProperties*), 
         ModelData* outData, 
-        bool mergeAll = false) 
+        bool mergeAll = false,
+        bool loadTextures = true) 
     {
         if (outData == nullptr) {
             throw std::runtime_error("outData pointer is null!");
@@ -596,6 +597,39 @@ public:
             extractedDir = modelDir.parent_path() / "textures";
         }
         std::filesystem::create_directories(extractedDir, ec);
+
+        // Locate an embedded texture (scene->mTextures) whose filename matches
+        // a given basename. FBX exposes its embedded images under internal
+        // virtual paths like "tmpnxqm_s87.fbm/modddif_image_0_png"; the material
+        // references that same virtual path, so matching the basename lets us
+        // pull the texture that is actually embedded. Returns -1 when none.
+        auto findEmbeddedByFilename = [&](const std::string& probe) -> int {
+            if (probe.empty() || scene->mNumTextures == 0) return -1;
+            for (unsigned int t = 0; t < scene->mNumTextures; ++t) {
+                const aiTexture* tx = scene->mTextures[t];
+                if (!tx) continue;
+                const char* name = tx->mFilename.C_Str();
+                if (!name || !name[0]) continue;
+                std::filesystem::path p{ std::string(name) };
+                std::string base = p.filename().string();
+                // Compare case-insensitively; tolerate the trailing "_ext" suffix
+                // some exporters append (e.g. "foo_png").
+                if (base.size() != probe.size()) {
+                    // Try stripping a trailing "_png"/"_jpg"/"_tga"/"_bmp".
+                    for (const char* e : {"_png", "_jpg", "_jpeg", "_tga", "_bmp", "_dds"}) {
+                        std::string stripped = base;
+                        if (stripped.size() > std::char_traits<char>::length(e) &&
+                            stripped.compare(stripped.size() - std::char_traits<char>::length(e),
+                                             std::char_traits<char>::length(e), e) == 0) {
+                            stripped.erase(stripped.size() - std::char_traits<char>::length(e));
+                            if (stripped == probe) return static_cast<int>(t);
+                        }
+                    }
+                }
+                if (base == probe) return static_cast<int>(t);
+            }
+            return -1;
+        };
 
         auto extractEmbeddedTexture = [&](int index) -> std::string {
             if (index < 0 || static_cast<unsigned int>(index) >= scene->mNumTextures) {
@@ -771,7 +805,26 @@ public:
                 return extractEmbeddedTexture(idx);
             }
 
-            return copyExternalTexture(std::string(cstr));
+            std::string resolved = copyExternalTexture(std::string(cstr));
+
+            // Some formats (notably FBX) reference textures by an internal
+            // virtual path (e.g. "tmpnxqm_s87.fbm/modddif_image_0_png") that is
+            // NOT a real file on disk, but IS present as an embedded texture in
+            // scene->mTextures, keyed by mFilename. When the file does not
+            // exist, fall back to matching an embedded texture by basename so
+            // the asset's textures still resolve.
+            if (resolved.empty() || !std::filesystem::exists(resolved)) {
+                std::filesystem::path raw(strlen(cstr) ? cstr : "");
+                std::string probe = raw.filename().string();
+                if (!probe.empty()) {
+                    int idx = findEmbeddedByFilename(probe);
+                    if (idx >= 0) {
+                        return extractEmbeddedTexture(idx);
+                    }
+                }
+            }
+
+            return resolved;
         };
 
         enum class AlphaHint : uint8_t {
@@ -1238,6 +1291,7 @@ public:
                 }
 
                 auto tryTex = [&](aiTextureType type, std::string& dst) {
+                    if (!loadTextures) return;
                     aiString p;
                     if (mat->GetTexture(type, 0, &p) == AI_SUCCESS) {
                         dst = resolveTexturePath(p);

@@ -1594,6 +1594,11 @@ void UIManager::renderHierarchy() {
             if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(entity)) {
                 return;
             }
+            // The editor camera is a scene-internal helper; don't show it in the
+            // Hierarchy panel (but keep it alive so the editor camera keeps working).
+            if (registry.all_of<EditorCamera>(entity)) {
+                return;
+            }
 
             std::string entityName;
             if (registry.all_of<Atlas::ECS::TagComponent>(entity)) {
@@ -1797,24 +1802,47 @@ void UIManager::renderHierarchy() {
         };
 
 
+        // The ImGuiListClipper sizes its rows from the number of items passed to
+        // Begin(); every listed item MUST submit at least one ImGui node or the
+        // clipper fails ("Failed to calculate item height"). So we filter the
+        // entity lists BEFORE the clipper, dropping hidden entities and the
+        // scene-internal EditorCamera, so the clipper count matches the rows we
+        // actually draw.
+        auto isExcludedFromHierarchy = [&](entt::entity e) -> bool {
+            return registry.all_of<Atlas::ECS::EditorHiddenComponent>(e) ||
+                   registry.all_of<EditorCamera>(e);
+        };
+
         auto roots = m_Scene->getRootEntities();
         if (roots.empty()) {
             auto all = m_Scene->getAllEntities();
 
+            std::vector<entt::entity> visibleAll;
+            visibleAll.reserve(all.size());
+            for (auto e : all) {
+                if (!isExcludedFromHierarchy(e)) visibleAll.push_back(e);
+            }
+
             ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(all.size()));
+            clipper.Begin(static_cast<int>(visibleAll.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    renderEntityRecursively(renderEntityRecursively, all[static_cast<size_t>(i)]);
+                    renderEntityRecursively(renderEntityRecursively, visibleAll[static_cast<size_t>(i)]);
                 }
             }
             clipper.End();
         } else {
+            std::vector<entt::entity> visibleRoots;
+            visibleRoots.reserve(roots.size());
+            for (auto e : roots) {
+                if (!isExcludedFromHierarchy(e)) visibleRoots.push_back(e);
+            }
+
             ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(roots.size()));
+            clipper.Begin(static_cast<int>(visibleRoots.size()));
             while (clipper.Step()) {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
-                    renderEntityRecursively(renderEntityRecursively, roots[static_cast<size_t>(i)]);
+                    renderEntityRecursively(renderEntityRecursively, visibleRoots[static_cast<size_t>(i)]);
                 }
             }
             clipper.End();

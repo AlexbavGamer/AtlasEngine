@@ -41,6 +41,7 @@ private:
         float uniformScale = 1.0f;
         bool importAnimations = true;
         bool startPlaying = true;
+        bool loadTextures = true;
     };
 
     struct PendingModel {
