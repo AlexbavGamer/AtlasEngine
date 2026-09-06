@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include <functional>
 #include <string>
 #include <deque>
@@ -14,6 +15,7 @@
 #include "../core/base/non_copyable.h"
 #include "../vulkan/vulkan_structs.h"
 #include "memory/memory_manager.h"
+#include "render_resources.h"
 #include "../core/profiler.h"
 
 namespace Atlas {
@@ -34,8 +36,7 @@ struct LightBuffer {
 
 struct PushConstants {
     glm::mat4 model;
-    glm::mat4 view;
-    glm::mat4 proj;
+    glm::mat4 viewProj;
     glm::vec4 baseColor;
     glm::vec4 emissiveFactor;
     float metallic;
@@ -68,6 +69,16 @@ struct OutlinePushConstants {
     float _pad0;
     float _pad1;
     float _pad2;
+};
+
+static_assert(sizeof(PushConstants) <= 256, "PushConstants exceeds maxPushConstantsSize (256)");
+static_assert(sizeof(PickingPushConstants) <= 256, "PickingPushConstants exceeds limit");
+static_assert(sizeof(OutlinePushConstants) <= 256, "OutlinePushConstants exceeds limit");
+
+// TDD §4.2/§5.2 HLOD1 impostor draw: view-aligned quad tinted per cell.
+struct ImpostorDraw {
+    glm::mat4 model{1.0f};
+    glm::vec4 color{1.0f};
 };
 
 class Window;
@@ -107,6 +118,12 @@ public:
     VkImageView getGameOffscreenImageView() const { return m_GameOffscreenImageView; }
     VkSampler getGameOffscreenSampler() const { return m_GameOffscreenSampler; }
     MemoryManager* getMemoryManager() { return m_MemoryManager.get(); }
+
+    // Phase 2 of ECS<->Vulkan decoupling: registry of opaque handles, one per
+    // GPU mesh allocation backing ::Mesh components (see render_resources.h).
+    // Renderer-owned; editor/game allocate on upload, free on destroy.
+    RenderResourceManager& getMeshRegistry() { return m_meshRegistry; }
+    const RenderResourceManager& getMeshRegistry() const { return m_meshRegistry; }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
@@ -157,6 +174,34 @@ public:
     glm::vec4 getClearColor() const { return m_ClearColor; }
     void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
 
+    void setInstancingEnabled(bool enabled) { m_InstancingEnabled = enabled; }
+    bool isInstancingEnabled() const { return m_InstancingEnabled; }
+    void setImpostorDraws(std::vector<ImpostorDraw> draws) { m_ImpostorDraws = std::move(draws); }
+    size_t getImpostorDrawCount() const { return m_ImpostorDraws.size(); }
+    uint32_t getLastDrawCalls() const { return m_LastDrawCalls; }
+    uint32_t getLastTriangles() const { return m_LastTriangles; }
+    uint32_t getLastInstancedDraws() const { return m_LastInstancedDraws; }
+    uint32_t getLastInstancedInstances() const { return m_LastInstancedInstances; }
+
+    // Auto-LOD (§5): simplified GPU variants of dense static meshes.
+    // Keyed by source vertex buffer; level 1 = LOD1, 2 = LOD2.
+    struct StaticMeshBuffers {
+        VkBuffer vertexBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+        uint32_t vertexCount = 0;
+        uint32_t indexCount = 0;
+    };
+    StaticMeshBuffers uploadStaticMesh(const void* verts, size_t vertSize, size_t vertCount,
+                                       const uint32_t* indices, size_t indexCount);
+    void cacheSimplifiedVariant(VkBuffer srcVB, VkBuffer srcIB, int level, StaticMeshBuffers buffers);
+    bool findSimplifiedVariant(VkBuffer srcVB, VkBuffer srcIB, int level, StaticMeshBuffers* out) const;
+    void setAutoLODEnabled(bool enabled) { m_AutoLODEnabled = enabled; }
+    bool isAutoLODEnabled() const { return m_AutoLODEnabled; }
+    uint32_t getSimplifiedVariantCount() const;
+    uint32_t getLastSimplifiedDraws() const { return m_LastSimplifiedDraws; }
+
 private:
     void createInstance();
     void setupDebugMessenger();
@@ -168,6 +213,14 @@ private:
     void createRenderPass();
     void createDepthResources();
     void createGraphicsPipeline();
+    // TDD §6: GPU instancing (per-instance mat4 @ binding 1, locations 6-9).
+    // Opaque pipelines only; transparent (sorted) + picking + outline stay per-entity.
+    void createInstancedPipelines();
+    void createInstanceBuffers();
+    void destroyInstanceBuffers();
+    // TDD §4 HLOD1 impostor quad (unit quad, billboarded CPU-side per draw).
+    void createImpostorQuad();
+    void destroyImpostorQuad();
     void createFramebuffers();
     void createCommandPool();
     void createCommandBuffers();
@@ -221,6 +274,10 @@ private:
     QueueFamilyIndices m_QueueFamilyIndices{};
     std::unique_ptr<MemoryManager> m_MemoryManager;
 
+    // See getMeshRegistry(). Must outlive any ::Mesh referencing its handles;
+    // Renderer is destroyed after the scene in both editor and game flows.
+    RenderResourceManager m_meshRegistry;
+
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
     bool m_VSyncEnabled = true;
     std::vector<VkImage> m_SwapChainImages;
@@ -245,6 +302,26 @@ private:
     VkPipeline m_GraphicsPipelineBlend = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipelineBlendFrontCull = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipelineBlendNoCull = VK_NULL_HANDLE;
+
+    // TDD §6 instanced variants (opaque only, same layout/descriptors).
+    VkPipeline m_GraphicsPipelineInstanced = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineInstancedFrontCull = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineInstancedNoCull = VK_NULL_HANDLE;
+
+    // TDD §6 instancing toggle + batch threshold.
+    bool m_InstancingEnabled = true;
+    static constexpr uint32_t MIN_INSTANCES_PER_BATCH = 2;
+    static constexpr uint32_t MAX_INSTANCES_PER_FRAME = 8192;
+
+    // TDD §12 frame metrics (filled during recordCommandBuffer).
+    uint32_t m_FrameDrawCalls = 0;
+    uint32_t m_FrameTriangles = 0;
+    uint32_t m_FrameInstancedDraws = 0;
+    uint32_t m_FrameInstancedInstances = 0;
+    uint32_t m_LastDrawCalls = 0;
+    uint32_t m_LastTriangles = 0;
+    uint32_t m_LastInstancedDraws = 0;
+    uint32_t m_LastInstancedInstances = 0;
 
     VkPipelineLayout m_PickingPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_PickingPipeline = VK_NULL_HANDLE;
@@ -314,6 +391,38 @@ private:
     std::array<void*, MAX_FRAMES_IN_FLIGHT> m_BonePaletteMapped{};
     VkDeviceSize m_BonePaletteStrideBytes = 0;
     uint32_t m_BonePaletteNextSlot = 0;
+
+    // Per-flight instance-transform staging (host-visible). One slot per frame
+    // in flight; written during record, consumed by the GPU draw.
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> m_InstanceBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> m_InstanceMemories{};
+    std::array<void*, MAX_FRAMES_IN_FLIGHT> m_InstanceMapped{};
+
+    // TDD §4.2/§5.2 HLOD1 impostors: view-aligned quads tinted per cell.
+    // Auto-LOD variant cache: (sourceVB, sourceIB) -> [LOD1, LOD2] GPU meshes.
+    struct SimplifiedKey {
+        VkBuffer vertexBuffer = VK_NULL_HANDLE;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
+        bool operator==(const SimplifiedKey& o) const {
+            return vertexBuffer == o.vertexBuffer && indexBuffer == o.indexBuffer;
+        }
+    };
+    struct SimplifiedKeyHash {
+        size_t operator()(const SimplifiedKey& k) const noexcept {
+            const size_t a = static_cast<size_t>(reinterpret_cast<uintptr_t>(k.vertexBuffer));
+            const size_t b = static_cast<size_t>(reinterpret_cast<uintptr_t>(k.indexBuffer));
+            return a * 1315423911u + b * 1566083941u;
+        }
+    };
+    std::unordered_map<SimplifiedKey, std::array<StaticMeshBuffers, 2>, SimplifiedKeyHash> m_SimplifiedVariants;
+    bool m_AutoLODEnabled = true;
+    uint32_t m_FrameSimplifiedDraws = 0;
+    uint32_t m_LastSimplifiedDraws = 0;
+    std::vector<ImpostorDraw> m_ImpostorDraws;
+    VkBuffer m_ImpostorQuadVB = VK_NULL_HANDLE;
+    VkDeviceMemory m_ImpostorQuadVBMem = VK_NULL_HANDLE;
+    VkBuffer m_ImpostorQuadIB = VK_NULL_HANDLE;
+    VkDeviceMemory m_ImpostorQuadIBMem = VK_NULL_HANDLE;
 
     uint32_t m_BoundTextureCount = 1;
 

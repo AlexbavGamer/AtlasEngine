@@ -7,6 +7,7 @@
 #include <imgui_impl_vulkan.h>
 #include <ImGuizmo.h>
 #include "../ecs/ecs.h"
+#include "../ecs/inspector_ui.h"
 #include "../ecs/components.h"
 #include "../assets/asset_manager.h"
 #include "../core/runtime_console.h"
@@ -353,6 +354,10 @@ void UIManager::copySelectedEntitiesToClipboard() {
             item.hasMaterial = true;
             item.material = registry.get<Atlas::ECS::MaterialComponent>(e);
         }
+        if (registry.all_of<Atlas::LODComponent>(e)) {
+            item.hasLOD = true;
+            item.lod = registry.get<Atlas::LODComponent>(e);
+        }
         if (registry.all_of<Atlas::ECS::RigidBodyComponent>(e)) {
             item.hasRigidBody = true;
             item.rigidBody = registry.get<Atlas::ECS::RigidBodyComponent>(e);
@@ -472,6 +477,12 @@ void UIManager::pasteEntitiesFromClipboard() {
         }
 
         if (item.hasMaterial) registry.emplace_or_replace<Atlas::ECS::MaterialComponent>(e, item.material);
+        if (item.hasLOD) {
+            // Fresh runtime state, but preserve the artist-tuned bias.
+            Atlas::LODComponent lod;
+            lod.screenSizeBias = item.lod.screenSizeBias;
+            registry.emplace_or_replace<Atlas::LODComponent>(e, lod);
+        }
         if (item.hasRigidBody) registry.emplace_or_replace<Atlas::ECS::RigidBodyComponent>(e, item.rigidBody);
         if (item.hasBoxCollider) registry.emplace_or_replace<Atlas::ECS::BoxColliderComponent>(e, item.boxCollider);
         if (item.hasSphereCollider) registry.emplace_or_replace<Atlas::ECS::SphereColliderComponent>(e, item.sphereCollider);
@@ -2047,11 +2058,18 @@ void UIManager::renderProperties() {
     Entity selectedEntity = m_PrimarySelected;
 
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
-        ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
+        if (m_SelectedEntities.size() > 1) {
+            ImGui::Text("Primary Entity ID: %u  (%zu selected)", static_cast<uint32_t>(selectedEntity), m_SelectedEntities.size());
+        } else {
+            ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
+        }
 
-        // Name / tag (undoable)
+        // Name / tag (undoable) — primary only when multi-selected (bulk rename not meaningful)
         {
             auto& registry = m_Scene->getRegistry();
+            if (m_SelectedEntities.size() > 1) {
+                ImGui::TextDisabled("Name editing applies to primary only (%zu selected)", m_SelectedEntities.size());
+            }
             if (registry.all_of<Atlas::ECS::TagComponent>(selectedEntity)) {
                 auto& tag = registry.get<Atlas::ECS::TagComponent>(selectedEntity);
                 uint32_t sid = static_cast<uint32_t>(selectedEntity);
@@ -2138,10 +2156,10 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             }
         };
 
+        // Transform: single vs bulk (multi-selection)
         if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
             if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
-                auto& t = m_Scene->getRegistry().get<Transform>(selectedEntity);
-
+                auto& registry = m_Scene->getRegistry();
                 auto makeState = [&](const Transform& tr) -> TransformState {
                     TransformState s;
                     s.position = tr.position;
@@ -2149,63 +2167,194 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                     s.scale = tr.scale;
                     return s;
                 };
-
                 auto isDifferent = [&](const TransformState& a, const TransformState& b) -> bool {
                     const float eps = 1e-4f;
                     return glm::length(a.position - b.position) > eps ||
                            glm::length(a.rotation - b.rotation) > eps ||
                            glm::length(a.scale - b.scale) > eps;
                 };
-
-                bool deactivated = false;
-
-                ImGui::DragFloat3("Position##T", &t.position.x, 0.1f);
-                if (ImGui::IsItemActivated()) {
-                    m_PropTransformEditing = true;
-                    m_PropTransformEntity = selectedEntity;
-                    m_PropTransformBefore = makeState(t);
+                // Build list of selected entities that have Transform (for bulk)
+                std::vector<Entity> bulkEntities;
+                bulkEntities.reserve(m_SelectedEntities.size());
+                for (Entity e : m_SelectedEntities) {
+                    if (e == entt::null || !registry.valid(e)) continue;
+                    if (!registry.all_of<Transform>(e)) continue;
+                    bulkEntities.push_back(e);
                 }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    deactivated = true;
-                }
-
-                ImGui::DragFloat3("Rotation##T", &t.rotation.x, 1.0f);
-                if (ImGui::IsItemActivated()) {
-                    m_PropTransformEditing = true;
-                    m_PropTransformEntity = selectedEntity;
-                    m_PropTransformBefore = makeState(t);
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    deactivated = true;
-                }
-
-                ImGui::DragFloat3("Scale##T", &t.scale.x, 0.1f);
-                if (ImGui::IsItemActivated()) {
-                    m_PropTransformEditing = true;
-                    m_PropTransformEntity = selectedEntity;
-                    m_PropTransformBefore = makeState(t);
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    deactivated = true;
-                }
-
-                if (deactivated && m_PropTransformEditing && m_PropTransformEntity == selectedEntity) {
-                    TransformState after = makeState(t);
-                    if (isDifferent(m_PropTransformBefore, after)) {
-                        auto cmd = std::make_unique<TransformCommand>();
-                        cmd->entity = selectedEntity;
-                        cmd->before = m_PropTransformBefore;
-                        cmd->after = after;
-                        pushCommand(std::move(cmd));
+                const bool isBulk = bulkEntities.size() > 1;
+                if (isBulk) {
+                    ImGui::TextDisabled("%zu entities selected - bulk edit (delta applied to all)", bulkEntities.size());
+                    auto& tPrimary = registry.get<Transform>(selectedEntity);
+                    // Invalidate bulk capture if selection changed mid-edit
+                    if (m_PropTransformMultiEditing) {
+                        if (m_PropTransformMultiEntities.size() != bulkEntities.size()) {
+                            m_PropTransformMultiEditing = false;
+                            m_PropTransformMultiEntities.clear();
+                            m_PropTransformBeforeMulti.clear();
+                        } else {
+                            for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                                if (m_PropTransformMultiEntities[i] != bulkEntities[i]) {
+                                    m_PropTransformMultiEditing = false;
+                                    m_PropTransformMultiEntities.clear();
+                                    m_PropTransformBeforeMulti.clear();
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    m_PropTransformEditing = false;
-                    m_PropTransformEntity = entt::null;
+                    bool deactivated = false;
+                    // Position - edit primary, propagate delta to others live
+                    ImGui::DragFloat3("Position##T", &tPrimary.position.x, 0.1f);
+                    if (ImGui::IsItemActivated()) {
+                        m_PropTransformMultiEditing = true;
+                        m_PropTransformMultiEntities = bulkEntities;
+                        m_PropTransformBeforeMulti.clear();
+                        m_PropTransformBeforeMulti.reserve(bulkEntities.size());
+                        for (Entity e : bulkEntities) m_PropTransformBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
+                        // Also clear single-track to avoid conflict
+                        m_PropTransformEditing = false;
+                    }
+                    if (m_PropTransformMultiEditing) {
+                        // Propagate position/rotation/scale delta from primary to others (recomputed each frame)
+                        size_t primaryIdx = 0;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (bulkEntities[i]==selectedEntity) { primaryIdx=i; break; }
+                        const TransformState& beforePrimary = m_PropTransformBeforeMulti[primaryIdx];
+                        glm::vec3 dPos = tPrimary.position - beforePrimary.position;
+                        glm::vec3 dRot = tPrimary.rotation - beforePrimary.rotation;
+                        glm::vec3 dScale = tPrimary.scale - beforePrimary.scale;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                            if (bulkEntities[i]==selectedEntity) continue;
+                            auto& ti = registry.get<Transform>(bulkEntities[i]);
+                            ti.position = m_PropTransformBeforeMulti[i].position + dPos;
+                            ti.rotation = m_PropTransformBeforeMulti[i].rotation + dRot;
+                            ti.scale    = m_PropTransformBeforeMulti[i].scale + dScale;
+                        }
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) deactivated = true;
+
+                    ImGui::DragFloat3("Rotation##T", &tPrimary.rotation.x, 1.0f);
+                    if (ImGui::IsItemActivated()) {
+                        if (!m_PropTransformMultiEditing) {
+                            m_PropTransformMultiEditing = true;
+                            m_PropTransformMultiEntities = bulkEntities;
+                            m_PropTransformBeforeMulti.clear();
+                            m_PropTransformBeforeMulti.reserve(bulkEntities.size());
+                            for (Entity e : bulkEntities) m_PropTransformBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
+                            m_PropTransformEditing = false;
+                        }
+                    }
+                    if (m_PropTransformMultiEditing) {
+                        size_t primaryIdx = 0;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (bulkEntities[i]==selectedEntity) { primaryIdx=i; break; }
+                        const TransformState& beforePrimary = m_PropTransformBeforeMulti[primaryIdx];
+                        glm::vec3 dPos = tPrimary.position - beforePrimary.position;
+                        glm::vec3 dRot = tPrimary.rotation - beforePrimary.rotation;
+                        glm::vec3 dScale = tPrimary.scale - beforePrimary.scale;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                            if (bulkEntities[i]==selectedEntity) continue;
+                            auto& ti = registry.get<Transform>(bulkEntities[i]);
+                            ti.position = m_PropTransformBeforeMulti[i].position + dPos;
+                            ti.rotation = m_PropTransformBeforeMulti[i].rotation + dRot;
+                            ti.scale    = m_PropTransformBeforeMulti[i].scale + dScale;
+                        }
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) deactivated = true;
+
+                    ImGui::DragFloat3("Scale##T", &tPrimary.scale.x, 0.1f);
+                    if (ImGui::IsItemActivated()) {
+                        if (!m_PropTransformMultiEditing) {
+                            m_PropTransformMultiEditing = true;
+                            m_PropTransformMultiEntities = bulkEntities;
+                            m_PropTransformBeforeMulti.clear();
+                            m_PropTransformBeforeMulti.reserve(bulkEntities.size());
+                            for (Entity e : bulkEntities) m_PropTransformBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
+                            m_PropTransformEditing = false;
+                        }
+                    }
+                    if (m_PropTransformMultiEditing) {
+                        size_t primaryIdx = 0;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (bulkEntities[i]==selectedEntity) { primaryIdx=i; break; }
+                        const TransformState& beforePrimary = m_PropTransformBeforeMulti[primaryIdx];
+                        glm::vec3 dPos = tPrimary.position - beforePrimary.position;
+                        glm::vec3 dRot = tPrimary.rotation - beforePrimary.rotation;
+                        glm::vec3 dScale = tPrimary.scale - beforePrimary.scale;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                            if (bulkEntities[i]==selectedEntity) continue;
+                            auto& ti = registry.get<Transform>(bulkEntities[i]);
+                            ti.position = m_PropTransformBeforeMulti[i].position + dPos;
+                            ti.rotation = m_PropTransformBeforeMulti[i].rotation + dRot;
+                            ti.scale    = m_PropTransformBeforeMulti[i].scale + dScale;
+                        }
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) deactivated = true;
+
+                    if (deactivated && m_PropTransformMultiEditing) {
+                        std::vector<TransformState> after;
+                        after.reserve(bulkEntities.size());
+                        for (Entity e : bulkEntities) after.push_back(makeState(registry.get<Transform>(e)));
+                        bool anyDiff = false;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (isDifferent(m_PropTransformBeforeMulti[i], after[i])) { anyDiff = true; break; }
+                        if (anyDiff) {
+                            auto cmd = std::make_unique<MultiTransformCommand>();
+                            cmd->entities = bulkEntities;
+                            cmd->before = m_PropTransformBeforeMulti;
+                            cmd->after = after;
+                            pushCommand(std::move(cmd));
+                        }
+                        m_PropTransformMultiEditing = false;
+                        m_PropTransformMultiEntities.clear();
+                        m_PropTransformBeforeMulti.clear();
+                    }
+                } else {
+                    // Single selection path (original)
+                    auto& t = registry.get<Transform>(selectedEntity);
+                    // If we were in bulk editing but now single, reset bulk state
+                    if (m_PropTransformMultiEditing) { m_PropTransformMultiEditing=false; m_PropTransformMultiEntities.clear(); m_PropTransformBeforeMulti.clear(); }
+                    bool deactivated = false;
+                    ImGui::DragFloat3("Position##T", &t.position.x, 0.1f);
+                    if (ImGui::IsItemActivated()) {
+                        m_PropTransformEditing = true;
+                        m_PropTransformEntity = selectedEntity;
+                        m_PropTransformBefore = makeState(t);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) deactivated = true;
+                    ImGui::DragFloat3("Rotation##T", &t.rotation.x, 1.0f);
+                    if (ImGui::IsItemActivated()) {
+                        m_PropTransformEditing = true;
+                        m_PropTransformEntity = selectedEntity;
+                        m_PropTransformBefore = makeState(t);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) deactivated = true;
+                    ImGui::DragFloat3("Scale##T", &t.scale.x, 0.1f);
+                    if (ImGui::IsItemActivated()) {
+                        m_PropTransformEditing = true;
+                        m_PropTransformEntity = selectedEntity;
+                        m_PropTransformBefore = makeState(t);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) deactivated = true;
+                    if (deactivated && m_PropTransformEditing && m_PropTransformEntity == selectedEntity) {
+                        TransformState after = makeState(t);
+                        if (isDifferent(m_PropTransformBefore, after)) {
+                            auto cmd = std::make_unique<TransformCommand>();
+                            cmd->entity = selectedEntity;
+                            cmd->before = m_PropTransformBefore;
+                            cmd->after = after;
+                            pushCommand(std::move(cmd));
+                        }
+                        m_PropTransformEditing = false;
+                        m_PropTransformEntity = entt::null;
+                    }
                 }
             }
         }
 
         if (m_Scene->getRegistry().all_of<Renderable>(selectedEntity)) {
             renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable");
+        }
+
+        // TDD §5: live LOD state + importance bias (auto-added at import).
+        if (m_Scene->getRegistry().all_of<Atlas::LODComponent>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Atlas::LODComponent>(selectedEntity), "LOD");
         }
 
         // Script inspector (V1)
@@ -2963,7 +3112,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             const bool hasBox = registry.all_of<Atlas::ECS::BoxColliderComponent>(selectedEntity);
             const bool hasSphere = registry.all_of<Atlas::ECS::SphereColliderComponent>(selectedEntity);
             const bool hasCapsule = registry.all_of<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
-            const bool hasAnyCollider = hasBox || hasSphere || hasCapsule;
+            const bool hasMesh = registry.all_of<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+            const bool hasAnyCollider = hasBox || hasSphere || hasCapsule || hasMesh;
 
             if (!hasRigidBody) {
                 if (ImGui::Button("Add Rigid Body")) {
@@ -3008,6 +3158,16 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 if (ImGui::Button("Add Capsule Collider")) {
                     registry.emplace<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
                 }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!registry.all_of<::Mesh>(selectedEntity));
+                if (ImGui::Button("Add Mesh Collider")) {
+                    registry.emplace<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+                }
+                ImGui::EndDisabled();
+                if (!registry.all_of<::Mesh>(selectedEntity)) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(needs Mesh)");
+                }
             }
 
             if (hasBox) {
@@ -3038,6 +3198,26 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 ImGui::Checkbox("Capsule Trigger", &c.isTrigger);
                 if (ImGui::Button("Remove Capsule Collider")) {
                     registry.remove<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
+                }
+            }
+
+            if (hasMesh) {
+                auto& c = registry.get<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+                std::string source = "(no Mesh component)";
+                if (registry.all_of<::Mesh>(selectedEntity)) {
+                    const auto& mesh = registry.get<::Mesh>(selectedEntity);
+                    source = mesh.meshPath.empty() ? "(empty path)" : mesh.meshPath;
+                }
+                ImGui::TextWrapped("Source: %s", source.c_str());
+                ImGui::DragFloat3("Mesh Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
+                ImGui::Checkbox("Mesh Trigger", &c.isTrigger);
+                ImGui::BeginDisabled(true);
+                bool convexShown = c.convex;
+                ImGui::Checkbox("Convex (reserved)", &convexShown);
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("Triangle soup (static); dynamic bodies use OBB.");
+                if (ImGui::Button("Remove Mesh Collider")) {
+                    registry.remove<Atlas::ECS::MeshColliderComponent>(selectedEntity);
                 }
             }
         }
@@ -3751,6 +3931,43 @@ void UIManager::renderCameraWindow() {
         ImGui::TextUnformatted("- Scroll over viewport adjusts speed");
     } else {
         ImGui::TextUnformatted("No camera controller bound");
+    }
+
+    // Lens / clipping: edits the active scene camera (EditorCamera preferred,
+    // otherwise the first runtime Camera). Same clamps as the Properties panel.
+    ImGui::SeparatorText("Lens (clipping)");
+    if (!m_Scene) {
+        ImGui::TextUnformatted("No scene");
+    } else {
+        auto& registry = m_Scene->getRegistry();
+        Entity camEntity = entt::null;
+        bool isEditorCam = false;
+        auto editorView = registry.view<EditorCamera>();
+        if (editorView.begin() != editorView.end()) {
+            camEntity = *editorView.begin();
+            isEditorCam = true;
+        } else {
+            auto camView = registry.view<Camera>();
+            if (camView.begin() != camView.end()) {
+                camEntity = *camView.begin();
+            }
+        }
+
+        if (camEntity == entt::null) {
+            ImGui::TextUnformatted("No camera in scene");
+        } else {
+            CameraBase* cam = isEditorCam
+                ? static_cast<CameraBase*>(&registry.get<EditorCamera>(camEntity))
+                : static_cast<CameraBase*>(&registry.get<Camera>(camEntity));
+            ImGui::Text("Editing: %s", isEditorCam ? "Editor Camera" : "Game Camera");
+            ImGui::DragFloat("FOV##CamLens", &cam->fov, 0.5f, 1.0f, 179.0f, "%.1f");
+            ImGui::DragFloat("Near Clip##CamLens", &cam->nearPlane, 0.01f, 0.0f, 0.0f, "%.3f");
+            ImGui::DragFloat("Far Clip##CamLens", &cam->farPlane, 1.0f, 0.0f, 0.0f, "%.1f");
+            if (cam->nearPlane < 0.001f) cam->nearPlane = 0.001f;
+            if (cam->farPlane < cam->nearPlane + 0.01f) cam->farPlane = cam->nearPlane + 0.01f;
+            ImGui::Text("Aspect: %.3f (auto from viewport)", cam->aspectRatio);
+            ImGui::Text("Position: %.2f %.2f %.2f", cam->position.x, cam->position.y, cam->position.z);
+        }
     }
 
     ImGui::End();

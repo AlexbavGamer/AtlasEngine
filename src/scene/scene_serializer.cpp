@@ -233,6 +233,7 @@ enum EntityBinFlags : uint32_t {
     kHasPrimitive = 1u << 11,
     kHasMaterial = 1u << 12,
     kHasScripts = 1u << 13,
+    kHasMeshCollider = 1u << 14,
 };
 
 bool writeScriptFieldBin(std::ostream& os, const SerializedScriptField& field) {
@@ -352,6 +353,7 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
         if (registry.all_of<ECS::CapsuleColliderComponent>(entity)) flags |= kHasCapsuleCollider;
         if (registry.all_of<ECS::MaterialComponent>(entity)) flags |= kHasMaterial;
         if (registry.all_of<ECS::ScriptComponent>(entity)) flags |= kHasScripts;
+        if (registry.all_of<ECS::MeshColliderComponent>(entity)) flags |= kHasMeshCollider;
 
         std::string primitiveType;
         if (registry.all_of<::Mesh>(entity)) {
@@ -452,6 +454,13 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
             if (!writeF32(out, c.radius) || !writeF32(out, c.halfHeight)) return false;
             if (!writeVec3(out, c.offset)) return false;
             if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
+        }
+
+        if (flags & kHasMeshCollider) {
+            const auto& c = registry.get<ECS::MeshColliderComponent>(entity);
+            if (!writeVec3(out, c.offset)) return false;
+            if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
+            if (!writeU8(out, c.convex ? 1 : 0)) return false;
         }
 
         if (flags & kHasPrimitive) {
@@ -616,6 +625,17 @@ bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
             if (!readVec3(in, e.capsuleCollider.offset)) return false;
             if (!readU8(in, isTrigger)) return false;
             e.capsuleCollider.isTrigger = (isTrigger != 0);
+        }
+
+        if (flags & kHasMeshCollider) {
+            e.hasMeshCollider = true;
+            uint8_t isTrigger = 0;
+            uint8_t convex = 0;
+            if (!readVec3(in, e.meshCollider.offset)) return false;
+            if (!readU8(in, isTrigger)) return false;
+            if (!readU8(in, convex)) return false;
+            e.meshCollider.isTrigger = (isTrigger != 0);
+            e.meshCollider.convex = (convex != 0);
         }
 
         if (flags & kHasPrimitive) {
@@ -796,6 +816,15 @@ bool loadFromText(std::istream& in, SerializedScene& outScene) {
                >> current->capsuleCollider.offset.x >> current->capsuleCollider.offset.y >> current->capsuleCollider.offset.z
                >> isTrigger;
             current->capsuleCollider.isTrigger = (isTrigger != 0);
+        } else if (token == "mesh_collider") {
+            if (!current) return false;
+            current->hasMeshCollider = true;
+            int isTrigger = 0;
+            int convex = 0;
+            in >> current->meshCollider.offset.x >> current->meshCollider.offset.y >> current->meshCollider.offset.z
+               >> isTrigger >> convex;
+            current->meshCollider.isTrigger = (isTrigger != 0);
+            current->meshCollider.convex = (convex != 0);
         } else if (token == "primitive") {
             if (!current || !readQuoted(in, current->primitiveType)) return false;
         } else if (token == "material") {

@@ -2,8 +2,7 @@
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
-    mat4 view;
-    mat4 proj;
+    mat4 viewProj;
     vec4 baseColor;
     vec4 emissiveFactor;
     float metallic;

@@ -5,16 +5,21 @@
 #include "../ecs/components/components.h"
 #include "../ecs/ecs.h"
 #include "../ecs/vertex.h"
+#include "../world/lod.h"
 #include "../core/profiler.h"
 #include <stdexcept>
 #include <fstream>
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
 #include <unordered_map>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -42,6 +47,13 @@ void setDebugName(VkDevice device, VkObjectType type, uint64_t handle, const cha
     info.pObjectName = name;
     fn(device, &info);
 }
+}
+
+// Phase 2 liveness gate (ECS<->Vulkan decoupling): a Mesh carrying a registry
+// handle must be alive in the RenderResourceManager to be drawn. Handle 0 =
+// legacy/unregistered (old scenes, pending uploads) → existing null-checks apply.
+static bool isMeshHandleLive(const Atlas::RenderResourceManager& registry, const Mesh& mesh) {
+    return mesh.renderMeshId == Atlas::kInvalidMeshHandle || registry.isMeshAlive(mesh.renderMeshId);
 }
 
 namespace Atlas {
@@ -76,6 +88,7 @@ void Renderer::init() {
     createDepthResources();
     createBonesDescriptorSetLayout();
     createGraphicsPipeline();
+    createInstancedPipelines();
     createPickingPipeline();
     createOutlinePipeline();
     createFramebuffers();
@@ -85,6 +98,8 @@ void Renderer::init() {
     createLightBuffer();
     createDescriptorSet();
     createBonesResources();
+    createInstanceBuffers();
+    createImpostorQuad();
     createSyncObjects();
 
 #ifdef TRACY_ENABLE
@@ -168,6 +183,20 @@ void Renderer::shutdown() {
     if (m_BonesDescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_BonesDescriptorSetLayout, nullptr);
     m_BonesDescriptorPool = VK_NULL_HANDLE;
     m_BonesDescriptorSetLayout = VK_NULL_HANDLE;
+
+    destroyInstanceBuffers();
+    destroyImpostorQuad();
+    for (auto& [key, pair] : m_SimplifiedVariants) {
+        (void)key;
+        for (auto& v : pair) {
+            if (v.vertexBuffer != VK_NULL_HANDLE) vkDestroyBuffer(m_Device, v.vertexBuffer, nullptr);
+            if (v.vertexMemory != VK_NULL_HANDLE) vkFreeMemory(m_Device, v.vertexMemory, nullptr);
+            if (v.indexBuffer != VK_NULL_HANDLE) vkDestroyBuffer(m_Device, v.indexBuffer, nullptr);
+            if (v.indexMemory != VK_NULL_HANDLE) vkFreeMemory(m_Device, v.indexMemory, nullptr);
+            v = StaticMeshBuffers{};
+        }
+    }
+    m_SimplifiedVariants.clear();
 
     if (m_DescriptorPool) vkDestroyDescriptorPool(m_Device, m_DescriptorPool, nullptr);
     if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(m_Device, m_DescriptorSetLayout, nullptr);
@@ -329,6 +358,7 @@ void Renderer::recreateSwapChain() {
     createPickingRenderPass();
     createDepthResources();
     createGraphicsPipeline();
+    createInstancedPipelines();
     createPickingPipeline();
     createOutlinePipeline();
     createFramebuffers();
@@ -638,7 +668,7 @@ void Renderer::createInstance() {
 
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
     VkValidationFeaturesEXT validationFeatures{};
-    std::array<VkValidationFeatureEnableEXT, 2> enabledValidationFeatures{};
+    std::array<VkValidationFeatureEnableEXT, 1> enabledValidationFeatures{};
 
     if (enableValidationLayers) {
         createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
@@ -646,14 +676,19 @@ void Renderer::createInstance() {
 
         debugCreateInfo = {};
         debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        debugCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+        // WARNING|ERROR + VALIDATION|PERFORMANCE only: drops VERBOSE/GENERAL
+        // loader spam (ICD discovery, OBS hook, registry GUIDs) while keeping
+        // every real warning and error.
+        debugCreateInfo.messageSeverity =
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        debugCreateInfo.messageType =
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         debugCreateInfo.pfnUserCallback = debugCallback;
 
+        // Synchronization validation only. BEST_PRACTICES is intentionally off:
+        // small dedicated allocations (light/uniform buffers) are a deliberate
+        // choice until the renderer migrates fully to the VMA sub-allocator.
         enabledValidationFeatures[0] = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
-        enabledValidationFeatures[1] = VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT;
 
         validationFeatures.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
         validationFeatures.enabledValidationFeatureCount = static_cast<uint32_t>(enabledValidationFeatures.size());
@@ -676,9 +711,10 @@ void Renderer::setupDebugMessenger() {
 
     VkDebugUtilsMessengerCreateInfoEXT createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | 
+    // Keep in sync with createInstance(): WARNING|ERROR + VALIDATION|PERFORMANCE.
+    createInfo.messageSeverity =
         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | 
+    createInfo.messageType =
         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     createInfo.pfnUserCallback = debugCallback;
 
@@ -747,12 +783,11 @@ void Renderer::createLogicalDevice() {
     createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-    if (enableValidationLayers) {
-        createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-        createInfo.ppEnabledLayerNames = validationLayers.data();
-    } else {
-        createInfo.enabledLayerCount = 0;
-    }
+    // Device layers are deprecated since Vulkan 1.0 — only instance layers are valid.
+    // See https://docs.vulkan.org/spec/latest/appendices/legacy.html#legacy-devicelayers
+    // and VUID-VkDeviceCreateInfo-enabledLayerCount-12384.
+    createInfo.enabledLayerCount = 0;
+    createInfo.ppEnabledLayerNames = nullptr;
 
     if (vkCreateDevice(m_PhysicalDevice, &createInfo, nullptr, &m_Device) != VK_SUCCESS) {
         throw std::runtime_error("failed to create logical device!");
@@ -849,6 +884,38 @@ void Renderer::createImageViews() {
     }
 }
 
+namespace {
+// Canonical two-way subpass dependencies shared IDENTICALLY by every render
+// pass (swapchain, offscreen, picking). Attachments are reused across frames
+// and sampled/copied afterwards, so the store + layout transition out of the
+// pass must chain against both later sampling/transfer reads and the next
+// frame's layout transition (fixes sync-validation WRITE_AFTER_WRITE hazards
+// on vkCmdBeginRenderPass). Masks must stay identical everywhere: validation
+// compares pDependencies between a pipeline's render pass and the pass
+// instance it is used in (vkCmdDraw*). Superset stages/accesses are harmless.
+void sharedSubpassDependencies(VkSubpassDependency (&deps)[2]) {
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[0].dependencyFlags = 0;
+
+    deps[1].srcSubpass = 0;
+    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[1].dependencyFlags = 0;
+}
+} // namespace
+
 void Renderer::createRenderPass() {
     VkAttachmentDescription colorAttachment{};
     colorAttachment.format = m_SwapChainImageFormat;
@@ -884,13 +951,16 @@ void Renderer::createRenderPass() {
     subpass.pColorAttachments = &colorAttachmentRef;
     subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Two-way dependencies shared IDENTICALLY by all render passes (swapchain,
+    // offscreen, picking): attachments are reused across frames and sampled /
+    // copied afterwards, so the store + layout transition must chain against
+    // both later sampling and the next frame's transition (fixes sync-validation
+    // WRITE_AFTER_WRITE hazards). Identical masks keep every pipeline compatible
+    // with every pass (validation compares pDependencies on vkCmdDraw*). See
+    // sharedSubpassDependencies() below for the canonical pattern.
+
+    VkSubpassDependency dependencies[2];
+    sharedSubpassDependencies(dependencies);
 
     VkAttachmentDescription attachments[] = {colorAttachment, depthAttachment};
     VkRenderPassCreateInfo renderPassInfo{};
@@ -899,8 +969,8 @@ void Renderer::createRenderPass() {
     renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
+    renderPassInfo.dependencyCount = 2;
+    renderPassInfo.pDependencies = dependencies;
 
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_RenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create render pass!");
@@ -1005,13 +1075,9 @@ void Renderer::createOffscreenRenderPass() {
     subpass.pColorAttachments = &colorAttachmentRef;
     subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Same canonical dependencies as every other pass (see above).
+    VkSubpassDependency dependencies[2];
+    sharedSubpassDependencies(dependencies);
 
     VkAttachmentDescription attachments[] = {colorAttachment, depthAttachment};
     VkRenderPassCreateInfo renderPassInfo{};
@@ -1020,8 +1086,8 @@ void Renderer::createOffscreenRenderPass() {
     renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
+    renderPassInfo.dependencyCount = 2;
+    renderPassInfo.pDependencies = dependencies;
 
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_OffscreenRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create offscreen render pass!");
@@ -1065,13 +1131,9 @@ void Renderer::createPickingRenderPass() {
     subpass.pColorAttachments = &colorRef;
     subpass.pDepthStencilAttachment = &depthRef;
 
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // Same canonical dependencies as every other pass (see above).
+    VkSubpassDependency dependencies[2];
+    sharedSubpassDependencies(dependencies);
 
     VkAttachmentDescription attachments[] = {pickingAttachment, depthAttachment};
     VkRenderPassCreateInfo renderPassInfo{};
@@ -1080,8 +1142,8 @@ void Renderer::createPickingRenderPass() {
     renderPassInfo.pAttachments = attachments;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
+    renderPassInfo.dependencyCount = 2;
+    renderPassInfo.pDependencies = dependencies;
 
     if (vkCreateRenderPass(m_Device, &renderPassInfo, nullptr, &m_PickingRenderPass) != VK_SUCCESS) {
         throw std::runtime_error("failed to create picking render pass!");
@@ -1300,6 +1362,391 @@ void Renderer::createGraphicsPipeline() {
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+}
+
+// TDD §6: instanced PBR pipelines (opaque cull modes). Same push constants,
+// descriptor sets and render pass as the per-entity pipelines; only the vertex
+// input gains binding 1 (per-instance mat4 @ locations 6-9) and the vertex
+// shader (pbr_instanced_vert) consumes it. Reuses m_PipelineLayout.
+void Renderer::createInstancedPipelines() {
+    auto vertShaderCode = readFile("shaders/pbr_instanced_vert.spv");
+    auto fragShaderCode = readFile("shaders/pbr_frag.spv");
+
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    const auto bindingDescription = Vertex::getBindingDescription();
+    const auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+    VkVertexInputBindingDescription bindings[2]{};
+    bindings[0] = bindingDescription;
+    bindings[1].binding = 1;
+    bindings[1].stride = sizeof(glm::mat4);
+    bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+    std::array<VkVertexInputAttributeDescription, 10> attributes{};
+    for (size_t i = 0; i < attributeDescriptions.size(); ++i) {
+        attributes[i] = attributeDescriptions[i];
+    }
+    for (uint32_t col = 0; col < 4; ++col) {
+        auto& a = attributes[6 + col];
+        a.binding = 1;
+        a.location = 6 + col;
+        a.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        a.offset = col * 16u;
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 2;
+    vertexInputInfo.pVertexBindingDescriptions = bindings;
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attributes.data();
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(m_SwapChainExtent.width);
+    viewport.height = static_cast<float>(m_SwapChainExtent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = m_SwapChainExtent;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+    depthStencil.minDepthBounds = 0.0f;
+    depthStencil.maxDepthBounds = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = m_PipelineLayout;
+    pipelineInfo.renderPass = m_RenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineInstanced) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create instanced graphics pipeline!");
+    }
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineInstanced), "PBRPipeline_Instanced");
+
+    VkPipelineRasterizationStateCreateInfo rasterFrontCull = rasterizer;
+    rasterFrontCull.cullMode = VK_CULL_MODE_FRONT_BIT;
+    pipelineInfo.pRasterizationState = &rasterFrontCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineInstancedFrontCull) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create front-cull instanced graphics pipeline!");
+    }
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineInstancedFrontCull), "PBRPipeline_Instanced_FrontCull");
+
+    VkPipelineRasterizationStateCreateInfo rasterNoCull = rasterizer;
+    rasterNoCull.cullMode = VK_CULL_MODE_NONE;
+    pipelineInfo.pRasterizationState = &rasterNoCull;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_GraphicsPipelineInstancedNoCull) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create no-cull instanced graphics pipeline!");
+    }
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_GraphicsPipelineInstancedNoCull), "PBRPipeline_Instanced_NoCull");
+
+    vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+    vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+}
+
+void Renderer::createInstanceBuffers() {
+    destroyInstanceBuffers();
+    const VkDeviceSize bufferSize = static_cast<VkDeviceSize>(MAX_INSTANCES_PER_FRAME) * sizeof(glm::mat4);
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &m_InstanceBuffers[frame]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create instance staging buffer!");
+        }
+
+        VkMemoryRequirements memRequirements{};
+        vkGetBufferMemoryRequirements(m_Device, m_InstanceBuffers[frame], &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &m_InstanceMemories[frame]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate instance staging memory!");
+        }
+
+        vkBindBufferMemory(m_Device, m_InstanceBuffers[frame], m_InstanceMemories[frame], 0);
+
+        void* mapped = nullptr;
+        if (vkMapMemory(m_Device, m_InstanceMemories[frame], 0, bufferSize, 0, &mapped) != VK_SUCCESS) {
+            throw std::runtime_error("failed to map instance staging memory!");
+        }
+        m_InstanceMapped[frame] = mapped;
+
+        char name[48];
+        std::snprintf(name, sizeof(name), "InstanceStagingBuffer[%u]", frame);
+        setDebugName(m_Device, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(m_InstanceBuffers[frame]), name);
+    }
+}
+
+void Renderer::destroyInstanceBuffers() {
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+        if (m_InstanceMapped[frame] && m_InstanceMemories[frame]) {
+            vkUnmapMemory(m_Device, m_InstanceMemories[frame]);
+            m_InstanceMapped[frame] = nullptr;
+        }
+        if (m_InstanceBuffers[frame]) { vkDestroyBuffer(m_Device, m_InstanceBuffers[frame], nullptr); m_InstanceBuffers[frame] = VK_NULL_HANDLE; }
+        if (m_InstanceMemories[frame]) { vkFreeMemory(m_Device, m_InstanceMemories[frame], nullptr); m_InstanceMemories[frame] = VK_NULL_HANDLE; }
+    }
+}
+
+// TDD §4.2/§5.2: unit quad for HLOD1 impostor billboards. Matches the Vertex
+// layout (pos/color/uv/normal/joints/weights); normal faces +Z, billboarded
+// CPU-side so the quad always faces the camera.
+void Renderer::createImpostorQuad() {
+    destroyImpostorQuad();
+    struct QuadVert { glm::vec3 pos; glm::vec3 color; glm::vec2 uv; glm::vec3 normal; glm::uvec4 joints; glm::vec4 weights; };
+    const QuadVert verts[4] = {
+        {{-0.5f, -0.5f, 0.0f}, {1,1,1}, {0,0}, {0,0,1}, {0,0,0,0}, {1,0,0,0}},
+        {{ 0.5f, -0.5f, 0.0f}, {1,1,1}, {1,0}, {0,0,1}, {0,0,0,0}, {1,0,0,0}},
+        {{ 0.5f,  0.5f, 0.0f}, {1,1,1}, {1,1}, {0,0,1}, {0,0,0,0}, {1,0,0,0}},
+        {{-0.5f,  0.5f, 0.0f}, {1,1,1}, {0,1}, {0,0,1}, {0,0,0,0}, {1,0,0,0}},
+    };
+    const uint32_t indices[6] = {0, 1, 2, 2, 3, 0};
+
+    auto makeBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& outBuf, VkDeviceMemory& outMem, const void* src) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(m_Device, &bufferInfo, nullptr, &outBuf) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create impostor quad buffer!");
+        }
+        VkMemoryRequirements memReq{};
+        vkGetBufferMemoryRequirements(m_Device, outBuf, &memReq);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memReq.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memReq.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &outMem) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate impostor quad memory!");
+        }
+        vkBindBufferMemory(m_Device, outBuf, outMem, 0);
+        void* mapped = nullptr;
+        vkMapMemory(m_Device, outMem, 0, size, 0, &mapped);
+        std::memcpy(mapped, src, static_cast<size_t>(size));
+        vkUnmapMemory(m_Device, outMem);
+    };
+    makeBuffer(sizeof(verts), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_ImpostorQuadVB, m_ImpostorQuadVBMem, verts);
+    makeBuffer(sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_ImpostorQuadIB, m_ImpostorQuadIBMem, indices);
+    setDebugName(m_Device, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(m_ImpostorQuadVB), "ImpostorQuadVB");
+}
+
+// TDD §5 auto-LOD: upload CPU-side simplified geometry to device-local
+// buffers (staging pattern, mirrors ModelLoader without the Assimp layer).
+Renderer::StaticMeshBuffers Renderer::uploadStaticMesh(const void* verts, size_t vertSize, size_t vertCount,
+                                                       const uint32_t* indices, size_t indexCount) {
+    StaticMeshBuffers out;
+    if (!verts || !indices || vertSize == 0 || vertCount == 0 || indexCount == 0) {
+        return out;
+    }
+    const VkDeviceSize vertexBytes = static_cast<VkDeviceSize>(vertSize * vertCount);
+    const VkDeviceSize indexBytes = static_cast<VkDeviceSize>(sizeof(uint32_t) * indexCount);
+    auto uploadOne = [&](VkDeviceSize byteSize, const void* src, VkBufferUsageFlags dstUsage,
+                         VkBuffer& outBuf, VkDeviceMemory& outMem) -> bool {
+        VkBufferCreateInfo stagingInfo{};
+        stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        stagingInfo.size = byteSize;
+        stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        stagingInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer staging = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+        if (vkCreateBuffer(m_Device, &stagingInfo, nullptr, &staging) != VK_SUCCESS) return false;
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(m_Device, staging, &req);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = req.size;
+        allocInfo.memoryTypeIndex = findMemoryType(req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &stagingMem) != VK_SUCCESS) {
+            vkDestroyBuffer(m_Device, staging, nullptr);
+            return false;
+        }
+        vkBindBufferMemory(m_Device, staging, stagingMem, 0);
+        void* mapped = nullptr;
+        vkMapMemory(m_Device, stagingMem, 0, byteSize, 0, &mapped);
+        std::memcpy(mapped, src, static_cast<size_t>(byteSize));
+        vkUnmapMemory(m_Device, stagingMem);
+
+        VkBufferCreateInfo dstInfo{};
+        dstInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        dstInfo.size = byteSize;
+        dstInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | dstUsage;
+        dstInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(m_Device, &dstInfo, nullptr, &outBuf) != VK_SUCCESS) {
+            vkFreeMemory(m_Device, stagingMem, nullptr);
+            vkDestroyBuffer(m_Device, staging, nullptr);
+            return false;
+        }
+        vkGetBufferMemoryRequirements(m_Device, outBuf, &req);
+        allocInfo.allocationSize = req.size;
+        allocInfo.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(m_Device, &allocInfo, nullptr, &outMem) != VK_SUCCESS) {
+            vkDestroyBuffer(m_Device, outBuf, nullptr);
+            outBuf = VK_NULL_HANDLE;
+            vkFreeMemory(m_Device, stagingMem, nullptr);
+            vkDestroyBuffer(m_Device, staging, nullptr);
+            return false;
+        }
+        vkBindBufferMemory(m_Device, outBuf, outMem, 0);
+        immediateSubmit([&](VkCommandBuffer cb) {
+            VkBufferCopy region{};
+            region.srcOffset = 0;
+            region.dstOffset = 0;
+            region.size = byteSize;
+            vkCmdCopyBuffer(cb, staging, outBuf, 1, &region);
+        });
+        vkFreeMemory(m_Device, stagingMem, nullptr);
+        vkDestroyBuffer(m_Device, staging, nullptr);
+        return true;
+    };
+    if (!uploadOne(vertexBytes, verts, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, out.vertexBuffer, out.vertexMemory)) {
+        return StaticMeshBuffers{};
+    }
+    if (!uploadOne(indexBytes, indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, out.indexBuffer, out.indexMemory)) {
+        vkDestroyBuffer(m_Device, out.vertexBuffer, nullptr);
+        vkFreeMemory(m_Device, out.vertexMemory, nullptr);
+        return StaticMeshBuffers{};
+    }
+    out.vertexCount = static_cast<uint32_t>(vertCount);
+    out.indexCount = static_cast<uint32_t>(indexCount);
+    setDebugName(m_Device, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(out.vertexBuffer), "SimplifiedVB");
+    return out;
+}
+
+void Renderer::cacheSimplifiedVariant(VkBuffer srcVB, VkBuffer srcIB, int level, StaticMeshBuffers buffers) {
+    if (srcVB == VK_NULL_HANDLE || srcIB == VK_NULL_HANDLE) return;
+    if (level < 1 || level > 2) return;
+    if (buffers.vertexBuffer == VK_NULL_HANDLE || buffers.indexBuffer == VK_NULL_HANDLE) return;
+    SimplifiedKey key{srcVB, srcIB};
+    auto& slot = m_SimplifiedVariants[key]; // creates empty pair on demand
+    StaticMeshBuffers& prev = slot[static_cast<size_t>(level - 1)];
+    if (prev.vertexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(m_Device, prev.vertexBuffer, nullptr);
+        vkFreeMemory(m_Device, prev.vertexMemory, nullptr);
+        vkDestroyBuffer(m_Device, prev.indexBuffer, nullptr);
+        vkFreeMemory(m_Device, prev.indexMemory, nullptr);
+    }
+    slot[static_cast<size_t>(level - 1)] = buffers;
+}
+
+bool Renderer::findSimplifiedVariant(VkBuffer srcVB, VkBuffer srcIB, int level, StaticMeshBuffers* out) const {
+    if (!m_AutoLODEnabled || level < 1 || level > 2 || !out) return false;
+    SimplifiedKey key{srcVB, srcIB};
+    auto it = m_SimplifiedVariants.find(key);
+    if (it == m_SimplifiedVariants.end()) return false;
+    const StaticMeshBuffers& v = it->second[static_cast<size_t>(level - 1)];
+    if (v.vertexBuffer == VK_NULL_HANDLE || v.indexBuffer == VK_NULL_HANDLE || v.indexCount == 0) return false;
+    *out = v;
+    return true;
+}
+
+uint32_t Renderer::getSimplifiedVariantCount() const {
+    uint32_t n = 0;
+    for (const auto& [key, pair] : m_SimplifiedVariants) {
+        (void)key;
+        for (const auto& v : pair) {
+            if (v.vertexBuffer != VK_NULL_HANDLE) n++;
+        }
+    }
+    return n;
+}
+
+void Renderer::destroyImpostorQuad() {
+    if (m_ImpostorQuadVB) { vkDestroyBuffer(m_Device, m_ImpostorQuadVB, nullptr); m_ImpostorQuadVB = VK_NULL_HANDLE; }
+    if (m_ImpostorQuadVBMem) { vkFreeMemory(m_Device, m_ImpostorQuadVBMem, nullptr); m_ImpostorQuadVBMem = VK_NULL_HANDLE; }
+    if (m_ImpostorQuadIB) { vkDestroyBuffer(m_Device, m_ImpostorQuadIB, nullptr); m_ImpostorQuadIB = VK_NULL_HANDLE; }
+    if (m_ImpostorQuadIBMem) { vkFreeMemory(m_Device, m_ImpostorQuadIBMem, nullptr); m_ImpostorQuadIBMem = VK_NULL_HANDLE; }
 }
 
 void Renderer::createPickingPipeline() {
@@ -2102,6 +2549,7 @@ void Renderer::createOffscreenResources() {
     }
 
     vkBindImageMemory(m_Device, m_OffscreenImage, m_OffscreenImageMemory, 0);
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_OffscreenImage), "OffscreenColorImage");
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -2164,6 +2612,7 @@ void Renderer::createOffscreenResources() {
     }
 
     vkBindImageMemory(m_Device, m_OffscreenDepthImage, m_OffscreenDepthImageMemory, 0);
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_OffscreenDepthImage), "OffscreenDepthImage");
 
     VkImageViewCreateInfo depthViewInfo{};
     depthViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -2212,6 +2661,7 @@ void Renderer::createOffscreenResources() {
     }
 
     vkBindImageMemory(m_Device, m_PickingImage, m_PickingImageMemory, 0);
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_PickingImage), "PickingColorImage");
 
     VkImageViewCreateInfo pickingViewInfo{};
     pickingViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -2260,6 +2710,7 @@ void Renderer::createOffscreenResources() {
     }
 
     vkBindImageMemory(m_Device, m_PickingDepthImage, m_PickingDepthImageMemory, 0);
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_PickingDepthImage), "PickingDepthImage");
 
     VkImageViewCreateInfo pickingDepthView{};
     pickingDepthView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -2319,6 +2770,7 @@ void Renderer::createOffscreenResources() {
     }
 
     vkBindImageMemory(m_Device, m_GameOffscreenImage, m_GameOffscreenImageMemory, 0);
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_GameOffscreenImage), "GameOffscreenColorImage");
 
     viewInfo.image = m_GameOffscreenImage;
     if (vkCreateImageView(m_Device, &viewInfo, nullptr, &m_GameOffscreenImageView) != VK_SUCCESS) {
@@ -2342,6 +2794,7 @@ void Renderer::createOffscreenResources() {
     }
 
     vkBindImageMemory(m_Device, m_GameOffscreenDepthImage, m_GameOffscreenDepthImageMemory, 0);
+    setDebugName(m_Device, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<uint64_t>(m_GameOffscreenDepthImage), "GameOffscreenDepthImage");
 
     depthViewInfo.image = m_GameOffscreenDepthImage;
     if (vkCreateImageView(m_Device, &depthViewInfo, nullptr, &m_GameOffscreenDepthImageView) != VK_SUCCESS) {
@@ -2371,6 +2824,9 @@ void Renderer::destroyPipelineResources() {
     if (m_GraphicsPipelineNoCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineNoCull, nullptr); m_GraphicsPipelineNoCull = VK_NULL_HANDLE; }
     if (m_GraphicsPipelineFrontCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineFrontCull, nullptr); m_GraphicsPipelineFrontCull = VK_NULL_HANDLE; }
     if (m_GraphicsPipeline) { vkDestroyPipeline(m_Device, m_GraphicsPipeline, nullptr); m_GraphicsPipeline = VK_NULL_HANDLE; }
+    if (m_GraphicsPipelineInstancedNoCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineInstancedNoCull, nullptr); m_GraphicsPipelineInstancedNoCull = VK_NULL_HANDLE; }
+    if (m_GraphicsPipelineInstancedFrontCull) { vkDestroyPipeline(m_Device, m_GraphicsPipelineInstancedFrontCull, nullptr); m_GraphicsPipelineInstancedFrontCull = VK_NULL_HANDLE; }
+    if (m_GraphicsPipelineInstanced) { vkDestroyPipeline(m_Device, m_GraphicsPipelineInstanced, nullptr); m_GraphicsPipelineInstanced = VK_NULL_HANDLE; }
     if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 
     if (m_PickingRenderPass) { vkDestroyRenderPass(m_Device, m_PickingRenderPass, nullptr); m_PickingRenderPass = VK_NULL_HANDLE; }
@@ -2461,6 +2917,13 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         throw std::runtime_error("failed to begin recording command buffer!");
     }
+
+    // TDD §12 frame metrics.
+    m_FrameDrawCalls = 0;
+    m_FrameTriangles = 0;
+    m_FrameInstancedDraws = 0;
+    m_FrameInstancedInstances = 0;
+    m_FrameSimplifiedDraws = 0;
 
 #ifdef TRACY_ENABLE
     TracyVkCollect(m_TracyVkCtx, commandBuffer);
@@ -2672,7 +3135,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 }
 
                 auto& mesh = registry.get<Mesh>(entity);
-                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0 || !isMeshHandleLive(m_meshRegistry, mesh)) {
                     continue;
                 }
 
@@ -2843,7 +3306,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     }
 
                     auto& mesh = registry.get<Mesh>(entity);
-                    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+                    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0 || !isMeshHandleLive(m_meshRegistry, mesh)) {
                         continue;
                     }
 
@@ -2892,8 +3355,34 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 std::sort(transparentFrontCull.begin(), transparentFrontCull.end(), [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
                 std::sort(transparentNoCull.begin(), transparentNoCull.end(), [](const DrawItem& a, const DrawItem& b) { return a.distSq > b.distSq; });
 
+                // Auto-LOD (§5): swap dense meshes for their simplified GPU
+                // variant when the LOD system selected LOD1/LOD2 and a variant
+                // was generated at import. Falls back to the full mesh.
+                auto resolveSimplified = [&](entt::entity entity, const Mesh& mesh,
+                                              VkBuffer& outVB, VkBuffer& outIB, uint32_t& outIndexCount) -> bool {
+                    outVB = mesh.vertexBuffer;
+                    outIB = mesh.indexBuffer;
+                    outIndexCount = mesh.indexCount;
+                    const Atlas::LODComponent* lod = registry.try_get<Atlas::LODComponent>(entity);
+                    if (!lod) return false;
+                    int level = 0;
+                    if (lod->currentLevel() == Atlas::LODLevel::LOD1) level = 1;
+                    else if (lod->currentLevel() == Atlas::LODLevel::LOD2) level = 2;
+                    else return false;
+                    StaticMeshBuffers variant;
+                    if (!findSimplifiedVariant(mesh.vertexBuffer, mesh.indexBuffer, level, &variant)) return false;
+                    outVB = variant.vertexBuffer;
+                    outIB = variant.indexBuffer;
+                    outIndexCount = variant.indexCount;
+                    return true;
+                };
+
                 auto drawEntity = [&](entt::entity entity) {
                     auto& mesh = registry.get<Mesh>(entity);
+                    VkBuffer drawVB = mesh.vertexBuffer;
+                    VkBuffer drawIB = mesh.indexBuffer;
+                    uint32_t drawIndexCount = mesh.indexCount;
+                    const bool drewSimplified = resolveSimplified(entity, mesh, drawVB, drawIB, drawIndexCount);
                     glm::mat4 model = glm::mat4(1.0f);
                     glm::vec4 baseColor = glm::vec4(1.0f);
                     glm::vec4 emissiveFactor = glm::vec4(0.0f);
@@ -2933,8 +3422,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                     PushConstants pushConstants{};
                     pushConstants.model = model;
-                    pushConstants.view = view;
-                    pushConstants.proj = proj;
+                    pushConstants.viewProj = proj * view;
                     pushConstants.baseColor = baseColor;
                     pushConstants.emissiveFactor = emissiveFactor;
                     pushConstants.metallic = metallic;
@@ -2948,24 +3436,242 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     pushConstants.flags = flags;
                     vkCmdPushConstants(commandBuffer, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pushConstants);
 
-                    VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
+                    VkBuffer vertexBuffers[] = {drawVB};
                     VkDeviceSize offsets[] = {0};
                     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                    vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                    vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+                    vkCmdBindIndexBuffer(commandBuffer, drawIB, 0, VK_INDEX_TYPE_UINT32);
+                    vkCmdDrawIndexed(commandBuffer, drawIndexCount, 1, 0, 0, 0);
+                    m_FrameDrawCalls++;
+                    m_FrameTriangles += drawIndexCount / 3u;
+                    if (drewSimplified) m_FrameSimplifiedDraws++;
                 };
 
-                if (!opaqueCull.empty()) {
-                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
-                    for (auto entity : opaqueCull) drawEntity(entity);
+                // TDD §6: group opaque entities sharing (mesh buffers + full
+                // material state) into GPU-instanced batches. Transparent,
+                // skinned and picking/outline paths stay per-entity.
+                struct InstanceMatKey {
+                    glm::vec4 baseColor{1.0f};
+                    glm::vec4 emissive{0.0f};
+                    float metallic = 0.0f;
+                    float roughness = 0.5f;
+                    float alphaCutoff = 0.5f;
+                    int32_t tex[5] = {0, 0, 0, 0, 0};
+                    int32_t flags = 0;
+                    bool operator==(const InstanceMatKey& o) const {
+                        return baseColor == o.baseColor && emissive == o.emissive &&
+                               metallic == o.metallic && roughness == o.roughness &&
+                               alphaCutoff == o.alphaCutoff && flags == o.flags &&
+                               tex[0] == o.tex[0] && tex[1] == o.tex[1] && tex[2] == o.tex[2] &&
+                               tex[3] == o.tex[3] && tex[4] == o.tex[4];
+                    }
+                };
+                struct InstanceBatchKey {
+                    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+                    VkBuffer indexBuffer = VK_NULL_HANDLE;
+                    InstanceMatKey mat;
+                    bool operator==(const InstanceBatchKey& o) const {
+                        return vertexBuffer == o.vertexBuffer && indexBuffer == o.indexBuffer && mat == o.mat;
+                    }
+                };
+                struct InstanceBatchKeyHash {
+                    size_t operator()(const InstanceBatchKey& k) const noexcept {
+                        size_t h = std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.vertexBuffer));
+                        h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.indexBuffer) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+                        const uint32_t* words = reinterpret_cast<const uint32_t*>(&k.mat);
+                        for (size_t i = 0; i < sizeof(InstanceMatKey) / 4; ++i) {
+                            h ^= std::hash<uint32_t>{}(words[i] + 0x9e3779b9u + static_cast<uint32_t>(h) + (h << 6) + (h >> 2));
+                        }
+                        return h;
+                    }
+                };
+                struct InstanceBatch {
+                    InstanceBatchKey key;
+                    uint32_t indexCount = 0;
+                    bool isSimplified = false;
+                    std::vector<glm::mat4> matrices;
+                    std::vector<entt::entity> members;
+                };
+
+                auto readInstanceKey = [&](entt::entity entity, const Mesh& mesh, InstanceBatchKey& outKey,
+                                           uint32_t& outIndexCount, bool& outSimplified) -> bool {
+                    // Phase 2: stale registry handle → single path (drawEntity
+                    // re-checks); legacy handle 0 flows through as before.
+                    if (!isMeshHandleLive(m_meshRegistry, mesh)) return false;
+                    // Skinned meshes need per-entity bone palettes: not instanceable.
+                    if (registry.all_of<ECS::SkeletonComponent>(entity) ||
+                        registry.all_of<ECS::SkinnedMeshComponent>(entity)) {
+                        return false;
+                    }
+                    // Resolve auto-LOD variant first so batches group by the
+                    // buffers actually drawn (variants batch among themselves).
+                    VkBuffer vb = mesh.vertexBuffer;
+                    VkBuffer ib = mesh.indexBuffer;
+                    outIndexCount = mesh.indexCount;
+                    outSimplified = resolveSimplified(entity, mesh, vb, ib, outIndexCount);
+                    outKey.vertexBuffer = vb;
+                    outKey.indexBuffer = ib;
+                    InstanceMatKey m;
+                    if (registry.all_of<ECS::MaterialComponent>(entity)) {
+                        auto& material = registry.get<ECS::MaterialComponent>(entity);
+                        m.baseColor = material.baseColor;
+                        m.metallic = material.metallic;
+                        m.roughness = material.roughness;
+                        m.emissive = glm::vec4(material.emissiveFactor, 0.0f);
+                        m.alphaCutoff = material.alphaCutoff;
+                        if (material.useAlbedoTexture && material.albedoTextureIndex >= 0) { m.flags |= (1 << 0); m.tex[0] = material.albedoTextureIndex; }
+                        if (material.useNormalTexture && material.normalTextureIndex >= 0) { m.flags |= (1 << 1); m.tex[1] = material.normalTextureIndex; }
+                        if (material.useMetallicRoughnessTexture && material.metallicRoughnessTextureIndex >= 0) { m.flags |= (1 << 2); m.tex[2] = material.metallicRoughnessTextureIndex; }
+                        if (material.useAOTexture && material.aoTextureIndex >= 0) { m.flags |= (1 << 3); m.tex[3] = material.aoTextureIndex; }
+                        if (material.useEmissiveTexture && material.emissiveTextureIndex >= 0) { m.flags |= (1 << 4); m.tex[4] = material.emissiveTextureIndex; }
+                        if (material.doubleSided) { m.flags |= (1 << 5); }
+                        m.flags |= (static_cast<int32_t>(material.alphaMode) & 3) << 8;
+                    }
+                    outKey.mat = m;
+                    return true;
+                };
+
+                uint32_t instCursor = 0;
+                void* instMapped = m_InstanceMapped[m_CurrentFrame];
+                VkBuffer instBuffer = m_InstanceBuffers[m_CurrentFrame];
+
+                auto drawOpaqueList = [&](const std::vector<entt::entity>& list, VkPipeline singlePipe, VkPipeline instPipe) {
+                    if (list.empty() || singlePipe == VK_NULL_HANDLE) {
+                        return;
+                    }
+                    const bool canInstance = m_InstancingEnabled && instPipe != VK_NULL_HANDLE &&
+                                             instMapped != nullptr && instBuffer != VK_NULL_HANDLE;
+
+                    std::unordered_map<InstanceBatchKey, size_t, InstanceBatchKeyHash> batchIndex;
+                    std::vector<InstanceBatch> batches;
+                    std::vector<entt::entity> singles;
+                    if (canInstance) {
+                        batchIndex.reserve(list.size());
+                        for (auto e : list) {
+                            if (!registry.valid(e) || !registry.all_of<Mesh>(e)) {
+                                singles.push_back(e);
+                                continue;
+                            }
+                            const auto& mesh = registry.get<Mesh>(e);
+                            InstanceBatchKey key;
+                            uint32_t resolvedCount = 0;
+                            bool resolvedSimplified = false;
+                            if (!readInstanceKey(e, mesh, key, resolvedCount, resolvedSimplified)) {
+                                singles.push_back(e);
+                                continue;
+                            }
+                            auto it = batchIndex.find(key);
+                            if (it == batchIndex.end()) {
+                                size_t bi = batches.size();
+                                batchIndex.emplace(key, bi);
+                                InstanceBatch b;
+                                b.key = key;
+                                b.indexCount = resolvedCount;
+                                b.isSimplified = resolvedSimplified;
+                                batches.push_back(std::move(b));
+                                it = batchIndex.find(key);
+                            }
+                            glm::mat4 model(1.0f);
+                            if (scene && scene->hasTransform(e)) {
+                                model = scene->getCachedWorldTransform(e);
+                            }
+                            batches[it->second].matrices.push_back(model);
+                            batches[it->second].members.push_back(e);
+                        }
+                    } else {
+                        singles = list;
+                    }
+
+                    if (!singles.empty()) {
+                        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, singlePipe);
+                        for (auto e : singles) drawEntity(e);
+                    }
+
+                    for (auto& batch : batches) {
+                        const uint32_t count = static_cast<uint32_t>(batch.matrices.size());
+                        const bool fits = (instCursor + count) <= MAX_INSTANCES_PER_FRAME;
+                        if (count < MIN_INSTANCES_PER_BATCH || !fits) {
+                            // Below threshold or staging full: per-entity fallback.
+                            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, singlePipe);
+                            for (auto e : batch.members) drawEntity(e);
+                            continue;
+                        }
+
+                        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, instPipe);
+
+                        PushConstants pc{};
+                        pc.model = glm::mat4(1.0f);
+                        pc.viewProj = proj * view;
+                        pc.baseColor = batch.key.mat.baseColor;
+                        pc.emissiveFactor = batch.key.mat.emissive;
+                        pc.metallic = batch.key.mat.metallic;
+                        pc.roughness = batch.key.mat.roughness;
+                        pc.alphaCutoff = batch.key.mat.alphaCutoff;
+                        pc.albedoTexIndex = batch.key.mat.tex[0];
+                        pc.normalTexIndex = batch.key.mat.tex[1];
+                        pc.metallicRoughnessTexIndex = batch.key.mat.tex[2];
+                        pc.aoTexIndex = batch.key.mat.tex[3];
+                        pc.emissiveTexIndex = batch.key.mat.tex[4];
+                        pc.flags = batch.key.mat.flags;
+                        vkCmdPushConstants(commandBuffer, m_PipelineLayout,
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pc);
+
+                        uint32_t zeroOffset = 0;
+                        VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 2, sets, 1, &zeroOffset);
+
+                        auto* dst = reinterpret_cast<glm::mat4*>(static_cast<char*>(instMapped) + instCursor * sizeof(glm::mat4));
+                        std::memcpy(dst, batch.matrices.data(), count * sizeof(glm::mat4));
+
+                        VkBuffer vbs[] = {batch.key.vertexBuffer, instBuffer};
+                        VkDeviceSize offs[] = {0, static_cast<VkDeviceSize>(instCursor) * sizeof(glm::mat4)};
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 2, vbs, offs);
+                        vkCmdBindIndexBuffer(commandBuffer, batch.key.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(commandBuffer, batch.indexCount, count, 0, 0, 0);
+                        m_FrameDrawCalls++;
+                        m_FrameTriangles += (batch.indexCount / 3u) * count;
+                        m_FrameInstancedDraws++;
+                        m_FrameInstancedInstances += count;
+                        if (batch.isSimplified) m_FrameSimplifiedDraws++;
+                        instCursor += count;
+                    }
+                };
+
+                drawOpaqueList(opaqueCull, m_GraphicsPipeline, m_GraphicsPipelineInstanced);
+                if (m_GraphicsPipelineFrontCull != VK_NULL_HANDLE) {
+                    drawOpaqueList(opaqueFrontCull, m_GraphicsPipelineFrontCull, m_GraphicsPipelineInstancedFrontCull);
                 }
-                if (!opaqueFrontCull.empty() && m_GraphicsPipelineFrontCull != VK_NULL_HANDLE) {
-                    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineFrontCull);
-                    for (auto entity : opaqueFrontCull) drawEntity(entity);
+                if (m_GraphicsPipelineNoCull != VK_NULL_HANDLE) {
+                    drawOpaqueList(opaqueNoCull, m_GraphicsPipelineNoCull, m_GraphicsPipelineInstancedNoCull);
                 }
-                if (!opaqueNoCull.empty() && m_GraphicsPipelineNoCull != VK_NULL_HANDLE) {
+                // TDD §4.2/§5.2 HLOD1 impostors: billboard quads tinted per cell.
+                // Opaque -> drawn with the no-cull PBR pipeline right after opaques.
+                if (!m_ImpostorDraws.empty() && m_ImpostorQuadVB != VK_NULL_HANDLE &&
+                    m_ImpostorQuadIB != VK_NULL_HANDLE && m_GraphicsPipelineNoCull != VK_NULL_HANDLE) {
                     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineNoCull);
-                    for (auto entity : opaqueNoCull) drawEntity(entity);
+                    for (const auto& imp : m_ImpostorDraws) {
+                        PushConstants pc{};
+                        pc.model = imp.model;
+                        pc.viewProj = proj * view;
+                        pc.baseColor = imp.color;
+                        pc.emissiveFactor = glm::vec4(0.0f);
+                        pc.metallic = 0.0f;
+                        pc.roughness = 1.0f;
+                        pc.alphaCutoff = 0.5f;
+                        vkCmdPushConstants(commandBuffer, m_PipelineLayout,
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants), &pc);
+
+                        uint32_t zeroOffset = 0;
+                        VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
+                        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 2, sets, 1, &zeroOffset);
+
+                        VkBuffer vbs[] = {m_ImpostorQuadVB};
+                        VkDeviceSize offs[] = {0};
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vbs, offs);
+                        vkCmdBindIndexBuffer(commandBuffer, m_ImpostorQuadIB, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
+                        m_FrameDrawCalls++;
+                        m_FrameTriangles += 2;
+                    }
                 }
                 if (!transparentCull.empty() && m_GraphicsPipelineBlend != VK_NULL_HANDLE) {
                     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipelineBlend);
@@ -2987,7 +3693,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                         entt::entity selected = static_cast<entt::entity>(selId);
                         if (!registry.valid(selected) || !registry.all_of<Mesh>(selected)) continue;
                         auto& selMesh = registry.get<Mesh>(selected);
-                        if (selMesh.vertexBuffer == VK_NULL_HANDLE || selMesh.indexBuffer == VK_NULL_HANDLE || selMesh.indexCount == 0) continue;
+                        if (selMesh.vertexBuffer == VK_NULL_HANDLE || selMesh.indexBuffer == VK_NULL_HANDLE || selMesh.indexCount == 0 || !isMeshHandleLive(m_meshRegistry, selMesh)) continue;
 
                         glm::mat4 selModel = glm::mat4(1.0f);
                         if (scene && scene->hasTransform(selected)) {
@@ -3051,6 +3757,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
     }
 
     } // end TracyVkZone scope
+
+    m_LastDrawCalls = m_FrameDrawCalls;
+    m_LastTriangles = m_FrameTriangles;
+    m_LastInstancedDraws = m_FrameInstancedDraws;
+    m_LastInstancedInstances = m_FrameInstancedInstances;
+    m_LastSimplifiedDraws = m_FrameSimplifiedDraws;
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to record command buffer!");
@@ -3197,10 +3909,11 @@ VkExtent2D Renderer::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabiliti
             static_cast<uint32_t>(height)
         };
 
-        actualExtent.width = std::max(capabilities.minImageExtent.width, 
-            std::min(capabilities.maxImageExtent.width, actualExtent.width));
-        actualExtent.height = std::max(capabilities.minImageExtent.height, 
-            std::min(capabilities.maxImageExtent.height, actualExtent.height));
+        // Parenthesized (std::max)/(std::min): immune to windows.h max/min macros.
+        actualExtent.width = (std::max)(capabilities.minImageExtent.width,
+            (std::min)(capabilities.maxImageExtent.width, actualExtent.width));
+        actualExtent.height = (std::max)(capabilities.minImageExtent.height,
+            (std::min)(capabilities.maxImageExtent.height, actualExtent.height));
 
         return actualExtent;
     }
@@ -3277,6 +3990,13 @@ VKAPI_ATTR VkBool32 VKAPI_CALL Renderer::debugCallback(
     (void)messageSeverity;
     (void)messageType;
     (void)pUserData;
+    if (pCallbackData && pCallbackData->pMessage) {
+        // Benign Tracy GPU-profiler polling: the query simply isn't ready yet
+        // this frame. Not an error — filter it so the log stays meaningful.
+        if (std::strstr(pCallbackData->pMessage, "vkGetQueryPoolResults(): Returned VK_NOT_READY") != nullptr) {
+            return VK_FALSE;
+        }
+    }
     std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
     return VK_FALSE;
 }

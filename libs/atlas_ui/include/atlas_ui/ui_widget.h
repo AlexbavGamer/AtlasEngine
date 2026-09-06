@@ -2,12 +2,13 @@
 
 #include <glm/glm.hpp>
 
+#include "ui_types.h"
+
 namespace Atlas::UI {
 
 class UIFont;
 class UIDrawList;
 struct UIStyle;
-struct UIInput;
 
 // Base class for all custom UI widgets. Widgets are retained-mode objects: they
 // hold their own state (position, size, value, pressed/hovered) and are drawn
@@ -59,6 +60,12 @@ public:
     // for containers/windows that need to know their hover state.
     bool hovered(const UIInput& input) const {
         return contains(glm::vec2(input.mouseX, input.mouseY));
+    }
+
+    // Static hit-test helper for arbitrary rects.
+    static bool contains(const UIInput& input, const glm::vec2& min, const glm::vec2& max) {
+        return input.mouseX >= min.x && input.mouseX <= max.x &&
+               input.mouseY >= min.y && input.mouseY <= max.y;
     }
 
 protected:

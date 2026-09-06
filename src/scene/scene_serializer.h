@@ -85,6 +85,9 @@ struct SerializedEntity {
     bool hasCapsuleCollider = false;
     ECS::CapsuleColliderComponent capsuleCollider{};
 
+    bool hasMeshCollider = false;
+    ECS::MeshColliderComponent meshCollider{};
+
     std::vector<SerializedScriptComponent> scripts;
 
     std::string primitiveType;

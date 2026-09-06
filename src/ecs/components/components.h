@@ -12,6 +12,7 @@
 #include "../../core/string/string_id.h"
 #include "../../animation/animation.h"
 #include "../../scripting/script_types.h"
+#include "../reflection.h"
 
 namespace Atlas { namespace ECS {
 
@@ -86,6 +87,32 @@ struct RenderableComponent {
     uint32_t meshID = 0;
     uint32_t materialID = 0;
 };
+
+// HLOD Level of Detail
+enum class HLODLevel : uint8_t {
+    FullDetail = 0,
+    HLOD0 = 1,
+    HLOD1 = 2,
+    Count
+};
+
+// Component to track HLOD level for an entity
+struct HLODComponent {
+    HLODLevel currentLevel = HLODLevel::FullDetail;
+    HLODLevel targetLevel = HLODLevel::FullDetail;
+    float screenSizeBias = 1.0f;  // Screen size threshold for LOD transition
+    entt::entity ownerEntity = entt::null;
+};
+
+// Component to store HLOD mesh reference (for rendering)
+struct HLODMeshRef {
+    uint32_t meshID = 0;       // ID referencing loaded HLOD mesh data
+    uint32_t materialID = 0;   // ID referencing material
+    uint32_t instanceCount = 0; // Number of instances to render
+};
+
+// HLODActor / HLODMesh are defined in src/world/hlod.h (world system).
+// Only the per-entity components live here to avoid ODR duplication.
 
 struct CameraComponent {
     glm::vec3 position = glm::vec3(0.0f, 2.0f, 5.0f);
@@ -203,6 +230,20 @@ struct CapsuleColliderComponent {
     float halfHeight = 0.5f;
     glm::vec3 offset = glm::vec3(0.0f);
     bool isTrigger = false;
+};
+
+// Triangle-mesh collider (V1). Source geometry comes from the entity's own
+// ::Mesh component (meshPath): file meshes are reloaded from disk and cached
+// per path, primitives are generated procedurally. Static/kinematic bodies
+// get exact triangle collision; dynamic bodies fall back to their OBB.
+struct MeshColliderComponent {
+    glm::vec3 offset = glm::vec3(0.0f);
+    bool isTrigger = false;
+    // Reserved: convex-hull approximation path (currently triangle soup).
+    bool convex = false;
+
+    COMPONENT_FIELDS(MeshColliderComponent, &MeshColliderComponent::offset,
+                     &MeshColliderComponent::isTrigger, &MeshColliderComponent::convex)
 };
 
 // Skeletal animation (V1): one skeleton shared across skinned meshes + one clip player per entity.

@@ -23,7 +23,7 @@
 
 ```
 libs/atlas_ui/
-├── CMakeLists.txt                     # (opcional) se precisar de build CMake
+├── premake5.lua                     # (opcional) se precisar de build standalone
 ├── include/atlas_ui/
 │   ├── ui_context.h                   # motor principal (retained-mode)
 │   ├── ui_widget.h                    # base UIWidget

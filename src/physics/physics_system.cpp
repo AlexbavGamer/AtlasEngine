@@ -14,6 +14,8 @@
 #include "../ecs/ecs.h"
 #include "../ecs/components/components.h"
 #include "../scene/scene.h"
+#include "../utils/model_loader.h"
+#include "../utils/primitive_helpers.h"
 
 // ---------------------------------------------------------------------------
 // Atlas Physics: a small self-contained rigid-body simulation.
@@ -53,17 +55,211 @@ glm::vec3 rotatedOffset(const Transform& t, const glm::vec3& offset) {
     return glm::mat3_cast(rotationQuat(t)) * offset;
 }
 
+// ---------------------------------------------------------------------------
+// Triangle-mesh collision data (V1: static triangle soup + median-split BVH).
+// Built once per unique meshPath and shared across entities.
+// ---------------------------------------------------------------------------
+struct TriMeshBVHNode {
+    glm::vec3 bmin{0.0f};
+    glm::vec3 bmax{0.0f};
+    int32_t left = -1;
+    int32_t right = -1;
+    uint32_t start = 0; // first triangle in triOrder (leaf only)
+    uint32_t count = 0; // triangle count (leaf only, 0 = interior)
+};
+
+struct TriMesh {
+    std::vector<glm::vec3> verts;
+    std::vector<uint32_t> indices; // 3 per triangle
+    glm::vec3 bmin{0.0f};
+    glm::vec3 bmax{0.0f};
+    std::vector<TriMeshBVHNode> nodes;
+    std::vector<uint32_t> triOrder; // triangle indices in leaf order
+    int32_t root = -1;
+
+    uint32_t triCount() const { return static_cast<uint32_t>(indices.size() / 3u); }
+    bool empty() const { return verts.empty() || indices.size() < 3u; }
+};
+
+constexpr uint32_t kTriMeshLeafMaxTris = 8;
+constexpr int32_t kTriMeshMaxDepth = 32;
+
+static void triMeshBoundsOf(const TriMesh& mesh, uint32_t tri, glm::vec3& outMin, glm::vec3& outMax) {
+    const glm::vec3& a = mesh.verts[mesh.indices[tri * 3u]];
+    const glm::vec3& b = mesh.verts[mesh.indices[tri * 3u + 1u]];
+    const glm::vec3& c = mesh.verts[mesh.indices[tri * 3u + 2u]];
+    outMin = glm::min(a, glm::min(b, c));
+    outMax = glm::max(a, glm::max(b, c));
+}
+
+static int32_t triMeshBuildNode(TriMesh& mesh, uint32_t* tris, uint32_t count, int32_t depth) {
+    const int32_t nodeIdx = static_cast<int32_t>(mesh.nodes.size());
+    mesh.nodes.emplace_back();
+    TriMeshBVHNode& node = mesh.nodes.back();
+    node.bmin = glm::vec3(std::numeric_limits<float>::max());
+    node.bmax = glm::vec3(std::numeric_limits<float>::lowest());
+    glm::vec3 cmin(std::numeric_limits<float>::max());
+    glm::vec3 cmax(std::numeric_limits<float>::lowest());
+    for (uint32_t i = 0; i < count; ++i) {
+        glm::vec3 tmin, tmax;
+        triMeshBoundsOf(mesh, tris[i], tmin, tmax);
+        node.bmin = glm::min(node.bmin, tmin);
+        node.bmax = glm::max(node.bmax, tmax);
+        const glm::vec3 centroid = (tmin + tmax) * 0.5f;
+        cmin = glm::min(cmin, centroid);
+        cmax = glm::max(cmax, centroid);
+    }
+    if (count <= kTriMeshLeafMaxTris || depth >= kTriMeshMaxDepth) {
+        node.start = static_cast<uint32_t>(mesh.triOrder.size());
+        node.count = count;
+        for (uint32_t i = 0; i < count; ++i) {
+            mesh.triOrder.push_back(tris[i]);
+        }
+        return nodeIdx;
+    }
+    const glm::vec3 extent = cmax - cmin;
+    int axis = 0;
+    if (extent.y > extent.x && extent.y >= extent.z) axis = 1;
+    else if (extent.z > extent.x && extent.z > extent.y) axis = 2;
+    const uint32_t mid = count / 2u;
+    std::nth_element(tris, tris + mid, tris + count, [&](uint32_t ta, uint32_t tb) {
+        glm::vec3 amn, amx, bmn, bmx;
+        triMeshBoundsOf(mesh, ta, amn, amx);
+        triMeshBoundsOf(mesh, tb, bmn, bmx);
+        return ((amn + amx) * 0.5f)[axis] < ((bmn + bmx) * 0.5f)[axis];
+    });
+    if (mid == 0 || mid >= count) { // degenerate split: force leaf
+        node.start = static_cast<uint32_t>(mesh.triOrder.size());
+        node.count = count;
+        for (uint32_t i = 0; i < count; ++i) {
+            mesh.triOrder.push_back(tris[i]);
+        }
+        return nodeIdx;
+    }
+    // NOTE: node is a reference into mesh.nodes; recursion may reallocate the
+    // vector, so re-fetch it after building children.
+    const int32_t left = triMeshBuildNode(mesh, tris, mid, depth + 1);
+    const int32_t right = triMeshBuildNode(mesh, tris + mid, count - mid, depth + 1);
+    mesh.nodes[static_cast<size_t>(nodeIdx)].left = left;
+    mesh.nodes[static_cast<size_t>(nodeIdx)].right = right;
+    return nodeIdx;
+}
+
+static void triMeshBuildBVH(TriMesh& mesh) {
+    mesh.nodes.clear();
+    mesh.triOrder.clear();
+    mesh.nodes.reserve(mesh.triCount() * 2u + 1u);
+    mesh.triOrder.reserve(mesh.triCount());
+    const uint32_t count = mesh.triCount();
+    if (count == 0) {
+        mesh.root = -1;
+        return;
+    }
+    std::vector<uint32_t> tris(count);
+    for (uint32_t i = 0; i < count; ++i) tris[i] = i;
+    mesh.root = triMeshBuildNode(mesh, tris.data(), count, 0);
+}
+
 struct Collider {
-    enum class Kind : uint8_t { Box, Sphere, Capsule };
+    enum class Kind : uint8_t { Box, Sphere, Capsule, Mesh };
+    // False when the collider could not be built (e.g. mesh file missing).
+    // Callers must skip invalid colliders instead of using defaults.
+    bool valid = true;
     Kind kind = Kind::Sphere;
     glm::vec3 halfExtent = glm::vec3(0.5f); // box
     float radius = 0.5f;                    // sphere / capsule
     float halfHeight = 0.5f;                // capsule
     glm::vec3 offset = glm::vec3(0.0f);
     bool isTrigger = false;
+    // Mesh data (Kind::Mesh only). Shared per meshPath via Impl::meshCache.
+    std::shared_ptr<TriMesh> triMesh;
+    glm::vec3 meshBoundsMin{0.0f}; // local-space bounds (fallback + proxy)
+    glm::vec3 meshBoundsMax{0.0f};
+    bool meshFallbackToBox = false; // dynamic bodies: OBB approximation
 };
 
-Collider colliderFromEntity(entt::registry& registry, entt::entity entity) {
+using MeshCache = std::unordered_map<std::string, std::shared_ptr<TriMesh>>;
+
+// Build collision triangles for a mesh path. Primitives are generated
+// procedurally; file meshes are reloaded CPU-only (null device keeps
+// vertices) and the submesh matching the '#name' suffix is extracted.
+static std::shared_ptr<TriMesh> loadTriMeshForPath(const std::string& meshPath) {
+    auto out = std::make_shared<TriMesh>();
+    std::vector<glm::vec3> positions;
+    std::vector<uint32_t> indices;
+
+    if (meshPath.rfind("primitive://", 0) == 0) {
+        const std::string prim = meshPath.substr(sizeof("primitive://") - 1u);
+        MeshData data;
+        if (prim == "Cube" || prim == "TestCityBox") {
+            data = ModelLoader::createCube(1.0f);
+        } else if (prim == "Plane") {
+            data = Atlas::PrimitiveHelpers::createPlane(2.0f);
+        } else if (prim == "Sphere") {
+            data = Atlas::PrimitiveHelpers::createSphere(0.5f);
+        } else if (prim == "Cylinder") {
+            data = Atlas::PrimitiveHelpers::createCylinder(0.5f, 1.5f);
+        } else if (prim == "Capsule") {
+            data = Atlas::PrimitiveHelpers::createCapsule(0.45f, 1.8f);
+        } else {
+            std::cerr << "[Physics] MeshCollider: unknown primitive '" << meshPath << "'" << std::endl;
+            return nullptr;
+        }
+        positions.reserve(data.vertices.size());
+        for (const auto& v : data.vertices) positions.push_back(v.pos);
+        indices = data.indices;
+    } else {
+        std::string filePath = meshPath;
+        std::string subName;
+        const size_t hashPos = meshPath.rfind('#');
+        if (hashPos != std::string::npos) {
+            filePath = meshPath.substr(0, hashPos);
+            subName = meshPath.substr(hashPos + 1u);
+        }
+        try {
+            ModelData modelData;
+            ModelLoader::loadModelMultiMesh(filePath, VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr,
+                                             &modelData, false, false);
+            const MeshData* picked = nullptr;
+            if (!subName.empty()) {
+                for (const auto& m : modelData.meshes) {
+                    if (m.name == subName) { picked = &m; break; }
+                }
+            }
+            if (!picked && !modelData.meshes.empty() && subName.empty()) {
+                picked = &modelData.meshes.front();
+            }
+            if (!picked) {
+                std::cerr << "[Physics] MeshCollider: submesh '" << subName
+                          << "' not found in '" << filePath << "'" << std::endl;
+                return nullptr;
+            }
+            positions.reserve(picked->vertices.size());
+            for (const auto& v : picked->vertices) positions.push_back(v.pos);
+            indices = picked->indices;
+        } catch (const std::exception& e) {
+            std::cerr << "[Physics] MeshCollider: failed to load '" << filePath << "': " << e.what() << std::endl;
+            return nullptr;
+        }
+    }
+
+    if (positions.empty() || indices.size() < 3u) {
+        std::cerr << "[Physics] MeshCollider: no triangles for '" << meshPath << "'" << std::endl;
+        return nullptr;
+    }
+    out->verts = std::move(positions);
+    out->indices = std::move(indices);
+    out->bmin = glm::vec3(std::numeric_limits<float>::max());
+    out->bmax = glm::vec3(std::numeric_limits<float>::lowest());
+    for (const auto& v : out->verts) {
+        out->bmin = glm::min(out->bmin, v);
+        out->bmax = glm::max(out->bmax, v);
+    }
+    triMeshBuildBVH(*out);
+    return out;
+}
+
+Collider colliderFromEntity(entt::registry& registry, entt::entity entity, MeshCache& meshCache) {
     Collider c;
     if (registry.all_of<ECS::BoxColliderComponent>(entity)) {
         const auto& comp = registry.get<ECS::BoxColliderComponent>(entity);
@@ -84,6 +280,39 @@ Collider colliderFromEntity(entt::registry& registry, entt::entity entity) {
         c.halfHeight = std::max(0.01f, comp.halfHeight);
         c.offset = comp.offset;
         c.isTrigger = comp.isTrigger;
+    } else if (registry.all_of<ECS::MeshColliderComponent>(entity)) {
+        // Explicit primitives win: mesh is the last resort.
+        if (!registry.all_of<::Mesh>(entity)) {
+            return c;
+        }
+        const auto& comp = registry.get<ECS::MeshColliderComponent>(entity);
+        const auto& mesh = registry.get<::Mesh>(entity);
+        if (mesh.meshPath.empty()) {
+            return c;
+        }
+        auto it = meshCache.find(mesh.meshPath);
+        if (it == meshCache.end()) {
+            auto triMesh = loadTriMeshForPath(mesh.meshPath);
+            if (!triMesh) {
+                c.valid = false;
+                return c;
+            }
+            it = meshCache.emplace(mesh.meshPath, std::move(triMesh)).first;
+        }
+        c.kind = Collider::Kind::Mesh;
+        c.triMesh = it->second;
+        c.meshBoundsMin = it->second->bmin;
+        c.meshBoundsMax = it->second->bmax;
+        c.offset = comp.offset;
+        c.isTrigger = comp.isTrigger;
+        // Concave dynamics need convex decomposition (out of scope V1):
+        // dynamic mesh bodies collide as their OBB.
+        if (registry.all_of<ECS::RigidBodyComponent>(entity) &&
+            registry.get<ECS::RigidBodyComponent>(entity).motionType == PhysicsMotionType::Dynamic) {
+            c.meshFallbackToBox = true;
+            std::cerr << "[Physics] MeshCollider on dynamic body: OBB fallback (entity "
+                      << static_cast<uint32_t>(entity) << ")" << std::endl;
+        }
     }
     return c;
 }
@@ -325,6 +554,8 @@ struct PhysicsSystem::Impl {
 
     std::unordered_map<entt::entity, BodyState> bodies;
     std::unordered_map<entt::entity, Collider> colliders;
+    // CPU triangle data per unique meshPath (mesh colliders only).
+    MeshCache meshCache;
 
     void clearBodies() {
         bodies.clear();
@@ -383,12 +614,13 @@ void PhysicsSystem::rebuild(Scene* scene) {
             continue;
         }
 
-        Collider collider = colliderFromEntity(registry, entity);
+        Collider collider = colliderFromEntity(registry, entity, m_Impl->meshCache);
         const bool hasCollider =
             registry.all_of<ECS::BoxColliderComponent>(entity) ||
             registry.all_of<ECS::SphereColliderComponent>(entity) ||
-            registry.all_of<ECS::CapsuleColliderComponent>(entity);
-        if (!hasCollider) {
+            registry.all_of<ECS::CapsuleColliderComponent>(entity) ||
+            registry.all_of<ECS::MeshColliderComponent>(entity);
+        if (!hasCollider || !collider.valid) {
             continue;
         }
 
@@ -414,6 +646,12 @@ struct Proxy {
     glm::vec3 halfExtent;
     float radius;
     float halfHeight;
+    // Mesh data (kind == Mesh only): effective local->world matrix (offset
+    // baked into translation), scale extremes for conservative conversion.
+    std::shared_ptr<TriMesh> triMesh;
+    glm::mat4 meshMatrix{1.0f};
+    float meshMinScale = 1.0f;
+    float meshMaxScale = 1.0f;
 };
 
 Proxy makeProxy(const Transform& t, const Collider& c) {
@@ -424,10 +662,316 @@ Proxy makeProxy(const Transform& t, const Collider& c) {
     p.halfExtent = c.halfExtent;
     p.radius = c.radius;
     p.halfHeight = c.halfHeight;
+    if (c.kind == Collider::Kind::Mesh) {
+        if (c.meshFallbackToBox || !c.triMesh) {
+            // OBB approximation from local mesh bounds (includes entity scale).
+            p.kind = Collider::Kind::Box;
+            const glm::vec3 centerLocal = (c.meshBoundsMin + c.meshBoundsMax) * 0.5f;
+            const glm::vec3 extLocal = (c.meshBoundsMax - c.meshBoundsMin) * 0.5f;
+            p.halfExtent = extLocal * t.scale;
+            p.center = t.position + rotatedOffset(t, c.offset) +
+                       glm::mat3_cast(p.rot) * (centerLocal * t.scale);
+        } else {
+            p.triMesh = c.triMesh;
+            const glm::mat4 m = glm::translate(glm::mat4(1.0f), t.position + rotatedOffset(t, c.offset)) *
+                                glm::mat4_cast(p.rot) * glm::scale(glm::mat4(1.0f), t.scale);
+            p.meshMatrix = m;
+            const float sx = glm::length(glm::vec3(m[0]));
+            const float sy = glm::length(glm::vec3(m[1]));
+            const float sz = glm::length(glm::vec3(m[2]));
+            p.meshMinScale = std::max(1e-6f, std::min({sx, sy, sz}));
+            p.meshMaxScale = std::max({sx, sy, sz, 1e-6f});
+            // World center of the mesh bounds for broadphase use.
+            const glm::vec3 centerLocal = (c.meshBoundsMin + c.meshBoundsMax) * 0.5f;
+            p.center = glm::vec3(m * glm::vec4(centerLocal, 1.0f));
+            const glm::vec3 extLocal = (c.meshBoundsMax - c.meshBoundsMin) * 0.5f;
+            p.halfExtent = extLocal * t.scale;
+        }
+    }
     return p;
 }
 
+// ---------------------------------------------------------------------------
+// Triangle-mesh narrowphase (mesh is always the reference side).
+// Conventions match the rest of this file: returned normal points from the
+// mesh toward the primitive. Callers negate when the primitive is `a`.
+// Non-uniform entity scale is handled conservatively (radii divided by the
+// minimum basis length so contacts are never missed; penetration is scaled
+// back by the maximum basis length).
+// ---------------------------------------------------------------------------
+
+// Closest point on triangle (Ericson 5.1.5).
+glm::vec3 closestPointTriangle(const glm::vec3& p, const glm::vec3& a,
+                               const glm::vec3& b, const glm::vec3& c) {
+    const glm::vec3 ab = b - a;
+    const glm::vec3 ac = c - a;
+    const glm::vec3 ap = p - a;
+    const float d1 = glm::dot(ab, ap);
+    const float d2 = glm::dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) return a;
+    const glm::vec3 bp = p - b;
+    const float d3 = glm::dot(ab, bp);
+    const float d4 = glm::dot(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) return b;
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        const float v = d1 / (d1 - d3);
+        return a + ab * v;
+    }
+    const glm::vec3 cp = p - c;
+    const float d5 = glm::dot(ab, cp);
+    const float d6 = glm::dot(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) return c;
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        const float w = d2 / (d2 - d6);
+        return a + ac * w;
+    }
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return b + (c - b) * w;
+    }
+    const float denom = 1.0f / (va + vb + vc);
+    const float v = vb * denom;
+    const float w = vc * denom;
+    return a + ab * v + ac * w;
+}
+
+float distSqPointAABB(const glm::vec3& p, const glm::vec3& bmin, const glm::vec3& bmax) {
+    const glm::vec3 clamped = glm::clamp(p, bmin, bmax);
+    const glm::vec3 d = p - clamped;
+    return glm::dot(d, d);
+}
+
+struct TriQueryBest {
+    float distSq = std::numeric_limits<float>::max();
+    glm::vec3 closest{0.0f};
+    glm::vec3 faceNormal{0.0f, 1.0f, 0.0f};
+    bool found = false;
+};
+
+void triMeshQuerySphere(const TriMesh& mesh, int32_t nodeIdx, const glm::vec3& center,
+                        float radius, TriQueryBest& best) {
+    if (nodeIdx < 0) return;
+    const TriMeshBVHNode& node = mesh.nodes[static_cast<size_t>(nodeIdx)];
+    const float rPad = radius;
+    glm::vec3 clamped = glm::clamp(center, node.bmin, node.bmax);
+    glm::vec3 diff = center - clamped;
+    if (glm::dot(diff, diff) > (best.distSq + rPad * rPad + 2.0f * std::sqrt(best.distSq) * rPad) && best.found) {
+        // Node farther than best possible improvement (with radius padding).
+    }
+    // Simpler correct prune: skip only if node is farther than bestDist + radius.
+    const float nodeDistSq = distSqPointAABB(center, node.bmin, node.bmax);
+    const float bestDist = best.found ? std::sqrt(best.distSq) : std::numeric_limits<float>::max();
+    if (best.found && nodeDistSq > (bestDist + radius) * (bestDist + radius)) {
+        return;
+    }
+    if (node.count > 0) {
+        for (uint32_t i = 0; i < node.count; ++i) {
+            const uint32_t tri = mesh.triOrder[node.start + i];
+            const glm::vec3& a = mesh.verts[mesh.indices[tri * 3u]];
+            const glm::vec3& b = mesh.verts[mesh.indices[tri * 3u + 1u]];
+            const glm::vec3& cc = mesh.verts[mesh.indices[tri * 3u + 2u]];
+            const glm::vec3 q = closestPointTriangle(center, a, b, cc);
+            const glm::vec3 dd = center - q;
+            const float dsq = glm::dot(dd, dd);
+            if (dsq < best.distSq) {
+                best.distSq = dsq;
+                best.closest = q;
+                glm::vec3 fn = glm::cross(b - a, cc - a);
+                best.faceNormal = glm::length(fn) > 1e-12f ? glm::normalize(fn) : glm::vec3(0.0f, 1.0f, 0.0f);
+                best.found = true;
+            }
+        }
+        return;
+    }
+    triMeshQuerySphere(mesh, node.left, center, radius, best);
+    triMeshQuerySphere(mesh, node.right, center, radius, best);
+}
+
+// Sphere (world) vs exact triangle mesh proxy. Normal: mesh -> sphere.
+Contact sphereTriMeshContact(const glm::vec3& sphereCenter, float sphereRadius, const Proxy& meshProxy) {
+    Contact c;
+    const TriMesh& mesh = *meshProxy.triMesh;
+    const glm::mat4 invM = glm::inverse(meshProxy.meshMatrix);
+    const glm::vec3 cLocal = glm::vec3(invM * glm::vec4(sphereCenter, 1.0f));
+    const float rLocal = sphereRadius / meshProxy.meshMinScale;
+    TriQueryBest best;
+    triMeshQuerySphere(mesh, mesh.root, cLocal, rLocal, best);
+    if (!best.found) return c;
+    const float dist = std::sqrt(best.distSq);
+    if (dist >= rLocal) return c;
+    c.hit = true;
+    glm::vec3 nLocal;
+    if (dist > 1e-6f) {
+        nLocal = (cLocal - best.closest) / dist;
+    } else {
+        nLocal = best.faceNormal;
+        if (glm::dot(nLocal, cLocal - best.closest) < 0.0f) nLocal = -nLocal;
+    }
+    c.normal = glm::normalize(meshProxy.rot * nLocal);
+    c.penetration = (rLocal - dist) * meshProxy.meshMaxScale;
+    return c;
+}
+
+// Capsule vs mesh: endpoint + midpoint spheres, deepest wins (same sampling
+// philosophy as the existing capsuleBoxContact).
+Contact capsuleTriMeshContact(const glm::vec3& capCenter, const glm::quat& capRot,
+                              float capRadius, float capHalfHeight, const Proxy& meshProxy) {
+    glm::vec3 a, b;
+    capsuleSegment(capCenter, capRot, capHalfHeight, a, b);
+    const glm::vec3 mid = (a + b) * 0.5f;
+    Contact best;
+    float bestPen = -1.0f;
+    const glm::vec3 pts[] = {a, b, mid};
+    for (const glm::vec3& p : pts) {
+        Contact cc = sphereTriMeshContact(p, capRadius, meshProxy);
+        if (cc.hit && cc.penetration > bestPen) {
+            bestPen = cc.penetration;
+            best = cc;
+        }
+    }
+    return best;
+}
+
+// Box vs mesh: box corners as spheres + mesh vertices inside the box.
+// Covers face presses and spikes; thin edge-edge crossings without enclosed
+// vertices may be missed (documented V1 limit).
+Contact boxTriMeshContact(const glm::vec3& boxCenter, const glm::quat& boxRot,
+                          const glm::vec3& halfExtent, const Proxy& meshProxy) {
+    Contact best;
+    float bestPen = -1.0f;
+    const TriMesh& mesh = *meshProxy.triMesh;
+    const glm::mat4 invM = glm::inverse(meshProxy.meshMatrix);
+    const glm::mat4 invBox = glm::inverse(glm::translate(glm::mat4(1.0f), boxCenter) *
+                                           glm::mat4_cast(boxRot));
+    // (1) Box corners vs triangles.
+    static const glm::vec3 kCornerSign[8] = {
+        {-1, -1, -1}, {1, -1, -1}, {-1, 1, -1}, {1, 1, -1},
+        {-1, -1, 1}, {1, -1, 1}, {-1, 1, 1}, {1, 1, 1},
+    };
+    const float cornerR = 0.25f * std::max(0.01f, std::min({halfExtent.x, halfExtent.y, halfExtent.z}));
+    const glm::mat3 boxBasis = glm::mat3_cast(boxRot);
+    for (int i = 0; i < 8; ++i) {
+        const glm::vec3 cornerLocal = kCornerSign[i] * halfExtent;
+        const glm::vec3 cornerWorld = boxCenter + boxBasis * cornerLocal;
+        Contact cc = sphereTriMeshContact(cornerWorld, cornerR, meshProxy);
+        if (cc.hit && cc.penetration > bestPen) {
+            bestPen = cc.penetration;
+            best = cc;
+        }
+    }
+    // (2) Mesh triangle vertices inside the box (BVH box query in mesh space).
+    // Gather candidate triangles whose bounds overlap the box-in-mesh-space AABB.
+    glm::vec3 boxCornersW[8];
+    for (int i = 0; i < 8; ++i) {
+        boxCornersW[i] = boxCenter + boxBasis * (kCornerSign[i] * halfExtent);
+    }
+    glm::vec3 qMin(std::numeric_limits<float>::max());
+    glm::vec3 qMax(std::numeric_limits<float>::lowest());
+    for (const auto& wc : boxCornersW) {
+        const glm::vec3 lc = glm::vec3(invM * glm::vec4(wc, 1.0f));
+        qMin = glm::min(qMin, lc);
+        qMax = glm::max(qMax, lc);
+    }
+    std::vector<uint32_t> stack;
+    stack.push_back(static_cast<uint32_t>(mesh.root));
+    const glm::vec3 eps(1e-4f);
+    while (!stack.empty()) {
+        const uint32_t ni = stack.back();
+        stack.pop_back();
+        if (static_cast<int32_t>(ni) < 0 || ni >= mesh.nodes.size()) continue;
+        const TriMeshBVHNode& node = mesh.nodes[ni];
+        if (node.bmax.x < qMin.x || node.bmin.x > qMax.x ||
+            node.bmax.y < qMin.y || node.bmin.y > qMax.y ||
+            node.bmax.z < qMin.z || node.bmin.z > qMax.z) {
+            continue;
+        }
+        if (node.count > 0) {
+            for (uint32_t k = 0; k < node.count; ++k) {
+                const uint32_t tri = mesh.triOrder[node.start + k];
+                for (int v = 0; v < 3; ++v) {
+                    const glm::vec3& tv = mesh.verts[mesh.indices[tri * 3u + static_cast<uint32_t>(v)]];
+                    if (tv.x < qMin.x || tv.x > qMax.x || tv.y < qMin.y || tv.y > qMax.y ||
+                        tv.z < qMin.z || tv.z > qMax.z) {
+                        continue;
+                    }
+                    // Vertex inside query box: express in box frame, find min face clearance.
+                    const glm::vec3 world = glm::vec3(meshProxy.meshMatrix * glm::vec4(tv, 1.0f));
+                    const glm::vec3 bl = glm::vec3(invBox * glm::vec4(world, 1.0f));
+                    const glm::vec3 dd = halfExtent - glm::abs(bl);
+                    if (dd.x < -eps.x || dd.y < -eps.x || dd.z < -eps.x) continue;
+                    const float m = std::min({dd.x, dd.y, dd.z});
+                    glm::vec3 nLocal(0.0f);
+                    if (m == dd.x) nLocal.x = (bl.x < 0.0f ? -1.0f : 1.0f);
+                    else if (m == dd.y) nLocal.y = (bl.y < 0.0f ? -1.0f : 1.0f);
+                    else nLocal.z = (bl.z < 0.0f ? -1.0f : 1.0f);
+                    const glm::vec3 nWorld = glm::normalize(boxBasis * nLocal);
+                    const float pen = m + cornerR;
+                    if (pen > bestPen) {
+                        bestPen = pen;
+                        best.hit = true;
+                        best.normal = nWorld; // mesh -> box direction approx via box face
+                        best.penetration = pen;
+                    }
+                }
+            }
+        } else {
+            if (node.left >= 0) stack.push_back(static_cast<uint32_t>(node.left));
+            if (node.right >= 0) stack.push_back(static_cast<uint32_t>(node.right));
+        }
+    }
+    return best;
+}
+
+// Mesh-involved dispatch. Convention (as elsewhere): normal points b -> a.
+// NOTE: makeProxy() already converts fallback/dynamic meshes to Kind::Box,
+// so Kind::Mesh here always means exact triangle data (triMesh != null).
+Contact collideMesh(const Proxy& a, const Proxy& b) {
+    const bool aExact = a.kind == Collider::Kind::Mesh && a.triMesh != nullptr;
+    const bool bExact = b.kind == Collider::Kind::Mesh && b.triMesh != nullptr;
+    // Exact mesh vs primitive.
+    if (aExact && !bExact) {
+        // b is primitive (or box-fallback mesh used as OBB below).
+        if (b.kind == Collider::Kind::Mesh) {
+            return boxBoxContact(a.center, a.rot, a.halfExtent, b.center, b.rot, b.halfExtent);
+        }
+        Contact c;
+        if (b.kind == Collider::Kind::Sphere) {
+            c = sphereTriMeshContact(b.center, b.radius, a);
+        } else if (b.kind == Collider::Kind::Capsule) {
+            c = capsuleTriMeshContact(b.center, b.rot, b.radius, b.halfHeight, a);
+        } else {
+            c = boxTriMeshContact(b.center, b.rot, b.halfExtent, a);
+        }
+        if (c.hit) c.normal = -c.normal; // mesh->prim becomes prim->mesh... see below
+        // NOTE: narrowphase returns mesh->prim; here prim==a so negate to b->a.
+        return c;
+    }
+    if (bExact && !aExact) {
+        if (a.kind == Collider::Kind::Mesh) {
+            return boxBoxContact(a.center, a.rot, a.halfExtent, b.center, b.rot, b.halfExtent);
+        }
+        // Narrowphase already returns mesh->prim, and here mesh==b, prim==a,
+        // so the normal already points b -> a. No negation (negating here
+        // pushed dynamic bodies INTO the mesh and caused tunneling).
+        if (a.kind == Collider::Kind::Sphere) {
+            return sphereTriMeshContact(a.center, a.radius, b);
+        } else if (a.kind == Collider::Kind::Capsule) {
+            return capsuleTriMeshContact(a.center, a.rot, a.radius, a.halfHeight, b);
+        } else {
+            return boxTriMeshContact(a.center, a.rot, a.halfExtent, b);
+        }
+    }
+    // Both meshes (or both fallbacks): OBB approximation.
+    return boxBoxContact(a.center, a.rot, a.halfExtent, b.center, b.rot, b.halfExtent);
+}
+
 Contact collide(const Proxy& a, const Proxy& b) {
+    if (a.kind == Collider::Kind::Mesh || b.kind == Collider::Kind::Mesh) {
+        return collideMesh(a, b);
+    }
     switch (a.kind) {
     case Collider::Kind::Sphere:
         switch (b.kind) {

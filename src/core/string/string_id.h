@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <cstdint>
+#include <mutex>
 
 namespace Atlas {
 
@@ -37,9 +38,13 @@ private:
     ID m_ID;
 
     static ID getOrCreate(const std::string& str) {
+        // The asset pipeline loads on worker threads (see
+        // core/threading/async_loader.h), so the registry needs a lock.
         static std::unordered_map<std::string, ID> stringToID;
         static ID nextID = 1;
+        static std::mutex mutex;
 
+        std::lock_guard<std::mutex> lock(mutex);
         auto it = stringToID.find(str);
         if (it != stringToID.end()) {
             return it->second;

@@ -81,7 +81,9 @@ entt::entity createPrimitiveEntity(Atlas::Scene& scene, Atlas::Renderer& rendere
         return entt::null;
     }
 
-    if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
+    const bool createdMeshBuffers =
+        (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE);
+    if (createdMeshBuffers) {
         ModelLoader::createBuffers(meshData, renderer.getDevice(), renderer.getPhysicalDevice(),
                                    Atlas::PrimitiveHelpers::findMemoryType);
         meshData.freeCPUMemory();
@@ -110,6 +112,9 @@ entt::entity createPrimitiveEntity(Atlas::Scene& scene, Atlas::Renderer& rendere
     mesh.indexBuffer = meshData.indexBuffer;
     mesh.vertexMemory = meshData.vertexMemory;
     mesh.indexMemory = meshData.indexMemory;
+    if (createdMeshBuffers) {
+        mesh.renderMeshId = renderer.getMeshRegistry().allocateMesh();
+    }
     mesh.vertexCount = meshData.vertexCount;
     mesh.indexCount = meshData.indexCount;
     mesh.hasBounds = hasBounds;

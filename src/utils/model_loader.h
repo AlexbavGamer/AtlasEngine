@@ -1290,31 +1290,35 @@ public:
                     }
                 }
 
-                auto tryTex = [&](aiTextureType type, std::string& dst) {
+                auto tryTex = [&](aiTextureType type, const char* label, std::string& dst) {
                     if (!loadTextures) return;
                     aiString p;
                     if (mat->GetTexture(type, 0, &p) == AI_SUCCESS) {
-                        dst = resolveTexturePath(p);
+                        std::string resolved = resolveTexturePath(p);
+                        std::cerr << "[MODEL] texture " << label << " -> " << resolved << std::endl;
+                        dst = resolved;
+                    } else {
+                        std::cerr << "[MODEL] texture " << label << " -> (none found)" << std::endl;
                     }
                 };
 
-                tryTex(aiTextureType_BASE_COLOR, build.baseColorTexturePath);
-                if (build.baseColorTexturePath.empty()) tryTex(aiTextureType_DIFFUSE, build.baseColorTexturePath);
+                tryTex(aiTextureType_BASE_COLOR, "BASE_COLOR", build.baseColorTexturePath);
+                if (build.baseColorTexturePath.empty()) tryTex(aiTextureType_DIFFUSE, "DIFFUSE", build.baseColorTexturePath);
 
                 // If alpha mode was not explicitly declared, infer it from the base color texture alpha.
                 applyAlphaHint(build.alphaMode, build.baseColor.a, detectAlphaHint(build.baseColorTexturePath), hasGLTFAlphaMode);
 
-                tryTex(aiTextureType_NORMALS, build.normalTexturePath);
-                if (build.normalTexturePath.empty()) tryTex(aiTextureType_HEIGHT, build.normalTexturePath);
+                tryTex(aiTextureType_NORMALS, "NORMALS", build.normalTexturePath);
+                if (build.normalTexturePath.empty()) tryTex(aiTextureType_HEIGHT, "HEIGHT", build.normalTexturePath);
 
                 // glTF metallic-roughness is usually exposed as METALNESS by Assimp.
-                tryTex(aiTextureType_METALNESS, build.metallicRoughnessTexturePath);
-                if (build.metallicRoughnessTexturePath.empty()) tryTex(aiTextureType_DIFFUSE_ROUGHNESS, build.metallicRoughnessTexturePath);
+                tryTex(aiTextureType_METALNESS, "METALNESS", build.metallicRoughnessTexturePath);
+                if (build.metallicRoughnessTexturePath.empty()) tryTex(aiTextureType_DIFFUSE_ROUGHNESS, "DIFFUSE_ROUGHNESS", build.metallicRoughnessTexturePath);
 
-                tryTex(aiTextureType_AMBIENT_OCCLUSION, build.aoTexturePath);
-                if (build.aoTexturePath.empty()) tryTex(aiTextureType_LIGHTMAP, build.aoTexturePath);
+                tryTex(aiTextureType_AMBIENT_OCCLUSION, "AMBIENT_OCCLUSION", build.aoTexturePath);
+                if (build.aoTexturePath.empty()) tryTex(aiTextureType_LIGHTMAP, "LIGHTMAP", build.aoTexturePath);
 
-                tryTex(aiTextureType_EMISSIVE, build.emissiveTexturePath);
+                tryTex(aiTextureType_EMISSIVE, "EMISSIVE", build.emissiveTexturePath);
 
                 // If an explicit opacity texture exists, treat as BLEND.
                 // For glTF, alpha uses baseColor alpha and the explicit GLTF alphaMode; do not force BLEND here.
@@ -1372,6 +1376,25 @@ public:
                 unsigned int materialIndex = mesh->mMaterialIndex;
 
                 ChunkBuild& build = builds[materialIndex];
+                if (build.vertices.empty()) {
+                    aiMaterial* mat = scene->mMaterials[materialIndex];
+                    aiString matName;
+                    mat->Get(AI_MATKEY_NAME, matName);
+                    std::cerr << "[MODEL] Material " << materialIndex << ": " << matName.C_Str() << std::endl;
+                    int texCount = 0;
+                    for (int tt = 0; tt < 20; ++tt) {
+                        aiTextureType t = static_cast<aiTextureType>(tt);
+                        if (mat->GetTextureCount(t) > 0) {
+                            aiString p;
+                            mat->GetTexture(t, 0, &p);
+                            std::cerr << "  texture type " << tt << " -> " << p.C_Str() << std::endl;
+                            texCount++;
+                        }
+                    }
+                    if (texCount == 0) {
+                        std::cerr << "  (no textures)" << std::endl;
+                    }
+                }
                 initMaterialFor(materialIndex, build);
 
                 for (unsigned int j = 0; j < mesh->mNumVertices; j++) {

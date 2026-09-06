@@ -33,6 +33,9 @@
 #include "../utils/primitive_helpers.h"
 #include "../ecs/ecs.h"
 #include "../world/world_partition.h"
+#include "../world/culling.h"
+#include "../world/hlod.h"
+#include "../world/lod.h"
 #include "../utils/frustum.h"
 
 #ifdef _WIN32
@@ -40,7 +43,6 @@
 #endif
 
 namespace Atlas {
-using namespace ecs;
 
 namespace {
 std::filesystem::path getCurrentExecutablePath() {
@@ -88,6 +90,9 @@ EditorApp::EditorApp() {
     m_Scene = std::make_unique<Scene>();
     m_Scene->getRegistry().on_destroy<::Mesh>().connect<&EditorApp::onMeshDestroyed>(this);
     m_WorldPartition = std::make_unique<WorldPartition>(m_Scene.get());
+    m_CullingPipeline = std::make_unique<CullingPipeline>(m_CullingConfig);
+    m_HLODSystem = std::make_unique<HLODSystem>(m_HLODConfig);
+    m_CityScene = m_Scene.get();
 
     m_ImGuiManager = std::make_unique<::ImGuiManager>();
     m_ImGuiManager->init(
@@ -379,6 +384,9 @@ bool EditorApp::loadSceneFromAssetPath(const std::string& assetRelativePath) {
             if (src.hasCapsuleCollider) {
                 registry.emplace_or_replace<ECS::CapsuleColliderComponent>(entity, src.capsuleCollider);
             }
+            if (src.hasMeshCollider) {
+                registry.emplace_or_replace<ECS::MeshColliderComponent>(entity, src.meshCollider);
+            }
             if (src.hasMaterial) {
                 ECS::MaterialComponent material;
                 material.baseColor = src.material.baseColor;
@@ -416,6 +424,11 @@ bool EditorApp::loadSceneFromAssetPath(const std::string& assetRelativePath) {
                     scriptComponent.scripts.push_back(std::move(entry));
                 }
                 registry.emplace_or_replace<ECS::ScriptComponent>(entity, std::move(scriptComponent));
+            }
+            // TDD §5: every mesh entity carries LOD state (fresh state on load;
+            // variants gracefully fall back to the full mesh when absent).
+            if (registry.all_of<::Mesh>(entity) && !registry.all_of<Atlas::LODComponent>(entity)) {
+                registry.emplace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
             }
         }
 
@@ -759,6 +772,8 @@ void EditorApp::cloneSceneToRuntime() {
     copyIfPresent(Atlas::ECS::BoxColliderComponent{});
     copyIfPresent(Atlas::ECS::SphereColliderComponent{});
     copyIfPresent(Atlas::ECS::CapsuleColliderComponent{});
+    copyIfPresent(Atlas::ECS::MeshColliderComponent{});
+    copyIfPresent(Atlas::LODComponent{});
     copyIfPresent(Atlas::ECS::SkeletonComponent{});
     copyIfPresent(Atlas::ECS::AnimationPlayerComponent{});
     copyIfPresent(Atlas::ECS::BonePoseOverrideComponent{});
@@ -1042,9 +1057,15 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         hasBounds = true;
     }
 
-    // Create GPU buffers
+    // Create GPU buffers. createdMeshBuffers tracks whether THIS call minted a
+    // fresh set (vs. reusing shared buffers) for handle registration below.
+    bool createdMeshBuffers = false;
     if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
         ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(), PrimitiveHelpers::findMemoryType);
+        createdMeshBuffers = true;
+        // Auto-LOD variants while CPU data is alive (per-primitive buffers;
+        // shared-geometry batching still applies via identical buffer keys).
+        Atlas::cacheImportLODs(m_Renderer.get(), meshData, meshData.vertexBuffer, meshData.indexBuffer, false);
         meshData.freeCPUMemory();
     }
 
@@ -1066,6 +1087,9 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
     mesh.indexBuffer = meshData.indexBuffer;
     mesh.vertexMemory = meshData.vertexMemory;
     mesh.indexMemory = meshData.indexMemory;
+    if (createdMeshBuffers) {
+        mesh.renderMeshId = m_Renderer->getMeshRegistry().allocateMesh();
+    }
     mesh.vertexCount = meshData.vertexCount;
     mesh.indexCount = meshData.indexCount;
     mesh.hasBounds = hasBounds;
@@ -1102,6 +1126,8 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         material.metallic = 0.05f;
     }
     registry.emplace_or_replace<ECS::MaterialComponent>(entity, material);
+    // TDD §5: LOD state from birth (see applyMeshToEntity).
+    registry.emplace_or_replace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
 
     if (m_UIManager) {
         m_UIManager->setSelectedEntity(entity);
@@ -1263,6 +1289,12 @@ void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
     mesh.vertexMemory = VK_NULL_HANDLE;
     mesh.indexBuffer = VK_NULL_HANDLE;
     mesh.indexMemory = VK_NULL_HANDLE;
+    // Mirror the deferred vkDestroy above: release the registry handle under
+    // the exact same ownership guard (ownsGpuResources checked on entry).
+    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
+        m_Renderer->getMeshRegistry().freeMesh(mesh.renderMeshId);
+        mesh.renderMeshId = 0;
+    }
 
     m_Renderer->defer([device, vb, vm, ib, im]() {
         if (vb) vkDestroyBuffer(device, vb, nullptr);
@@ -1375,6 +1407,7 @@ void EditorApp::renderImportOptionsPopup() {
         ImGui::SeparatorText("Options");
 
         ImGui::DragFloat("Uniform Scale", &m_ActiveImportOptions.uniformScale, 0.01f, 0.001f, 1000.0f, "%.3f");
+        ImGui::DragFloat3("Rotation (deg)", &m_ActiveImportOptions.rotationEulerDeg.x, 1.0f, -360.0f, 360.0f, "%.1f");
         ImGui::Checkbox("Import Textures", &m_ActiveImportOptions.loadTextures);
         ImGui::Checkbox("Import Animations", &m_ActiveImportOptions.importAnimations);
 
@@ -1805,6 +1838,129 @@ void EditorApp::updateWorldStreaming() {
     }
 }
 
+// TDD §10 runtime flow: partition streaming -> hierarchical culling ->
+// LOD selection -> HLOD cross-fade, on the active scene (edit or play).
+void EditorApp::updateCityRendering(Scene* scene, const glm::vec3& camPos, const glm::mat4& view,
+                                    const glm::mat4& viewProj, const glm::mat4& proj, float viewportHeight, float deltaTime) {
+    if (!scene || !m_WorldPartition || !m_CullingPipeline || !m_HLODSystem) {
+        return;
+    }
+
+    // Retarget systems when the active scene changed (edit <-> play).
+    if (m_CityScene != scene) {
+        m_CityScene = scene;
+        m_WorldPartition->setScene(scene);
+        m_WorldPartition->markDirty();
+        m_HLODSystem->clear();
+    }
+
+    // 1. Streaming + in-partition frustum culling (sets base visibility).
+    m_WorldPartition->update(camPos, viewProj);
+
+    // 2. Hierarchical culling: cells first, then objects
+    //    (frustum + distance + screen-size; occlusion when enabled).
+    //    Occluders come from the previous frame's LOD screen sizes (temporal).
+    m_OcclusionCuller.setConfig(m_OcclusionConfig);
+    m_OcclusionCuller.beginFrame(viewProj, static_cast<uint32_t>(viewportHeight), static_cast<uint32_t>(viewportHeight));
+    if (m_OcclusionConfig.enable) {
+        struct OccluderCandidate { float screenSize; glm::vec3 bmin; glm::vec3 bmax; };
+        std::vector<OccluderCandidate> candidates;
+        candidates.reserve(256);
+        auto& occRegistry = scene->getRegistry();
+        for (auto e : occRegistry.view<LODComponent, ::Mesh>()) {
+            const auto& lod = occRegistry.get<LODComponent>(e);
+            if (lod.screenSize < m_OcclusionConfig.minOccluderScreenSize) {
+                continue;
+            }
+            const auto& mesh = occRegistry.get<::Mesh>(e);
+            if (!mesh.hasBounds || !scene->hasTransform(e)) {
+                continue;
+            }
+            glm::mat4 world = scene->getCachedWorldTransform(e);
+            glm::vec3 centerLocal = (mesh.boundsMin + mesh.boundsMax) * 0.5f;
+            glm::vec3 extents = (mesh.boundsMax - mesh.boundsMin) * 0.5f;
+            glm::vec3 wCenter = glm::vec3(world * glm::vec4(centerLocal, 1.0f));
+            // Conservative world AABB: extent scaled by max basis length.
+            float maxBasis = 1.0f;
+            maxBasis = std::max(maxBasis, glm::length(glm::vec3(world[0])));
+            maxBasis = std::max(maxBasis, glm::length(glm::vec3(world[1])));
+            maxBasis = std::max(maxBasis, glm::length(glm::vec3(world[2])));
+            glm::vec3 wExt = extents * maxBasis;
+            candidates.push_back({lod.screenSize, wCenter - wExt, wCenter + wExt});
+        }
+        const uint32_t maxOcc = m_OcclusionConfig.maxOccluders > 0 ? m_OcclusionConfig.maxOccluders : 64;
+        if (candidates.size() > maxOcc) {
+            std::nth_element(candidates.begin(), candidates.begin() + maxOcc, candidates.end(),
+                [](const OccluderCandidate& a, const OccluderCandidate& b) { return a.screenSize > b.screenSize; });
+            candidates.resize(maxOcc);
+        }
+        for (const auto& c : candidates) {
+            m_OcclusionCuller.addOccluder(c.bmin, c.bmax);
+        }
+        m_CullingPipeline->setOccluder(&m_OcclusionCuller);
+    } else {
+        m_CullingPipeline->setOccluder(nullptr);
+    }
+    m_CullingPipeline->setConfig(m_CullingConfig);
+    m_CullingConfig.enableOcclusion = m_OcclusionConfig.enable;
+    m_CullingPipeline->setWorldConfig(m_WorldPartition->config());
+    Frustum frustum = Frustum::fromViewProj(viewProj);
+    m_LastCullingStats = m_CullingPipeline->cullWorldPartition(*m_WorldPartition, frustum, viewProj, camPos, viewportHeight);
+
+    // NOTE: LOD selection runs separately every frame (see run()) so it works
+    // even with chunk-file streaming, which owns visibility itself.
+
+    // 4. HLOD cross-fade + lazy generation of HLOD0/HLOD1 actors.
+    m_HLODSystem->setConfig(m_HLODConfig);
+    m_HLODSystem->update(scene, camPos, *m_WorldPartition, deltaTime, m_Renderer.get(), nullptr);
+
+    // 5. HLOD1 impostors: billboard quads for visible far actors (§4.2/§5.2).
+    if (m_Renderer) {
+        std::vector<Atlas::ImpostorDraw> impostors;
+        const auto& cache = m_HLODSystem->getCache();
+        impostors.reserve(cache.size());
+        const glm::vec3 up0(0.0f, 1.0f, 0.0f);
+        for (const auto& [coord, actors] : cache) {
+            (void)coord;
+            for (const auto& actor : actors) {
+                if (actor.level != Atlas::ECS::HLODLevel::HLOD1 || !actor.isVisible || actor.transitionAlpha < 0.5f) {
+                    continue;
+                }
+                // Frustum-test the actor bounds.
+                if (!frustum.testSphere(actor.center, actor.radius)) {
+                    continue;
+                }
+                glm::vec3 ext = (actor.boundsMax - actor.boundsMin) * 0.5f;
+                const float sx = std::max({ext.x * 2.0f, ext.z * 2.0f, 1.0f});
+                const float sy = std::max(ext.y * 2.0f, 1.0f);
+                glm::vec3 toCam = actor.center - camPos;
+                const float dist = glm::length(toCam);
+                if (dist < 1e-3f) {
+                    continue;
+                }
+                toCam /= dist;
+                glm::vec3 right = glm::cross(up0, toCam);
+                if (glm::length(right) < 1e-4f) {
+                    right = glm::vec3(1.0f, 0.0f, 0.0f);
+                } else {
+                    right = glm::normalize(right);
+                }
+                glm::vec3 up = glm::normalize(glm::cross(toCam, right));
+                glm::mat4 basis(1.0f);
+                basis[0] = glm::vec4(right * sx, 0.0f);
+                basis[1] = glm::vec4(up * sy, 0.0f);
+                basis[2] = glm::vec4(toCam, 0.0f);
+                basis[3] = glm::vec4(actor.center, 1.0f);
+                Atlas::ImpostorDraw draw;
+                draw.model = basis;
+                draw.color = actor.avgColor;
+                impostors.push_back(draw);
+            }
+        }
+        m_Renderer->setImpostorDraws(std::move(impostors));
+    }
+}
+
 void EditorApp::run() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -1899,8 +2055,108 @@ void EditorApp::run() {
                 ImGui::Checkbox("Frustum Culling##partition", &cfg.useFrustumCulling);
                 ImGui::DragFloat("Cell Size##partition", &cfg.cellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
                 ImGui::SliderInt("Load Radius##partition", &cfg.loadRadiusCells, 0, 16);
+                ImGui::DragFloat("Load Range (m)", &cfg.loadRangeMeters, 5.0f, 0.0f, 5000.0f, "%.0f");
+                ImGui::DragFloat("HLOD0 Range (m)", &cfg.hlod0RangeMeters, 10.0f, 0.0f, 8000.0f, "%.0f");
+                ImGui::DragFloat("HLOD1 Range (m)", &cfg.hlod1RangeMeters, 25.0f, 0.0f, 20000.0f, "%.0f");
                 if (ImGui::Button("Rebuild##partition")) {
                     m_WorldPartition->markDirty();
+                }
+                ImGui::Text("Loaded cells: %zu / %zu", m_WorldPartition->getLoadedCells().size(),
+                            m_WorldPartition->getCells().size());
+                ImGui::Text("Loaded geometry: %.1f MB", m_WorldPartition->getLoadedMemoryMB());
+                ImGui::DragFloat("Memory budget (MB)", &cfg.maxLoadedMemoryMB, 8.0f, 0.0f, 8192.0f, "%.0f");
+                ImGui::SeparatorText("Disk cache (§9)");
+                if (ImGui::Button("Save cell+HLOD cache")) {
+                    if (m_ProjectManager && m_ProjectManager->hasProject() && m_HLODSystem) {
+                        const std::string dir = m_ProjectManager->getAssetsPath() + "/world/cache";
+                        std::error_code ec;
+                        std::filesystem::create_directories(dir, ec);
+                        const bool okCells = m_WorldPartition->saveCellIndex(dir + "/cells.idx");
+                        const bool okHlod = m_HLODSystem->saveCache(dir + "/hlod_cache.bin");
+                        std::cerr << "[CACHE] save cells=" << okCells << " hlod=" << okHlod << " -> " << dir << std::endl;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Load cell+HLOD cache")) {
+                    if (m_ProjectManager && m_ProjectManager->hasProject() && m_HLODSystem) {
+                        const std::string dir = m_ProjectManager->getAssetsPath() + "/world/cache";
+                        const size_t cells = m_WorldPartition->loadCellIndex(dir + "/cells.idx");
+                        const size_t hlodCells = m_HLODSystem->loadCache(dir + "/hlod_cache.bin");
+                        std::cerr << "[CACHE] load cells=" << cells << " hlodCells=" << hlodCells << std::endl;
+                    }
+                }
+            }
+
+            ImGui::SeparatorText("Culling Pipeline");
+            ImGui::Checkbox("Frustum##cull", &m_CullingConfig.enableFrustum);
+            ImGui::SameLine();
+            ImGui::Checkbox("Distance##cull", &m_CullingConfig.enableDistance);
+            ImGui::SameLine();
+            ImGui::Checkbox("ScreenSize##cull", &m_CullingConfig.enableScreenSize);
+            ImGui::Checkbox("Occlusion (software)##cull", &m_OcclusionConfig.enable);
+            ImGui::Text("Cells: %u tested / %u culled", m_LastCullingStats.cellsTested, m_LastCullingStats.cellsCulled);
+            ImGui::Text("Occluders: %u / box tests %u / culled %u", m_OcclusionCuller.getStats().occludersUsed,
+                        m_OcclusionCuller.getStats().boxTests, m_OcclusionCuller.getStats().boxesCulled);
+            ImGui::Text("Objects: %u tested / %u culled (%u tiny)", m_LastCullingStats.objectsTested,
+                        m_LastCullingStats.objectsCulled, m_LastCullingStats.screenSizeCulled);
+
+            ImGui::SeparatorText("LOD (screen-size)");
+            ImGui::Checkbox("LOD##lod", &m_LODConfig.enable);
+            ImGui::DragFloat("Impostor threshold", &m_LODConfig.impostorScreenSize, 0.001f, 0.001f, 0.2f, "%.3f");
+            ImGui::Text("LOD0 %u / LOD1 %u / LOD2 %u", m_LastLODStats.lod0Count, m_LastLODStats.lod1Count,
+                        m_LastLODStats.lod2Count);
+            ImGui::Text("Impostor %u / Culled %u", m_LastLODStats.impostorCount, m_LastLODStats.culledCount);
+
+            ImGui::SeparatorText("HLOD");
+            ImGui::Checkbox("HLOD##hlod", &m_HLODConfig.enableHLOD);
+            if (m_HLODSystem) {
+                ImGui::Text("Cached cells: %zu", m_HLODSystem->getCache().size());
+            }
+
+            ImGui::SeparatorText("Rendering (TDD §12)");
+            if (m_Renderer) {
+                bool inst = m_Renderer->isInstancingEnabled();
+                if (ImGui::Checkbox("GPU Instancing", &inst)) {
+                    m_Renderer->setInstancingEnabled(inst);
+                }
+                ImGui::Text("Draw calls: %u (instanced %u)", m_Renderer->getLastDrawCalls(),
+                            m_Renderer->getLastInstancedDraws());
+                ImGui::Text("Instances: %u / Tris: %u", m_Renderer->getLastInstancedInstances(),
+                            m_Renderer->getLastTriangles());
+                bool autoLOD = m_Renderer->isAutoLODEnabled();
+                if (ImGui::Checkbox("Auto LOD meshes", &autoLOD)) {
+                    m_Renderer->setAutoLODEnabled(autoLOD);
+                }
+                ImGui::Text("Simplified variants: %u / draws: %u", m_Renderer->getSimplifiedVariantCount(),
+                            m_Renderer->getLastSimplifiedDraws());
+                ImGui::SeparatorText("Procedural city (§12)");
+                ImGui::Text("Buildings: %zu (%zu blocks)", m_TestCity.buildingCount, m_TestCity.blockCount);
+                if (m_Renderer) {
+                    ImGui::Text("Impostor quads: %zu", m_Renderer->getImpostorDrawCount());
+                }
+                ImGui::SliderInt("Blocks per side", &m_TestCityBlocks, 2, 16);
+                if (ImGui::Button("Generate city")) {
+                    if (m_Scene && m_Renderer) {
+                        Atlas::clearGeneratedCity(m_Scene.get(), m_TestCity);
+                        Atlas::CityGenConfig cfg;
+                        cfg.blocksPerSide = m_TestCityBlocks;
+                        m_TestCity = Atlas::generateProceduralCity(m_Scene.get(), m_Renderer.get(), cfg);
+                        if (m_WorldPartition) {
+                            m_WorldPartition->markDirty();
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Clear city")) {
+                    if (m_Scene) {
+                        Atlas::clearGeneratedCity(m_Scene.get(), m_TestCity);
+                        if (m_UIManager) {
+                            m_UIManager->clearSelection();
+                        }
+                        if (m_WorldPartition) {
+                            m_WorldPartition->markDirty();
+                        }
+                    }
                 }
             }
 
@@ -1939,38 +2195,146 @@ void EditorApp::run() {
             m_WorldPartition->markDirty();
         }
 
-        // Optional: WorldPartition culling (disabled while chunk streaming is enabled).
-        if (!m_GameModePlaying && m_WorldPartition && !m_WorldStreamingEnabled && m_WorldPartition->config().enabled) {
-            glm::vec3 camPos(0.0f);
-            glm::mat4 view(1.0f);
-            glm::mat4 proj(1.0f);
+        // TDD §10 city pipeline (disabled while chunk-file streaming is enabled).
+        // Runs on the active scene in both edit and play modes.
+        if (m_WorldPartition && !m_WorldStreamingEnabled && m_WorldPartition->config().enabled) {
+            Scene* cityScene = m_GameModePlaying ? m_RuntimeScene.get() : m_Scene.get();
+            if (cityScene) {
+                glm::vec3 camPos(0.0f);
+                glm::mat4 view(1.0f);
+                glm::mat4 proj(1.0f);
+                bool haveCamera = false;
 
-            auto& registry = m_Scene->getRegistry();
-            auto editorCamView = registry.view<EditorCamera>();
-            if (editorCamView.begin() != editorCamView.end()) {
-                auto camEnt = *editorCamView.begin();
-                auto& cam = registry.get<EditorCamera>(camEnt);
-                camPos = cam.position;
+                auto& registry = cityScene->getRegistry();
+                // Prefer primary game camera, then any game camera, then editor camera.
+                {
+                    auto gameView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+                    entt::entity picked = entt::null;
+                    for (auto e : gameView) {
+                        if (picked == entt::null) picked = e;
+                        if (gameView.get<Atlas::ECS::GameCameraComponent>(e).primary) { picked = e; break; }
+                    }
+                    if (picked != entt::null) {
+                        auto& cam = registry.get<Camera>(picked);
+                        VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                        if (extent.width > 0 && extent.height > 0) {
+                            cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        }
+                        camPos = cam.position;
+                        view = cam.getViewMatrix();
+                        proj = cam.getProjectionMatrix();
+                        proj[1][1] = -proj[1][1];
+                        haveCamera = true;
+                    }
+                }
+                if (!haveCamera) {
+                    auto editorCamView = registry.view<EditorCamera>();
+                    if (editorCamView.begin() != editorCamView.end()) {
+                        auto camEnt = *editorCamView.begin();
+                        auto& cam = registry.get<EditorCamera>(camEnt);
+                        camPos = cam.position;
 
-                VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
-                if (extent.width > 0 && extent.height > 0) {
-                    cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                        if (extent.width > 0 && extent.height > 0) {
+                            cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        }
+
+                        view = cam.getViewMatrix();
+                        proj = cam.getProjectionMatrix();
+                        proj[1][1] = -proj[1][1];
+                        haveCamera = true;
+                    } else if (m_CameraController) {
+                        view = m_CameraController->getViewMatrix();
+                        proj = m_CameraController->getProjMatrix();
+                        proj[1][1] = -proj[1][1];
+
+                        // Derive camera world position from the view matrix.
+                        glm::mat4 invView = glm::inverse(view);
+                        camPos = glm::vec3(invView[3]);
+                        haveCamera = true;
+                    }
                 }
 
-                view = cam.getViewMatrix();
-                proj = cam.getProjectionMatrix();
-                proj[1][1] = -proj[1][1];
-            } else if (m_CameraController) {
-                view = m_CameraController->getViewMatrix();
-                proj = m_CameraController->getProjMatrix();
-                proj[1][1] = -proj[1][1];
-
-                // Derive camera world position from the view matrix.
-                glm::mat4 invView = glm::inverse(view);
-                camPos = glm::vec3(invView[3]);
+                if (haveCamera) {
+                    VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                    float viewportHeight = extent.height > 0 ? static_cast<float>(extent.height) : 720.0f;
+                    updateCityRendering(cityScene, camPos, view, proj * view, proj, viewportHeight, deltaTime);
+                }
+                // LOD selection runs every frame regardless of streaming mode
+                // (level assignment always; hiding only when the partition
+                // pipeline owns visibility, otherwise chunk streaming does).
+                // This must run AFTER culling so hide-only never gets undone.
             }
+        }
 
-            m_WorldPartition->update(camPos, proj * view);
+        // LOD selection runs every frame regardless of streaming mode
+        // (level assignment always; hiding only when the partition
+        // pipeline owns visibility, otherwise chunk streaming does).
+        // This must run AFTER culling so hide-only never gets undone.
+        if (m_WorldPartition && m_WorldPartition->config().enabled) {
+            Scene* cityScene = m_GameModePlaying ? m_RuntimeScene.get() : m_Scene.get();
+            if (cityScene) {
+                glm::vec3 camPos(0.0f);
+                glm::mat4 view(1.0f);
+                glm::mat4 proj(1.0f);
+                bool haveCamera = false;
+
+                auto& registry = cityScene->getRegistry();
+                auto gameView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+                entt::entity picked = entt::null;
+                for (auto e : gameView) {
+                    if (picked == entt::null) picked = e;
+                    if (gameView.get<Atlas::ECS::GameCameraComponent>(e).primary) { picked = e; break; }
+                }
+                if (picked != entt::null) {
+                    auto& cam = registry.get<Camera>(picked);
+                    VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                    if (extent.width > 0 && extent.height > 0) {
+                        cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                    }
+                    camPos = cam.position;
+                    view = cam.getViewMatrix();
+                    proj = cam.getProjectionMatrix();
+                    proj[1][1] = -proj[1][1];
+                    haveCamera = true;
+                }
+                if (!haveCamera) {
+                    auto editorCamView = registry.view<EditorCamera>();
+                    if (editorCamView.begin() != editorCamView.end()) {
+                        auto camEnt = *editorCamView.begin();
+                        auto& cam = registry.get<EditorCamera>(camEnt);
+                        camPos = cam.position;
+                        VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                        if (extent.width > 0 && extent.height > 0) {
+                            cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        }
+                        view = cam.getViewMatrix();
+                        proj = cam.getProjectionMatrix();
+                        proj[1][1] = -proj[1][1];
+                        haveCamera = true;
+                    } else if (m_CameraController) {
+                        view = m_CameraController->getViewMatrix();
+                        proj = m_CameraController->getProjMatrix();
+                        proj[1][1] = -proj[1][1];
+                        glm::mat4 invView = glm::inverse(view);
+                        camPos = glm::vec3(invView[3]);
+                        haveCamera = true;
+                    }
+                }
+
+                if (haveCamera) {
+                    VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                    float viewportHeight = extent.height > 0 ? static_cast<float>(extent.height) : 720.0f;
+                    const bool partitionActive = !m_WorldStreamingEnabled && m_WorldPartition->config().enabled;
+                    m_LastLODStats = updateLODSystem(cityScene, camPos, proj, viewportHeight,
+                                                      m_WorldPartition->config(), m_LODConfig,
+                                                      partitionActive);
+                    // Drop stale impostor billboards when their producer is off.
+                    if (!partitionActive && m_Renderer && m_Renderer->getImpostorDrawCount() > 0) {
+                        m_Renderer->setImpostorDraws({});
+                    }
+                }
+            }
         }
 
         if (m_UIManager && m_Renderer) {
@@ -2102,11 +2466,15 @@ void EditorApp::processPendingModels() {
             m_Scene->getRegistry().get<Transform>(rootEntity).position = item.rootPosition;
         }
 
-        // Import options: root scale.
+        // Import options: root scale + rotation.
         if (m_Scene->getRegistry().all_of<Transform>(rootEntity)) {
+            auto& tr = m_Scene->getRegistry().get<Transform>(rootEntity);
             float s = item.importOptions.uniformScale;
             if (s <= 0.0f) s = 1.0f;
-            m_Scene->getRegistry().get<Transform>(rootEntity).scale *= glm::vec3(s);
+            tr.scale *= glm::vec3(s);
+            tr.rotation.x += item.importOptions.rotationEulerDeg.x;
+            tr.rotation.y += item.importOptions.rotationEulerDeg.y;
+            tr.rotation.z += item.importOptions.rotationEulerDeg.z;
         }
 
         // Skeletal animation: attach skeleton + clips + player to the root.
@@ -2235,7 +2603,9 @@ void EditorApp::processPendingModels() {
         };
 
         auto applyMeshToEntity = [&](entt::entity entity, MeshData& meshData) {
-            if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
+            const bool createdMeshBuffers =
+                (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE);
+            if (createdMeshBuffers) {
                 ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(),
                     [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
                         for (uint32_t i = 0; i < memProperties->memoryTypeCount; ++i) {
@@ -2253,6 +2623,9 @@ void EditorApp::processPendingModels() {
             mesh.indexBuffer = meshData.indexBuffer;
             mesh.vertexMemory = meshData.vertexMemory;
             mesh.indexMemory = meshData.indexMemory;
+            if (createdMeshBuffers) {
+                mesh.renderMeshId = m_Renderer->getMeshRegistry().allocateMesh();
+            }
             mesh.vertexCount = meshData.vertexCount;
             mesh.indexCount = meshData.indexCount;
 
@@ -2299,6 +2672,13 @@ void EditorApp::processPendingModels() {
                 material.useEmissiveTexture, material.emissiveTextureIndex, material.emissiveTextureId, material.emissiveTexturePath);
 
             m_Scene->getRegistry().emplace<ECS::MaterialComponent>(entity, material);
+            // TDD §5: every imported mesh carries LOD state from birth
+            // (screenSizeBias stays editable in Properties for hero objects).
+            m_Scene->getRegistry().emplace_or_replace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
+            // Auto-LOD variants while CPU data is alive (skipped for skinned).
+            // NOTE: each submesh caches its own variants (keyed by its buffers).
+            Atlas::cacheImportLODs(m_Renderer.get(), meshData, mesh.vertexBuffer, mesh.indexBuffer,
+                m_Scene->getRegistry().all_of<ECS::SkinnedMeshComponent>(entity));
             meshData.freeCPUMemory();
         };
 

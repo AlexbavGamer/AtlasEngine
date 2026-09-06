@@ -146,6 +146,9 @@ private:
         bool hasMaterial = false;
         Atlas::ECS::MaterialComponent material;
 
+        bool hasLOD = false;
+        Atlas::LODComponent lod;
+
         bool hasRigidBody = false;
         Atlas::ECS::RigidBodyComponent rigidBody;
 
@@ -460,6 +463,10 @@ private:
     bool m_PropTransformEditing = false;
     Entity m_PropTransformEntity = entt::null;
     TransformState m_PropTransformBefore;
+    // Bulk (multi-selection) transform editing via Properties
+    bool m_PropTransformMultiEditing = false;
+    std::vector<Entity> m_PropTransformMultiEntities;
+    std::vector<TransformState> m_PropTransformBeforeMulti;
 
     uint32_t m_PropNameEditEntityId = 0;
     bool m_PropNameEditing = false;

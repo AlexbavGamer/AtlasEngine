@@ -8,10 +8,13 @@ param(
 $shaders = @(
     @{ Name = 'pbr_vert';     File = 'pbr_vert.spv' },
     @{ Name = 'pbr_frag';     File = 'pbr_frag.spv' },
+    @{ Name = 'pbr_instanced_vert'; File = 'pbr_instanced_vert.spv' },
     @{ Name = 'picking_vert'; File = 'picking_vert.spv' },
     @{ Name = 'picking_frag'; File = 'picking_frag.spv' },
     @{ Name = 'outline_vert'; File = 'outline_vert.spv' },
-    @{ Name = 'outline_frag'; File = 'outline_frag.spv' }
+    @{ Name = 'outline_frag'; File = 'outline_frag.spv' },
+    @{ Name = 'ui_vert';      File = 'ui_vert.spv' },
+    @{ Name = 'ui_frag';      File = 'ui_frag.spv' }
 )
 
 $sb = New-Object System.Text.StringBuilder
