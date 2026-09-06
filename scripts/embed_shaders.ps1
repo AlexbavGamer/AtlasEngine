@@ -1,22 +1,48 @@
 # embed_shaders.ps1 - generate embedded_shaders.cpp from compiled .spv files.
 # Replicates cmake/embed_shaders.cmake behaviour (byte arrays + lookup table).
+# Auto-discovers shaders from -ShaderNames parameter, or from .spv files in InputDir.
 param(
     [Parameter(Mandatory = $true)][string]$InputDir,
-    [Parameter(Mandatory = $true)][string]$OutCpp
+    [Parameter(Mandatory = $true)][string]$OutCpp,
+    [Parameter(Mandatory = $false)][string]$ShaderNames
 )
 
-$shaders = @(
-    @{ Name = 'pbr_vert';     File = 'pbr_vert.spv' },
-    @{ Name = 'pbr_frag';     File = 'pbr_frag.spv' },
-    @{ Name = 'pbr_instanced_vert'; File = 'pbr_instanced_vert.spv' },
-    @{ Name = 'picking_vert'; File = 'picking_vert.spv' },
-    @{ Name = 'picking_frag'; File = 'picking_frag.spv' },
-    @{ Name = 'outline_vert'; File = 'outline_vert.spv' },
-    @{ Name = 'outline_frag'; File = 'outline_frag.spv' },
-    @{ Name = 'shadow_vert';  File = 'shadow_vert.spv' },
-    @{ Name = 'ui_vert';      File = 'ui_vert.spv' },
-    @{ Name = 'ui_frag';      File = 'ui_frag.spv' }
-)
+# Determine shader list: from -ShaderNames parameter, or auto-discover .spv files in InputDir
+if ($ShaderNames -and $ShaderNames.Trim()) {
+    $shaderNames = $ShaderNames.Trim().Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+    Write-Host "embed_shaders.ps1: using dynamic shader list from parameter: $shaderNames"
+    $shaders = @()
+    foreach ($name in $shaderNames) {
+        $file = "$name.spv"
+        $shaders += @{ Name = $name; File = $file }
+    }
+} else {
+    # Auto-discover .spv files in InputDir
+    $spvFiles = Get-ChildItem -Path $InputDir -Filter "*.spv" -File -ErrorAction SilentlyContinue
+    if ($spvFiles.Count -gt 0) {
+        Write-Host "embed_shaders.ps1: auto-discovered $($spvFiles.Count) .spv files in $InputDir"
+        $shaders = @()
+        foreach ($f in $spvFiles) {
+            $name = $f.BaseName
+            $shaders += @{ Name = $name; File = $f.Name }
+        }
+    } else {
+        # Fallback hardcoded list
+        Write-Host "embed_shaders.ps1: using fallback hardcoded list"
+        $shaders = @(
+            @{ Name = 'pbr_vert';     File = 'pbr_vert.spv' },
+            @{ Name = 'pbr_frag';     File = 'pbr_frag.spv' },
+            @{ Name = 'pbr_instanced_vert'; File = 'pbr_instanced_vert.spv' },
+            @{ Name = 'picking_vert'; File = 'picking_vert.spv' },
+            @{ Name = 'picking_frag'; File = 'picking_frag.spv' },
+            @{ Name = 'outline_vert'; File = 'outline_vert.spv' },
+            @{ Name = 'outline_frag'; File = 'outline_frag.spv' },
+            @{ Name = 'shadow_vert';  File = 'shadow_vert.spv' },
+            @{ Name = 'ui_vert';      File = 'ui_vert.spv' },
+            @{ Name = 'ui_frag';      File = 'ui_frag.spv' }
+        )
+    }
+}
 
 $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('// Auto-generated. Do not edit.')
@@ -50,8 +76,8 @@ foreach ($s in $shaders) {
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('static const Entry kEntries[] = {')
 foreach ($e in $entries) {
-    [void]$sb.AppendLine("    { `"$($e[0]).spv`", $($e[1]), sizeof($($e[1])) },")
-    [void]$sb.AppendLine("    { `"shaders/$($e[0]).spv`", $($e[1]), sizeof($($e[1])) },")
+    [void]$sb.AppendLine("    { `"$($e[0]).spv`", $($e[1]), sizeof($($e[1])) }," )
+    [void]$sb.AppendLine("    { `"shaders/$($e[0]).spv`", $($e[1]), sizeof($($e[1])) }," )
 }
 [void]$sb.AppendLine('};')
 [void]$sb.AppendLine('')

@@ -2,6 +2,7 @@
 # build_shaders.sh — compile SPIR-V shaders with glslc and embed them into
 # a generated C++ translation unit (build/generated/embedded_shaders.cpp).
 # Called from premake5 prebuild commands.
+# Auto-discovers all *_vert.glsl and *_frag.glsl files in shaders/ directory.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,28 +12,57 @@ SHADER_DIR="${ROOT}/build/shaders"
 GEN_DIR="${ROOT}/build/generated"
 mkdir -p "${SHADER_DIR}" "${GEN_DIR}"
 
-"${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/pbr_vert.glsl" -o "${SHADER_DIR}/pbr_vert.spv"
-"${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/pbr_frag.glsl" -o "${SHADER_DIR}/pbr_frag.spv"
-"${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/picking_vert.glsl" -o "${SHADER_DIR}/picking_vert.spv"
-"${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/picking_frag.glsl" -o "${SHADER_DIR}/picking_frag.spv"
-"${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/outline_vert.glsl" -o "${SHADER_DIR}/outline_vert.spv"
-"${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/outline_frag.glsl" -o "${SHADER_DIR}/outline_frag.spv"
-"${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/shadow_vert.glsl" -o "${SHADER_DIR}/shadow_vert.spv"
-"${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/ui_vert.glsl" -o "${SHADER_DIR}/ui_vert.spv"
-"${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/ui_frag.glsl" -o "${SHADER_DIR}/ui_frag.spv"
+# Auto-discover vertex shaders (*_vert.glsl) and fragment shaders (*_frag.glsl)
+shaders_vert=()
+shaders_frag=()
+
+for f in "${ROOT}/shaders"/*_vert.glsl; do
+    [ -e "$f" ] || continue
+    basename="$(basename "$f" _vert.glsl)"
+    shaders_vert+=("$basename")
+    echo "[build_shaders.sh] Found vertex shader: $basename"
+done
+
+for f in "${ROOT}/shaders"/*_frag.glsl; do
+    [ -e "$f" ] || continue
+    basename="$(basename "$f" _frag.glsl)"
+    shaders_frag+=("$basename")
+    echo "[build_shaders.sh] Found fragment shader: $basename"
+done
+
+# Compile vertex shaders
+for name in "${shaders_vert[@]}"; do
+    "${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/${name}_vert.glsl" -o "${SHADER_DIR}/${name}.spv"
+done
+
+# Compile fragment shaders
+for name in "${shaders_frag[@]}"; do
+    "${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/${name}_frag.glsl" -o "${SHADER_DIR}/${name}.spv"
+done
+
+# Combine all shader names for reference
+all_shaders=("${shaders_vert[@]}" "${shaders_frag[@]}")
+echo "[build_shaders.sh] Total shaders to embed: ${#all_shaders[@]}"
 
 # Embed the .spv files into a C++ TU. Prefers powershell (Windows), falls
 # back to python3 so Linux CI / machines without pwsh also work.
+# The embedding script auto-discovers .spv files in the input directory.
 if command -v powershell >/dev/null 2>&1; then
     powershell -NoProfile -ExecutionPolicy Bypass -File "${ROOT}/scripts/embed_shaders.ps1" \
         -InputDir "${SHADER_DIR}" -OutCpp "${GEN_DIR}/embedded_shaders.cpp"
 else
     python3 - "${SHADER_DIR}" "${GEN_DIR}/embedded_shaders.cpp" <<'EOF'
-import os, sys
+import os, sys, glob
 shader_dir, out_cpp = sys.argv[1], sys.argv[2]
-shaders = ['pbr_vert', 'pbr_frag', 'pbr_instanced_vert',
-           'picking_vert', 'picking_frag',
-           'outline_vert', 'outline_frag', 'shadow_vert', 'ui_vert', 'ui_frag']
+
+# Auto-discover .spv files in shader_dir
+spv_files = sorted(glob.glob(os.path.join(shader_dir, '*.spv')))
+if not spv_files:
+    sys.exit('embed error: no .spv files found in ' + shader_dir)
+
+shaders = [os.path.splitext(os.path.basename(f))[0] for f in spv_files]
+print(f'embed (python3): auto-discovered {len(shaders)} .spv files: {shaders}')
+
 lines = ['// Auto-generated. Do not edit.',
          '#include "renderer/embedded_shaders.h"', '#include <cstddef>',
          '#include <cstring>', '', 'namespace Atlas::EmbeddedShaders {', '']
