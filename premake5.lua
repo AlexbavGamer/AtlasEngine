@@ -71,15 +71,30 @@ project "glfw"
         path.join(deps_src, "glfw/src"),
     }
 
-    defines {
-        "_GLFW_WIN32",
-        "UNICODE",
-        "_UNICODE",
-        "WINVER=0x0501",
-    }
-
     filter "system:windows"
+        removefiles {
+            path.join(deps_src, "glfw/src/cocoa_*.c"),
+            path.join(deps_src, "glfw/src/x11_*.c"),
+            path.join(deps_src, "glfw/src/wl_*.c"),
+            path.join(deps_src, "glfw/src/linux_*.c"),
+            path.join(deps_src, "glfw/src/posix_*.c"),
+        }
+        defines {
+            "_GLFW_WIN32",
+            "UNICODE",
+            "_UNICODE",
+            "WINVER=0x0501",
+        }
         links { "user32", "gdi32", "shell32" }
+
+    filter "system:linux"
+        removefiles {
+            path.join(deps_src, "glfw/src/cocoa_*.c"),
+            path.join(deps_src, "glfw/src/win32_*.c"),
+            path.join(deps_src, "glfw/src/wl_*.c"),
+        }
+        defines { "_GLFW_X11" }
+        links { "pthread", "dl", "rt", "m" }
 
     filter {}
 
@@ -182,9 +197,8 @@ project "zlib"
     }
 
     -- Ensure STDC is defined so Z_ARG macro expands correctly on MinGW.
-    -- Without this, Z_ARG becomes () instead of args, causing syntax errors
-    -- like "expected '=', ',', ';', 'asm' or '__attribute__' before 'Z_ARG'
-    defines { "STDC", "Z_HAVE_STDARG_H" }
+    -- Use buildoptions to avoid quote issues with premake's defines.
+    buildoptions { "-DSTDC", "-DZ_HAVE_STDARG_H" }
 
 -- ---------------------------------------------------------------------------
 -- Assimp
