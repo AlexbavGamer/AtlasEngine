@@ -59,6 +59,7 @@ jobs:
           FILEVER="${VER#v}"
           wget -q "$PREMAKE_URL/$VER/premake-$FILEVER-linux.tar.gz"
           tar xzf "premake-$FILEVER-linux.tar.gz"
+          chmod +x premake5
           sudo mv premake5 /usr/local/bin/
           premake5 --version
 
@@ -163,7 +164,15 @@ jobs:
             -DestinationPath "$env:RUNNER_TEMP\premake"
           "$env:RUNNER_TEMP\premake" | Out-File `
             -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          RefreshEnv.cmd
+          # No RefreshEnv.cmd here: it only affects the current shell
+          # and fails under pwsh. Later steps run in new processes,
+          # which already see the machine PATH updated by choco.
+          # Belt and braces: also expose the mingw bin dir explicitly.
+          $mingwBin = 'C:\ProgramData\mingw64\mingw64\bin'
+          if (Test-Path $mingwBin) {
+            $mingwBin | Out-File `
+              -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
 
       - name: Fetch dependencies
         shell: bash
