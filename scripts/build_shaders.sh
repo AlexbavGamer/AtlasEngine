@@ -17,6 +17,7 @@ mkdir -p "${SHADER_DIR}" "${GEN_DIR}"
 "${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/picking_frag.glsl" -o "${SHADER_DIR}/picking_frag.spv"
 "${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/outline_vert.glsl" -o "${SHADER_DIR}/outline_vert.spv"
 "${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/outline_frag.glsl" -o "${SHADER_DIR}/outline_frag.spv"
+"${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/shadow_vert.glsl" -o "${SHADER_DIR}/shadow_vert.spv"
 "${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/ui_vert.glsl" -o "${SHADER_DIR}/ui_vert.spv"
 "${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/ui_frag.glsl" -o "${SHADER_DIR}/ui_frag.spv"
 
@@ -31,7 +32,7 @@ import os, sys
 shader_dir, out_cpp = sys.argv[1], sys.argv[2]
 shaders = ['pbr_vert', 'pbr_frag', 'pbr_instanced_vert',
            'picking_vert', 'picking_frag',
-           'outline_vert', 'outline_frag', 'ui_vert', 'ui_frag']
+           'outline_vert', 'outline_frag', 'shadow_vert', 'ui_vert', 'ui_frag']
 lines = ['// Auto-generated. Do not edit.',
          '#include "renderer/embedded_shaders.h"', '#include <cstddef>',
          '#include <cstring>', '', 'namespace Atlas::EmbeddedShaders {', '']

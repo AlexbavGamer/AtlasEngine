@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  PREMAKE_VERSION: v5.0.0-beta2
+  PREMAKE_VERSION: v5.0.0-beta8
   PREMAKE_URL: https://github.com/premake/premake-core/releases/download
 
 jobs:
@@ -56,8 +56,9 @@ jobs:
       - name: Install premake5
         run: |
           VER="${PREMAKE_VERSION}"
-          wget -q "$PREMAKE_URL/$VER/premake-$VER-linux.tar.gz"
-          tar xzf "premake-$VER-linux.tar.gz"
+          FILEVER="${VER#v}"
+          wget -q "$PREMAKE_URL/$VER/premake-$FILEVER-linux.tar.gz"
+          tar xzf "premake-$FILEVER-linux.tar.gz"
           sudo mv premake5 /usr/local/bin/
           premake5 --version
 
@@ -85,6 +86,36 @@ jobs:
           name: AtlasEngine-linux
           path: dist/linux
           if-no-files-found: error
+
+  sanitizers:
+    name: Unit tests (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build + run under sanitizers
+        run: |
+          g++ -std=c++17 -g -fno-omit-frame-pointer \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -Wall -Wextra -Isrc -Itests \
+            tests/test_main.cpp tests/test_string_id.cpp \
+            tests/test_package_manifest.cpp tests/test_render_resources.cpp \
+            src/export/package_manifest.cpp src/renderer/render_resources.cpp \
+            -o /tmp/AtlasTests_asan
+          /tmp/AtlasTests_asan
+
+      - name: Build + run with libstdc++ debug mode
+        run: |
+          g++ -std=c++17 -g -D_GLIBCXX_DEBUG -D_GLIBCXX_DEBUG_PEDANTIC \
+            -Wall -Wextra -Isrc -Itests \
+            tests/test_main.cpp tests/test_string_id.cpp \
+            tests/test_package_manifest.cpp tests/test_render_resources.cpp \
+            src/export/package_manifest.cpp src/renderer/render_resources.cpp \
+            -o /tmp/AtlasTests_dbg
+          /tmp/AtlasTests_dbg
 
   build-windows:
     name: Windows premake build
@@ -123,9 +154,10 @@ jobs:
         run: |
           choco install mingw ninja --yes --no-progress
           $ver = $env:PREMAKE_VERSION
+          $fileVer = $ver -replace '^v', ''
           $base = $env:PREMAKE_URL
           $zip = "$env:RUNNER_TEMP\premake.zip"
-          Invoke-WebRequest -Uri "$base/$ver/premake-$ver-windows.zip" `
+          Invoke-WebRequest -Uri "$base/$ver/premake-$fileVer-windows.zip" `
             -OutFile $zip
           Expand-Archive $zip `
             -DestinationPath "$env:RUNNER_TEMP\premake"

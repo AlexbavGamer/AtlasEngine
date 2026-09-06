@@ -30,17 +30,26 @@ struct Light {
     vec3 position;
     float intensity;
     vec3 color;
-    float padding;
+    float pad0;
+    vec3 direction;
+    int type; // 0 = point, 1 = directional (spot falls back to point)
 };
 
 layout(set = 0, binding = 0) uniform LightBuffer {
     Light lights[MAX_LIGHTS];
     int lightCount;
+    float pad1;
+    float pad2;
+    float pad3;
     vec3 cameraPos;
     float padding;
+    mat4 shadowViewProj;
+    // x: shadow enabled (0/1), y: depth bias, z: shadow map size, w: reserved
+    vec4 shadowParams;
 } lightData;
 
 layout(set = 0, binding = 1) uniform sampler2D textureSamplers[MAX_TEXTURES];
+layout(set = 0, binding = 2) uniform sampler2DShadow shadowMap;
 
 const float PI = 3.14159265359;
 
@@ -93,6 +102,17 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 
     float invMax = inversesqrt(max(dot(T, T), dot(B, B)));
     return mat3(T * invMax, B * invMax, N);
+}
+
+// PCF shadow lookup for the directional light in slot 0 (comparison sampler,
+// hardware 2x2 filtering). Returns 1.0 outside the shadow frustum.
+float sampleShadow(vec3 worldPos) {
+    vec4 sc = lightData.shadowViewProj * vec4(worldPos, 1.0);
+    vec3 proj = sc.xyz / max(sc.w, 0.0001);
+    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
+        return 1.0;
+    }
+    return texture(shadowMap, vec3(proj.xy, proj.z - lightData.shadowParams.y));
 }
 
 void main() {
@@ -167,15 +187,28 @@ void main() {
 
     vec3 Lo = vec3(0.0);
 
+    // Shadow visibility for the slot-0 directional light (1.0 = no shadow).
+    float shadow = 1.0;
+    if (lightData.shadowParams.x > 0.5) {
+        shadow = sampleShadow(fragWorldPos);
+    }
+
     for (int i = 0; i < lightData.lightCount; i++) {
         Light light = lightData.lights[i];
 
-        vec3 L = normalize(light.position - fragWorldPos);
+        vec3 L;
+        vec3 radiance;
+        if (light.type == 1) {
+            // Directional: parallel rays, no distance falloff.
+            L = normalize(-light.direction);
+            radiance = light.color * light.intensity;
+        } else {
+            L = normalize(light.position - fragWorldPos);
+            float distance = length(light.position - fragWorldPos);
+            float attenuation = 1.0 / (distance * distance);
+            radiance = light.color * light.intensity * attenuation;
+        }
         vec3 H = normalize(V + L);
-
-        float distance = length(light.position - fragWorldPos);
-        float attenuation = 1.0 / (distance * distance);
-        vec3 radiance = light.color * light.intensity * attenuation;
 
         float NDF = DistributionGGX(N, H, roughness);
         float G = GeometrySmith(N, V, L, roughness);
@@ -190,7 +223,8 @@ void main() {
         vec3 specular = numerator / denominator;
 
         float NdotL = max(dot(N, L), 0.0);
-        Lo += (kD * albedoColor.rgb / PI + specular) * radiance * NdotL;
+        float visibility = (i == 0) ? shadow : 1.0;
+        Lo += (kD * albedoColor.rgb / PI + specular) * radiance * NdotL * visibility;
     }
 
     vec3 ambient = vec3(0.03) * albedoColor.rgb;

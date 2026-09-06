@@ -79,11 +79,15 @@ void EditorApp::decodeCellKey(uint64_t key, int& outX, int& outZ) {
     outZ = static_cast<int>(static_cast<uint32_t>(key & 0xFFFFFFFFu));
 }
 
-EditorApp::EditorApp() {
+EditorApp::EditorApp()
+try {
+    m_InitStep = "window";
     m_Window = std::make_unique<Window>(1280, 720, "Atlas Engine");
+    m_InitStep = "renderer";
     m_Renderer = std::make_unique<Renderer>(m_Window.get());
     m_Renderer->init();
 
+    m_InitStep = "assets/scene/world";
     m_AssetManager = std::make_unique<AssetManager>();
     m_AssetManager->setRenderer(m_Renderer.get());
 
@@ -94,6 +98,7 @@ EditorApp::EditorApp() {
     m_HLODSystem = std::make_unique<HLODSystem>(m_HLODConfig);
     m_CityScene = m_Scene.get();
 
+    m_InitStep = "imgui/viewport";
     m_ImGuiManager = std::make_unique<::ImGuiManager>();
     m_ImGuiManager->init(
         m_Renderer->getInstance(),
@@ -108,6 +113,7 @@ EditorApp::EditorApp() {
     m_Viewport.setRenderer(m_Renderer.get());
     m_Viewport.refreshTexture();
 
+    m_InitStep = "ui/project";
     m_UIManager = std::make_unique<::UIManager>(m_Scene.get());
     m_UIManager->setWindow(m_Window->getGLFWWindow());
     m_UIManager->setRenderer(m_Renderer.get());
@@ -116,6 +122,7 @@ EditorApp::EditorApp() {
     m_ProjectManager = std::make_unique<::ProjectManager>();
     m_UIManager->setProjectManager(m_ProjectManager.get());
 
+    m_InitStep = "physics/scripting";
     m_PhysicsSystem = std::make_unique<Atlas::Physics::PhysicsSystem>();
     m_PhysicsSystem->initialize();
 
@@ -123,6 +130,7 @@ EditorApp::EditorApp() {
     m_ScriptEngine->setWindow(m_Window->getGLFWWindow());
     m_ScriptEngine->initialize();
 
+    m_InitStep = "editor camera";
     auto cameraEntity = m_Scene->createEntity("Editor Camera");
     m_Scene->getRegistry().emplace<EditorCamera>(cameraEntity);
     auto& camera = m_Scene->getRegistry().get<EditorCamera>(cameraEntity);
@@ -159,6 +167,10 @@ EditorApp::EditorApp() {
     m_Window->setFileDropCallback([this](const std::vector<std::string>& paths) {
         onExternalFileDrop(paths);
     });
+} catch (const std::exception& e) {
+    throw std::runtime_error(std::string("EditorApp startup failed at step '") + m_InitStep + "': " + e.what());
+} catch (...) {
+    throw std::runtime_error(std::string("EditorApp startup failed at step '") + m_InitStep + "' (unknown, non-std exception)");
 }
 
 EditorApp::~EditorApp() {

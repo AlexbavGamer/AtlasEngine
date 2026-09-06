@@ -5,6 +5,7 @@
 // ImGui-free, so anything including it (renderer, physics, scripting...)
 // no longer pays for the UI dependency. Only editor UI code includes this.
 #include "ecs.h"
+#include "components/components.h"
 
 #include <imgui.h>
 
@@ -142,6 +143,23 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         ImGui::Text("Level: %s (dist %.1fm, screen %.3f)", levelNames[idx], component.distance, component.screenSize);
         ImGui::DragFloat("Importance bias##LOD", &component.screenSizeBias, 0.05f, 0.1f, 8.0f, "%.2f");
         if (component.screenSizeBias < 0.1f) component.screenSizeBias = 0.1f;
+    } else if constexpr (std::is_same_v<T, Atlas::ECS::LightComponent>) {
+        using LightT = Atlas::ECS::LightComponent;
+        const char* typeNames[] = {"Point", "Directional", "Spot"};
+        int typeIdx = static_cast<int>(component.type);
+        if (ImGui::Combo("Type##L", &typeIdx, typeNames, 3)) {
+            component.type = static_cast<LightT::Type>(typeIdx);
+        }
+        ImGui::ColorEdit3("Color##L", &component.color.x);
+        ImGui::DragFloat("Intensity##L", &component.intensity, 0.5f, 0.0f, 10000.0f);
+        ImGui::Checkbox("Cast shadows##L", &component.castShadows);
+        if (component.type == LightT::Type::Directional) {
+            ImGui::TextDisabled("Direction comes from the entity Transform rotation (-Z).");
+        } else {
+            ImGui::DragFloat("Constant##L", &component.constant, 0.01f, 0.0f, 2.0f);
+            ImGui::DragFloat("Linear##L", &component.linear, 0.001f, 0.0f, 1.0f);
+            ImGui::DragFloat("Quadratic##L", &component.quadratic, 0.001f, 0.0f, 1.0f);
+        }
     } else if constexpr (is_auto_reflected_v<T>) {
         // Automatic UI from COMPONENT_FIELDS (e.g. Renderable).
         renderAutoComponentProperties(component);

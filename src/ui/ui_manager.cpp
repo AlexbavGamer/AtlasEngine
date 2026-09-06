@@ -2357,6 +2357,11 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             renderComponent(m_Scene->getRegistry().get<Atlas::LODComponent>(selectedEntity), "LOD");
         }
 
+        // Light editor: type/intensity/color/shadows (direction from Transform).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::LightComponent>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Atlas::ECS::LightComponent>(selectedEntity), "Light");
+        }
+
         // Script inspector (V1)
         {
             auto& registry = m_Scene->getRegistry();

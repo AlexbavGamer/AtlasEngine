@@ -94,6 +94,8 @@ private:
     bool loadSceneFromAssetPath(const std::string& assetRelativePath);
 
     std::string m_CurrentSceneAssetPath = "scenes/main.scene";
+    // Current startup phase; reported in fatal-error context on failure.
+    std::string m_InitStep = "begin";
 
     struct ImportRequest {
         std::string assetPath;

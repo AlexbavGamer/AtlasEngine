@@ -24,15 +24,25 @@ struct Light {
     glm::vec3 position;
     float intensity;
     glm::vec3 color;
-    float padding;
+    float pad0 = 0.0f;
+    glm::vec3 direction = glm::vec3(0.0f, -1.0f, 0.0f);
+    // 0 = point, 1 = directional (spot falls back to point in v1)
+    int32_t type = 0;
 };
+static_assert(sizeof(Light) == 48, "Light must match pbr_frag.glsl std140 layout");
 
 struct LightBuffer {
     Light lights[4];
-    int lightCount;
-    glm::vec3 cameraPos;
-    float padding;
+    int32_t lightCount = 0;
+    // Explicit pad: std140 aligns the following vec3 to 16 bytes.
+    float _pad0 = 0.0f, _pad1 = 0.0f, _pad2 = 0.0f;
+    glm::vec3 cameraPos = glm::vec3(0.0f);
+    float padding = 0.0f;
+    glm::mat4 shadowViewProj{1.0f};
+    // x: shadow enabled (0/1), y: depth bias, z: map size, w: reserved
+    glm::vec4 shadowParams = glm::vec4(0.0f);
 };
+static_assert(sizeof(LightBuffer) == 304, "LightBuffer must match pbr_frag.glsl std140 layout");
 
 struct PushConstants {
     glm::mat4 model;
@@ -49,6 +59,12 @@ struct PushConstants {
     int32_t emissiveTexIndex;
     int32_t flags;
 };
+
+struct ShadowPushConstants {
+    glm::mat4 model;
+    glm::mat4 viewProj;
+};
+static_assert(sizeof(ShadowPushConstants) <= 128, "ShadowPushConstants must stay within 128 bytes");
 
 struct PickingPushConstants {
     glm::mat4 model;
@@ -124,6 +140,10 @@ public:
     // Renderer-owned; editor/game allocate on upload, free on destroy.
     RenderResourceManager& getMeshRegistry() { return m_meshRegistry; }
     const RenderResourceManager& getMeshRegistry() const { return m_meshRegistry; }
+    void setShadowsEnabled(bool enabled) { m_ShadowsEnabled = enabled; }
+    bool isShadowsEnabled() const { return m_ShadowsEnabled; }
+    // Debug aid: live mesh-handle count (leak detection for Phase-2 wiring).
+    uint32_t getLiveMeshHandleCount() const { return m_meshRegistry.liveMeshCount(); }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
@@ -229,6 +249,13 @@ private:
     void createOffscreenRenderPass();
     void createPickingRenderPass();
     void createPickingPipeline();
+    void createShadowResources();
+    void destroyShadowResources();
+    void createShadowPipeline();
+    // Gathers scene lights into the LightBuffer UBO (cameraPos always) and
+    // computes the shadow matrix when a directional+castShadows light exists.
+    void updateLightsAndShadow(Scene* scene);
+    void recordShadowPass(VkCommandBuffer commandBuffer, Scene* scene);
     void createOutlinePipeline();
     void createLightBuffer();
     void createDescriptorSet();
@@ -277,6 +304,8 @@ private:
     // See getMeshRegistry(). Must outlive any ::Mesh referencing its handles;
     // Renderer is destroyed after the scene in both editor and game flows.
     RenderResourceManager m_meshRegistry;
+    // Current init() phase; reported in fatal-error context on failure.
+    std::string m_InitStep = "begin";
 
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
     bool m_VSyncEnabled = true;
@@ -377,6 +406,26 @@ private:
     VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
+
+    // Directional shadow mapping (single fixed shadow map, v1 — see ARCHITECTURE.md).
+    static constexpr uint32_t kShadowMapSize = 2048;
+    static constexpr float kShadowOrthoExtent = 80.0f;
+    static constexpr float kShadowDepthBias = 0.0015f;
+    VkImage m_ShadowImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_ShadowMemory = VK_NULL_HANDLE;
+    VkImageView m_ShadowView = VK_NULL_HANDLE;
+    VkSampler m_ShadowSampler = VK_NULL_HANDLE;
+    VkRenderPass m_ShadowRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer m_ShadowFramebuffer = VK_NULL_HANDLE;
+    VkPipelineLayout m_ShadowPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_ShadowPipeline = VK_NULL_HANDLE;
+    bool m_ShadowsEnabled = false; // TEMP-DIAG-SHADOW: disabled by default while diagnosing the gradient artifact
+    bool m_ShadowEnabledFrame = false;
+    // Tracks the shadow image layout across frames: the render pass moves it
+    // to SHADER_READ_ONLY when it runs; otherwise recordShadowPass issues a
+    // one-time barrier so main-pass binding 2 is always sampling-valid.
+    VkImageLayout m_ShadowImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    glm::mat4 m_ShadowViewProj{1.0f};
 
     // Bones palette (dynamic SSBO) used by vertex shaders (set=1,binding=0).
     static constexpr uint32_t MAX_BONES = 256;

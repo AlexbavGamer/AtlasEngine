@@ -22,6 +22,7 @@ mkdir "%GEN_DIR%" 2>nul
 "%GLSLC%" -fshader-stage=frag "%ROOT%\shaders\picking_frag.glsl"   -o "%SHADER_DIR%\picking_frag.spv"   || goto :fail
 "%GLSLC%" -fshader-stage=vert "%ROOT%\shaders\outline_vert.glsl"   -o "%SHADER_DIR%\outline_vert.spv"   || goto :fail
 "%GLSLC%" -fshader-stage=frag "%ROOT%\shaders\outline_frag.glsl"   -o "%SHADER_DIR%\outline_frag.spv"   || goto :fail
+"%GLSLC%" -fshader-stage=vert "%ROOT%\shaders\shadow_vert.glsl"    -o "%SHADER_DIR%\shadow_vert.spv"    || goto :fail
 "%GLSLC%" -fshader-stage=vert "%ROOT%\shaders\ui_vert.glsl"        -o "%SHADER_DIR%\ui_vert.spv"        || goto :fail
 "%GLSLC%" -fshader-stage=frag "%ROOT%\shaders\ui_frag.glsl"        -o "%SHADER_DIR%\ui_frag.spv"        || goto :fail
 

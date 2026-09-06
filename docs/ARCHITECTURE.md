@@ -62,6 +62,29 @@ Rules:
 
 New TODOs must reference an issue: `// TODO(#123): ...`.
 
+## Build gotchas
+
+- The premake-generated ninja files do NOT track header dependencies
+  (no `-MD` in the compile rules, no `.d` files). After a **header-only**
+  change, `touch` the affected `.cpp` files before `ninja`, or the exe
+  silently links stale objects.
+
+## Lighting & shadows (v1)
+
+- Scene `LightComponent`s are uploaded to the GPU every frame
+  (`Renderer::updateLightsAndShadow`): shadow-casting directional first
+  (slot 0), then others up to 4. No lights → legacy hardcoded default.
+- `cameraPos` is uploaded per frame (specular was computed from a stale value).
+- Single 2048 directional shadow map: depth-only pass → comparison sampler
+  (HW PCF 2x2) in `pbr_frag`. Fixed 80m ortho frustum around the camera
+  target; toggle via `setShadowsEnabled` / inspector "Cast shadows".
+- v1 limitations: no skinning in the depth pass (bind-pose shadows), no
+  alpha-discard in depth (masked materials cast quad shadows), fixed
+  frustum (upgrade: fit to view frustum / CSM), spot falls back to point.
+- NOTE: `LightBuffer` layout is std140-sensitive — the `static_assert`s on
+  `Light` (48B) / `LightBuffer` (304B) in `renderer.h` must match
+  `pbr_frag.glsl` exactly; change both sides together.
+
 ## Threading
 
 - Asset loading runs on workers (`core/threading/`). Shared registries

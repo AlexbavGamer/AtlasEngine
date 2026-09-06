@@ -13,6 +13,7 @@ $shaders = @(
     @{ Name = 'picking_frag'; File = 'picking_frag.spv' },
     @{ Name = 'outline_vert'; File = 'outline_vert.spv' },
     @{ Name = 'outline_frag'; File = 'outline_frag.spv' },
+    @{ Name = 'shadow_vert';  File = 'shadow_vert.spv' },
     @{ Name = 'ui_vert';      File = 'ui_vert.spv' },
     @{ Name = 'ui_frag';      File = 'ui_frag.spv' }
 )
