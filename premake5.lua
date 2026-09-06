@@ -93,7 +93,7 @@ project "glfw"
             path.join(deps_src, "glfw/src/win32_*.c"),
             path.join(deps_src, "glfw/src/wl_*.c"),
         }
-        defines { "_GLFW_X11" }
+        defines { "_GLFW_X11", "_GNU_SOURCE" }
         links { "pthread", "dl", "rt", "m" }
 
     filter {}
@@ -188,6 +188,7 @@ project "TracyClient"
 project "zlib"
     kind "StaticLib"
     language "C"
+    cdialect "C99"
 
     files { path.join(deps_src, "assimp/contrib/zlib/*.c") }
 
@@ -197,7 +198,8 @@ project "zlib"
     }
 
     -- Ensure STDC is defined so Z_ARG macro expands correctly on MinGW.
-    -- Use buildoptions to avoid quote issues with premake's defines.
+    -- cdialect C99 defines __STDC__ which zconf.h checks for Z_ARG expansion.
+    -- Also add explicit defines as backup.
     buildoptions { "-DSTDC", "-DZ_HAVE_STDARG_H" }
 
 -- ---------------------------------------------------------------------------
