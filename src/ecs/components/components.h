@@ -6,7 +6,6 @@
 #include <memory>
 
 #include <entt/entt.hpp>
-#include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include "../../core/string/string_id.h"
@@ -15,26 +14,6 @@
 #include "../reflection.h"
 
 namespace Atlas { namespace ECS {
-
-struct MeshComponent {
-    std::string meshPath;
-    
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-    VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory indexMemory = VK_NULL_HANDLE;
-    
-    uint32_t vertexCount = 0;
-    uint32_t indexCount = 0;
-    uint32_t firstIndex = 0;
-    int32_t vertexOffset = 0;
-
-    bool isValid() const {
-        return vertexBuffer != VK_NULL_HANDLE && indexBuffer != VK_NULL_HANDLE;
-    }
-};
-
-
 
 struct MaterialComponent {
     glm::vec4 baseColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -151,7 +130,7 @@ struct LightComponent {
     // Type encoded as uint32_t for shader compatibility (packed into direction.w)
     // 0 = Directional, 1 = Point, 2 = Spot
     enum class Type : uint32_t { Directional = 0, Point = 1, Spot = 2 };
-    uint32_t type = 1; // Point
+    Type type = Type::Point;
     glm::vec3 color = glm::vec3(1.0f);
     float intensity = 1.0f;
 
@@ -307,22 +286,6 @@ struct SkinnedMeshComponent {
 // ecs::refl::ComponentFields must live in ecs::refl, so they cannot be nested
 // inside namespace Atlas::ECS).
 // ============================================================================
-
-COMPONENT_FIELDS(Atlas::ECS::MeshComponent,
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, meshPath, "Mesh Path")
-        .read_only(true),
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, vertexBuffer, "Vertex Buffer")
-        .read_only(true),
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, indexBuffer, "Index Buffer")
-        .read_only(true),
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, vertexCount, "Vertex Count")
-        .read_only(true),
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, indexCount, "Index Count")
-        .read_only(true),
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, firstIndex, "First Index")
-        .read_only(true),
-    COMPONENT_FIELD(Atlas::ECS::MeshComponent, vertexOffset, "Vertex Offset")
-        .read_only(true))
 
 COMPONENT_FIELDS(Atlas::ECS::MaterialComponent,
     COMPONENT_FIELD(Atlas::ECS::MaterialComponent, baseColor, "Base Color")

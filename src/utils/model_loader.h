@@ -25,7 +25,7 @@
 
 #include <stb_image.h>
 
-#include "../ecs/vertex.h"
+#include "../renderer/vertex.h"
 #include "../animation/animation.h"
 
 struct MeshData {

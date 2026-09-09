@@ -91,7 +91,8 @@ CityGenResult generateProceduralCity(Scene* scene, Renderer* renderer, const Cit
         // Auto-LOD variants for the shared box mesh (once: first entity).
         // Cubes are tiny so the simplifier declines them; harmless uniform call.
         if (result.entities.empty()) {
-            cacheImportLODs(renderer, boxData, mesh.vertexBuffer, mesh.indexBuffer, false);
+            cacheImportLODs(renderer, boxData, reinterpret_cast<uint64_t>(mesh.vertexBuffer),
+                              reinterpret_cast<uint64_t>(mesh.indexBuffer), false);
         }
         ECS::MaterialComponent material;
         material.baseColor = color;
@@ -150,13 +151,16 @@ CityGenResult generateProceduralCity(Scene* scene, Renderer* renderer, const Cit
 }
 
 void cacheImportLODs(Renderer* renderer, MeshData& meshData,
-                     VkBuffer srcVB, VkBuffer srcIB, bool isSkinned) {
+                     uint64_t srcVB, uint64_t srcIB, bool isSkinned) {
     if (!renderer || isSkinned) {
         return;
     }
     if (meshData.vertices.empty() || meshData.indices.empty()) {
         return;
     }
+    // Bit-cast the opaque keys back to handles at the renderer boundary.
+    const VkBuffer srcVBHandle = reinterpret_cast<VkBuffer>(srcVB);
+    const VkBuffer srcIBHandle = reinterpret_cast<VkBuffer>(srcIB);
     // LOD1 (~50%) then LOD2 (~25%). simplifyMeshData declines tiny meshes.
     SimplifiedMesh lod1 = simplifyMeshData(meshData.vertices, meshData.indices, 0.5f);
     if (lod1.valid) {
@@ -164,7 +168,7 @@ void cacheImportLODs(Renderer* renderer, MeshData& meshData,
             lod1.vertices.data(), sizeof(Vertex), lod1.vertices.size(),
             lod1.indices.data(), lod1.indices.size());
         if (up.vertexBuffer != VK_NULL_HANDLE) {
-            renderer->cacheSimplifiedVariant(srcVB, srcIB, 1, up);
+            renderer->cacheSimplifiedVariant(srcVBHandle, srcIBHandle, 1, up);
         }
     }
     SimplifiedMesh lod2 = simplifyMeshData(meshData.vertices, meshData.indices, 0.25f);
@@ -173,7 +177,7 @@ void cacheImportLODs(Renderer* renderer, MeshData& meshData,
             lod2.vertices.data(), sizeof(Vertex), lod2.vertices.size(),
             lod2.indices.data(), lod2.indices.size());
         if (up.vertexBuffer != VK_NULL_HANDLE) {
-            renderer->cacheSimplifiedVariant(srcVB, srcIB, 2, up);
+            renderer->cacheSimplifiedVariant(srcVBHandle, srcIBHandle, 2, up);
         }
     }
 }

@@ -1,5 +1,11 @@
 #pragma once
 
+// Vertex layout (moved from src/ecs/vertex.h — Fase 1 ECS/GPU decoupling).
+// The CPU vertex format + Vulkan binding descriptions are renderer-owned
+// knowledge: only renderer/ and utils/ (model loading, simplification,
+// primitive creation) include this header. ECS components must never
+// include it; they reference meshes by RenderResourceManager handle.
+
 #include <array>
 #include <cstddef>
 

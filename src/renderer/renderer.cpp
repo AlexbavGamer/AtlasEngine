@@ -4,7 +4,7 @@
 #include "../scene/scene.h"
 #include "../ecs/components/components.h"
 #include "../ecs/ecs.h"
-#include "../ecs/vertex.h"
+#include "../renderer/vertex.h"
 #include "../world/lod.h"
 #include "../core/profiler.h"
 #include <stdexcept>

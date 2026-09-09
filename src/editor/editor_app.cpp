@@ -1082,7 +1082,8 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         createdMeshBuffers = true;
         // Auto-LOD variants while CPU data is alive (per-primitive buffers;
         // shared-geometry batching still applies via identical buffer keys).
-        Atlas::cacheImportLODs(m_Renderer.get(), meshData, meshData.vertexBuffer, meshData.indexBuffer, false);
+        Atlas::cacheImportLODs(m_Renderer.get(), meshData, reinterpret_cast<uint64_t>(meshData.vertexBuffer),
+                                 reinterpret_cast<uint64_t>(meshData.indexBuffer), false);
         meshData.freeCPUMemory();
     }
 
@@ -1173,7 +1174,7 @@ Entity EditorApp::createLightEntity(ECS::LightComponent::Type type, Entity paren
 
     // Add LightComponent
     ECS::LightComponent light;
-    light.type = static_cast<uint32_t>(type);
+    light.type = type;
     light.color = glm::vec3(1.0f, 1.0f, 1.0f);
     light.intensity = (type == ECS::LightComponent::Type::Directional) ? 50.0f : 5.0f;
     light.castShadows = (type == ECS::LightComponent::Type::Directional);
@@ -2673,7 +2674,8 @@ void EditorApp::processPendingModels() {
             m_Scene->getRegistry().emplace_or_replace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
             // Auto-LOD variants while CPU data is alive (skipped for skinned).
             // NOTE: each submesh caches its own variants (keyed by its buffers).
-            Atlas::cacheImportLODs(m_Renderer.get(), meshData, mesh.vertexBuffer, mesh.indexBuffer,
+            Atlas::cacheImportLODs(m_Renderer.get(), meshData, reinterpret_cast<uint64_t>(mesh.vertexBuffer),
+                reinterpret_cast<uint64_t>(mesh.indexBuffer),
                 m_Scene->getRegistry().all_of<ECS::SkinnedMeshComponent>(entity));
             meshData.freeCPUMemory();
         };

@@ -3475,7 +3475,7 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
         }});
         addEntries.push_back({"Light", registry.all_of<Atlas::ECS::LightComponent>(selectedEntity), [&] {
             Atlas::ECS::LightComponent light;
-            light.type = 1u; // Point
+            light.type = Atlas::ECS::LightComponent::Type::Point;
             light.color = glm::vec3(1.0f, 1.0f, 1.0f);
             light.intensity = 5.0f;
             light.direction = glm::vec3(0.0f, -1.0f, 0.0f);

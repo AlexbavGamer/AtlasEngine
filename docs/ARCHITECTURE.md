@@ -41,9 +41,18 @@ Rules:
     exit, mirroring the pre-existing Vk-buffer behavior.
   Remaining (Phase 3): make renderer draw/batching read the registry instead
   of `Mesh::Vk*`, then delete the deprecated fields.
-- `src/ecs/components/components.h ::MeshComponent` duplicates `::Mesh`
-  (also with `Vk*` handles). Unify on one mesh component during the
-  decoupling above.
+- `src/ecs/components/components.h ::MeshComponent` was deleted (dead duplicate
+  of `::Mesh` — never instantiated; only `SkinnedMeshComponent` remains).
+  The header no longer includes `<vulkan/vulkan.h>`.
+- `src/ecs/vertex.h` moved to `src/renderer/vertex.h` (only renderer/ and
+  utils/ ever included it). `src/ecs` is now free of vertex-layout knowledge.
+- `src/world/city_generator.h` no longer includes `<vulkan/vulkan.h>`:
+  `cacheImportLODs` takes opaque `uint64_t` GPU-buffer keys; the bit-cast
+  back to `VkBuffer` happens only in `city_generator.cpp` at the renderer
+  boundary.
+- `ECS::LightComponent::type` is now the `Type` enum (was `uint32_t` on one
+  side of a bad rebase merge that broke the build); renderer, inspector and
+  creation sites agree again.
 - `src/app/engine.h` declares `Atlas::Engine` with no `.cpp`; only
   `EditorLayer` holds an `Engine*`. Entry points use `EditorApp` directly.
   Either implement `Engine` or delete `app/` and retarget `editor.h`.

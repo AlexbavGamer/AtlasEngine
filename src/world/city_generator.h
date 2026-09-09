@@ -14,7 +14,6 @@
 #include <vector>
 #include <cstdint>
 #include <entt/entt.hpp>
-#include <vulkan/vulkan.h>
 
 struct MeshData; // ::MeshData (see utils/model_loader.h)
 
@@ -56,7 +55,12 @@ void clearGeneratedCity(Scene* scene, CityGenResult& city);
 // imported mesh while its CPU data is still alive, and caches them in the
 // renderer keyed by (srcVB, srcIB). No-ops for skinned/tiny meshes.
 // Call BEFORE MeshData::freeCPUMemory().
+// Opaque GPU-buffer keys: bit-cast VkBuffer handles (a handle always fits
+// in 64 bits). Keeps this header — and every translation unit including
+// it — free of Vulkan headers; only city_generator.cpp performs the cast
+// back, at the renderer boundary.
+static_assert(sizeof(void*) <= sizeof(uint64_t), "GPU buffer handle must fit in uint64_t");
 void cacheImportLODs(Renderer* renderer, MeshData& meshData,
-                     VkBuffer srcVB, VkBuffer srcIB, bool isSkinned);
+                     uint64_t srcVB, uint64_t srcIB, bool isSkinned);
 
 } // namespace Atlas

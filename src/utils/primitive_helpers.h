@@ -9,7 +9,7 @@
 #include <glm/gtc/constants.hpp>
 #include <vulkan/vulkan.h>
 
-#include "../ecs/vertex.h"
+#include "../renderer/vertex.h"
 #include "../utils/model_loader.h"
 
 namespace Atlas::PrimitiveHelpers {

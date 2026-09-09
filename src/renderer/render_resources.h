@@ -11,7 +11,10 @@
 // unit-testable in AtlasTests without a GPU.
 // Phase 2: store VkBuffer/VkDeviceMemory + descriptors per slot and consume
 //          Mesh::renderMeshId in renderer.cpp; then deprecate Mesh's Vk*.
-// Phase 3: MeshComponent unification + serializer migration.
+// Phase 3: make renderer draw/batching read the registry instead of
+//          Mesh::Vk*, then delete the deprecated fields (+ serializer
+//          migration). (MeshComponent unification done: dead duplicate
+//          deleted; vertex.h moved to renderer/; city_generator.h Vulkan-free.)
 
 #include <cstdint>
 #include <mutex>

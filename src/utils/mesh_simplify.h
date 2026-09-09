@@ -19,7 +19,7 @@
 
 #include <glm/glm.hpp>
 
-#include "../ecs/vertex.h"
+#include "../renderer/vertex.h"
 
 namespace Atlas {
 
