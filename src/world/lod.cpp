@@ -109,7 +109,10 @@ LODStats updateLODSystem(Scene* scene,
                 glm::vec3 col0 = glm::vec3(world[0]);
                 glm::vec3 col1 = glm::vec3(world[1]);
                 glm::vec3 col2 = glm::vec3(world[2]);
-                float maxScale = std::max({glm::length(col0), glm::length(col1), glm::length(col2), 1.0f});
+                // World scale from basis lengths. No floor at 1: downscaled
+                // objects must shrink their radius too (else tiny objects
+                // keep full detail at any distance).
+                float maxScale = std::max({glm::length(col0), glm::length(col1), glm::length(col2)});
                 center = glm::vec3(world * glm::vec4(centerLocal, 1.0f));
                 radius = glm::length(extents) * maxScale;
             } else {

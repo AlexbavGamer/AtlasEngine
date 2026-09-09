@@ -525,37 +525,47 @@ void updateHLODLevels(
         }
     }
 
-    // Also update per-entity HLODComponent cross-fade (legacy path for entities with HLODComponent)
+    // Also update per-entity HLODComponent (entities with manually added HLOD).
+    // Desired level is scale-aware: effective screen size from LOD data when
+    // available (already accounts for world scale via lod.cpp + artist bias),
+    // else legacy distance bands.
     auto& registry = scene->getRegistry();
     auto hodView = registry.view<HLODComponent, Renderable>();
     for (auto e : hodView) {
         auto& hod = registry.get<HLODComponent>(e);
         glm::mat4 world = scene->getCachedWorldTransform(e);
         glm::vec3 entityPos = glm::vec3(world[3]);
-        HLODLevel desired = computeHLODLevel(entityPos, cameraPos, wpCfg);
 
-        // Target tracking
+        float effScreen = -1.0f;
+        if (const auto* lod = registry.try_get<LODComponent>(e)) {
+            const float hbias = (hod.screenSizeBias > 1e-4f) ? hod.screenSizeBias : 1.0f;
+            effScreen = std::clamp(lod->screenSize * hbias, 0.0f, 1.0f);
+        }
+        HLODLevel desired;
+        if (effScreen >= 0.0f) {
+            if (effScreen >= hlodConfig.fullDetailMinScreen) desired = HLODLevel::FullDetail;
+            else if (effScreen >= hlodConfig.hlod0MinScreen) desired = HLODLevel::HLOD0;
+            else desired = HLODLevel::HLOD1;
+        } else {
+            desired = computeHLODLevel(entityPos, cameraPos, wpCfg);
+        }
         hod.targetLevel = desired;
 
-        // Alpha cross-fade for legacy path is handled via cell actors; here just
-        // smoothly step currentLevel if needed (avoid pop). Use transitionAlpha idea
-        // on entity as well via ditheringDuration.
-        if (hod.currentLevel != desired) {
-            // For legacy, we don't have per-entity alpha, so snap after duration?
-            // We use a simple lerp of enum index via deltaTime/ditheringDuration threshold.
-            // Accumulate alpha step; when alpha reaches 1, switch level.
-            // Simplified: switch after one ditheringDuration tick to avoid pop.
-            // Here we just immediately set target but keep transitionAlpha on HLODActor as primary.
-            // Keep currentLevel lagging by one frame for demo.
-            // To avoid pop, we interpolate: if alphaStep >=1, snap
-            if (alphaStep >= 1.0f) {
-                hod.currentLevel = desired;
-            } else {
-                // Stay at current until next frame where alpha would complete
-                // For now, do not snap; HLODSystem will drive via actors
-            }
-        } else {
+        // current follows target: degrade immediately, refine with hysteresis
+        // (1.25x, same convention as LOD) to avoid boundary flicker.
+        const int curIdx = static_cast<int>(hod.currentLevel);
+        const int desIdx = static_cast<int>(desired);
+        if (desIdx > curIdx) {
             hod.currentLevel = desired;
+        } else if (desIdx < curIdx) {
+            if (effScreen < 0.0f) {
+                hod.currentLevel = desired; // no screen data: snap (legacy)
+            } else {
+                const float base = (desired == HLODLevel::FullDetail)
+                    ? hlodConfig.fullDetailMinScreen
+                    : hlodConfig.hlod0MinScreen;
+                if (effScreen >= base * 1.25f) hod.currentLevel = desired;
+            }
         }
     }
 }

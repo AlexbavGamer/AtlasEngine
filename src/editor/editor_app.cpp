@@ -1,4 +1,6 @@
 #include "editor_app.h"
+#include "world_streaming_layer.h"
+#include "hlod_viewer_layer.h"
 
 #include <filesystem>
 #include <iostream>
@@ -167,6 +169,9 @@ try {
     m_Window->setFileDropCallback([this](const std::vector<std::string>& paths) {
         onExternalFileDrop(paths);
     });
+    // Walnut-style tool/debug layers (render on top of the editor UI).
+    m_LayerStack.pushLayer<WorldStreamingLayer>(this);
+    m_LayerStack.pushOverlay<HLODViewerLayer>(this);
 } catch (const std::exception& e) {
     throw std::runtime_error(std::string("EditorApp startup failed at step '") + m_InitStep + "': " + e.what());
 } catch (...) {
@@ -1148,6 +1153,52 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
     return entity;
 }
 
+Entity EditorApp::createLightEntity(ECS::LightComponent::Type type, Entity parent) {
+    if (!m_Scene) {
+        return entt::null;
+    }
+
+    auto entity = m_Scene->createEntity("Light");
+    auto& registry = m_Scene->getRegistry();
+
+    if (parent != entt::null && registry.valid(parent)) {
+        m_Scene->setParent(entity, parent);
+    }
+
+    // Add Transform component
+    if (registry.all_of<Transform>(entity)) {
+        auto& transform = registry.get<Transform>(entity);
+        transform.position = (parent != entt::null && registry.valid(parent)) ? glm::vec3(0.0f) : getDefaultSpawnPosition();
+    }
+
+    // Add LightComponent
+    ECS::LightComponent light;
+    light.type = static_cast<uint32_t>(type);
+    light.color = glm::vec3(1.0f, 1.0f, 1.0f);
+    light.intensity = (type == ECS::LightComponent::Type::Directional) ? 50.0f : 5.0f;
+    light.castShadows = (type == ECS::LightComponent::Type::Directional);
+    light.direction = (type == ECS::LightComponent::Type::Directional) ? glm::vec3(0.0f, -1.0f, 0.0f) : glm::vec3(0.0f, -1.0f, 0.0f);
+    
+    if (type == ECS::LightComponent::Type::Directional) {
+        light.castShadows = true;
+    }
+    
+    registry.emplace_or_replace<ECS::LightComponent>(entity, light);
+
+    // Add a name based on type
+    switch (type) {
+        case ECS::LightComponent::Type::Directional: registry.emplace<Atlas::ECS::TagComponent>(entity, "Directional Light"); break;
+        case ECS::LightComponent::Type::Point: registry.emplace<Atlas::ECS::TagComponent>(entity, "Point Light"); break;
+        case ECS::LightComponent::Type::Spot: registry.emplace<Atlas::ECS::TagComponent>(entity, "Spot Light"); break;
+    }
+
+    if (m_UIManager) {
+        m_UIManager->setSelectedEntity(entity);
+    }
+
+    return entity;
+}
+
 void EditorApp::updateFollowCameras(Scene* scene, float deltaTime) {
     if (!scene) {
         return;
@@ -1398,6 +1449,14 @@ void EditorApp::enqueueImportRequest(const ImportRequest& req) {
             return;
         }
 
+        // Discover PBR texture sets next to the model (MTL-less OBJ fallback).
+        m_ActiveImportTextureSets = Atlas::discoverPbrTextureSets(m_ActiveImportFullPath);
+        {
+            int best = Atlas::bestPbrSetForModel(m_ActiveImportTextureSets, m_ActiveImportModelName);
+            m_ActiveImportOptions.textureSet =
+                (best >= 0) ? m_ActiveImportTextureSets[static_cast<size_t>(best)].name : std::string{};
+        }
+
         m_ShowImportOptionsPopup = true;
     }
 }
@@ -1421,6 +1480,42 @@ void EditorApp::renderImportOptionsPopup() {
         ImGui::DragFloat("Uniform Scale", &m_ActiveImportOptions.uniformScale, 0.01f, 0.001f, 1000.0f, "%.3f");
         ImGui::DragFloat3("Rotation (deg)", &m_ActiveImportOptions.rotationEulerDeg.x, 1.0f, -360.0f, 360.0f, "%.1f");
         ImGui::Checkbox("Import Textures", &m_ActiveImportOptions.loadTextures);
+        ImGui::BeginDisabled(!m_ActiveImportOptions.loadTextures);
+        {
+            int texSetIdx = 0; // 0 = None
+            for (size_t i = 0; i < m_ActiveImportTextureSets.size(); ++i) {
+                if (m_ActiveImportTextureSets[i].name == m_ActiveImportOptions.textureSet) {
+                    texSetIdx = static_cast<int>(i) + 1;
+                    break;
+                }
+            }
+            const std::string preview =
+                (texSetIdx > 0) ? m_ActiveImportTextureSets[static_cast<size_t>(texSetIdx) - 1].name : "None";
+            if (ImGui::BeginCombo("Texture Set (PBR)", preview.c_str())) {
+                const bool noneSel = (texSetIdx == 0);
+                if (ImGui::Selectable("None", noneSel)) {
+                    m_ActiveImportOptions.textureSet.clear();
+                }
+                if (noneSel) ImGui::SetItemDefaultFocus();
+                for (size_t i = 0; i < m_ActiveImportTextureSets.size(); ++i) {
+                    const bool sel = (texSetIdx == static_cast<int>(i) + 1);
+                    if (ImGui::Selectable(m_ActiveImportTextureSets[i].name.c_str(), sel)) {
+                        m_ActiveImportOptions.textureSet = m_ActiveImportTextureSets[i].name;
+                    }
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (texSetIdx > 0) {
+                const auto& s = m_ActiveImportTextureSets[static_cast<size_t>(texSetIdx) - 1];
+                if (s.combined.empty() && !s.metallic.empty() && !s.roughness.empty()) {
+                    ImGui::TextDisabled("metallic + roughness will be combined on import");
+                }
+            } else if (m_ActiveImportTextureSets.empty()) {
+                ImGui::TextDisabled("No PBR texture sets found next to the model");
+            }
+        }
+        ImGui::EndDisabled();
         ImGui::Checkbox("Import Animations", &m_ActiveImportOptions.importAnimations);
 
         ImGui::BeginDisabled(!m_ActiveImportOptions.importAnimations);
@@ -1461,6 +1556,12 @@ void EditorApp::renderImportOptionsPopup() {
                 }
 
                 if (resolveModelImportPath(m_ProjectManager.get(), m_ActiveImport.assetPath, m_ActiveImportFullPath, m_ActiveImportModelName)) {
+                    m_ActiveImportTextureSets = Atlas::discoverPbrTextureSets(m_ActiveImportFullPath);
+                    {
+                        int best = Atlas::bestPbrSetForModel(m_ActiveImportTextureSets, m_ActiveImportModelName);
+                        m_ActiveImportOptions.textureSet =
+                            (best >= 0) ? m_ActiveImportTextureSets[static_cast<size_t>(best)].name : std::string{};
+                    }
                     m_ShowImportOptionsPopup = true;
                 } else {
                     m_ActiveImport = ImportRequest{};
@@ -1998,6 +2099,8 @@ void EditorApp::run() {
             m_CameraController->update(deltaTime, allow);
         }
 
+        m_LayerStack.update(deltaTime);
+
         m_ImGuiManager->newFrame();
         ImGuizmo::BeginFrame();
 
@@ -2046,134 +2149,7 @@ void EditorApp::run() {
 
         m_UIManager->render(m_Viewport.getSceneTextureId(), m_Viewport.getGameTextureId(), m_GameModePlaying, m_GameModePaused);
 
-        // World streaming controls (debug)
-        if(m_UIManager->m_ShowWorldStreamingWindow) {
-            ImGui::Begin("World Streaming", &m_UIManager->m_ShowWorldStreamingWindow);
-            ImGui::Checkbox("Enabled", &m_WorldStreamingEnabled);
-            ImGui::DragFloat("Cell Size", &m_WorldCellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
-            ImGui::SliderInt("Load Radius (cells)", &m_WorldLoadRadius, 0, 16);
-            ImGui::Text("Active: %zu", m_WorldActiveCells.size());
-            ImGui::Text("Loading: %zu", m_WorldLoadingCells.size());
-            ImGui::DragFloat("Fail retry (sec)", &m_WorldFailRetrySeconds, 0.1f, 0.0f, 30.0f, "%.1f");
-            ImGui::Text("Failed: %zu", m_WorldFailedCells.size());
-            if (ImGui::Button("Clear Failed")) {
-                m_WorldFailedCells.clear();
-            }
-
-            if (m_WorldPartition) {
-                auto& cfg = m_WorldPartition->config();
-                ImGui::SeparatorText("Partition Culling");
-                ImGui::Checkbox("Enabled##partition", &cfg.enabled);
-                ImGui::Checkbox("Frustum Culling##partition", &cfg.useFrustumCulling);
-                ImGui::DragFloat("Cell Size##partition", &cfg.cellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
-                ImGui::SliderInt("Load Radius##partition", &cfg.loadRadiusCells, 0, 16);
-                ImGui::DragFloat("Load Range (m)", &cfg.loadRangeMeters, 5.0f, 0.0f, 5000.0f, "%.0f");
-                ImGui::DragFloat("HLOD0 Range (m)", &cfg.hlod0RangeMeters, 10.0f, 0.0f, 8000.0f, "%.0f");
-                ImGui::DragFloat("HLOD1 Range (m)", &cfg.hlod1RangeMeters, 25.0f, 0.0f, 20000.0f, "%.0f");
-                if (ImGui::Button("Rebuild##partition")) {
-                    m_WorldPartition->markDirty();
-                }
-                ImGui::Text("Loaded cells: %zu / %zu", m_WorldPartition->getLoadedCells().size(),
-                            m_WorldPartition->getCells().size());
-                ImGui::Text("Loaded geometry: %.1f MB", m_WorldPartition->getLoadedMemoryMB());
-                ImGui::DragFloat("Memory budget (MB)", &cfg.maxLoadedMemoryMB, 8.0f, 0.0f, 8192.0f, "%.0f");
-                ImGui::SeparatorText("Disk cache (§9)");
-                if (ImGui::Button("Save cell+HLOD cache")) {
-                    if (m_ProjectManager && m_ProjectManager->hasProject() && m_HLODSystem) {
-                        const std::string dir = m_ProjectManager->getAssetsPath() + "/world/cache";
-                        std::error_code ec;
-                        std::filesystem::create_directories(dir, ec);
-                        const bool okCells = m_WorldPartition->saveCellIndex(dir + "/cells.idx");
-                        const bool okHlod = m_HLODSystem->saveCache(dir + "/hlod_cache.bin");
-                        std::cerr << "[CACHE] save cells=" << okCells << " hlod=" << okHlod << " -> " << dir << std::endl;
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Load cell+HLOD cache")) {
-                    if (m_ProjectManager && m_ProjectManager->hasProject() && m_HLODSystem) {
-                        const std::string dir = m_ProjectManager->getAssetsPath() + "/world/cache";
-                        const size_t cells = m_WorldPartition->loadCellIndex(dir + "/cells.idx");
-                        const size_t hlodCells = m_HLODSystem->loadCache(dir + "/hlod_cache.bin");
-                        std::cerr << "[CACHE] load cells=" << cells << " hlodCells=" << hlodCells << std::endl;
-                    }
-                }
-            }
-
-            ImGui::SeparatorText("Culling Pipeline");
-            ImGui::Checkbox("Frustum##cull", &m_CullingConfig.enableFrustum);
-            ImGui::SameLine();
-            ImGui::Checkbox("Distance##cull", &m_CullingConfig.enableDistance);
-            ImGui::SameLine();
-            ImGui::Checkbox("ScreenSize##cull", &m_CullingConfig.enableScreenSize);
-            ImGui::Checkbox("Occlusion (software)##cull", &m_OcclusionConfig.enable);
-            ImGui::Text("Cells: %u tested / %u culled", m_LastCullingStats.cellsTested, m_LastCullingStats.cellsCulled);
-            ImGui::Text("Occluders: %u / box tests %u / culled %u", m_OcclusionCuller.getStats().occludersUsed,
-                        m_OcclusionCuller.getStats().boxTests, m_OcclusionCuller.getStats().boxesCulled);
-            ImGui::Text("Objects: %u tested / %u culled (%u tiny)", m_LastCullingStats.objectsTested,
-                        m_LastCullingStats.objectsCulled, m_LastCullingStats.screenSizeCulled);
-
-            ImGui::SeparatorText("LOD (screen-size)");
-            ImGui::Checkbox("LOD##lod", &m_LODConfig.enable);
-            ImGui::DragFloat("Impostor threshold", &m_LODConfig.impostorScreenSize, 0.001f, 0.001f, 0.2f, "%.3f");
-            ImGui::Text("LOD0 %u / LOD1 %u / LOD2 %u", m_LastLODStats.lod0Count, m_LastLODStats.lod1Count,
-                        m_LastLODStats.lod2Count);
-            ImGui::Text("Impostor %u / Culled %u", m_LastLODStats.impostorCount, m_LastLODStats.culledCount);
-
-            ImGui::SeparatorText("HLOD");
-            ImGui::Checkbox("HLOD##hlod", &m_HLODConfig.enableHLOD);
-            if (m_HLODSystem) {
-                ImGui::Text("Cached cells: %zu", m_HLODSystem->getCache().size());
-            }
-
-            ImGui::SeparatorText("Rendering (TDD §12)");
-            if (m_Renderer) {
-                bool inst = m_Renderer->isInstancingEnabled();
-                if (ImGui::Checkbox("GPU Instancing", &inst)) {
-                    m_Renderer->setInstancingEnabled(inst);
-                }
-                ImGui::Text("Draw calls: %u (instanced %u)", m_Renderer->getLastDrawCalls(),
-                            m_Renderer->getLastInstancedDraws());
-                ImGui::Text("Instances: %u / Tris: %u", m_Renderer->getLastInstancedInstances(),
-                            m_Renderer->getLastTriangles());
-                bool autoLOD = m_Renderer->isAutoLODEnabled();
-                if (ImGui::Checkbox("Auto LOD meshes", &autoLOD)) {
-                    m_Renderer->setAutoLODEnabled(autoLOD);
-                }
-                ImGui::Text("Simplified variants: %u / draws: %u", m_Renderer->getSimplifiedVariantCount(),
-                            m_Renderer->getLastSimplifiedDraws());
-                ImGui::SeparatorText("Procedural city (§12)");
-                ImGui::Text("Buildings: %zu (%zu blocks)", m_TestCity.buildingCount, m_TestCity.blockCount);
-                if (m_Renderer) {
-                    ImGui::Text("Impostor quads: %zu", m_Renderer->getImpostorDrawCount());
-                }
-                ImGui::SliderInt("Blocks per side", &m_TestCityBlocks, 2, 16);
-                if (ImGui::Button("Generate city")) {
-                    if (m_Scene && m_Renderer) {
-                        Atlas::clearGeneratedCity(m_Scene.get(), m_TestCity);
-                        Atlas::CityGenConfig cfg;
-                        cfg.blocksPerSide = m_TestCityBlocks;
-                        m_TestCity = Atlas::generateProceduralCity(m_Scene.get(), m_Renderer.get(), cfg);
-                        if (m_WorldPartition) {
-                            m_WorldPartition->markDirty();
-                        }
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Clear city")) {
-                    if (m_Scene) {
-                        Atlas::clearGeneratedCity(m_Scene.get(), m_TestCity);
-                        if (m_UIManager) {
-                            m_UIManager->clearSelection();
-                        }
-                        if (m_WorldPartition) {
-                            m_WorldPartition->markDirty();
-                        }
-                    }
-                }
-            }
-
-            ImGui::End();
-        }
+        m_LayerStack.renderUI();
 
         renderImportOptionsPopup();
         processPendingModels();
@@ -2661,6 +2637,14 @@ void EditorApp::processPendingModels() {
             meshData.ownerDevice = VK_NULL_HANDLE;
 
             ECS::MaterialComponent material;
+            // PBR fallback for MTL-less imports (bare OBJs + textures/ sets).
+            // Fills only paths assimp left empty; assimp/MTL results always win.
+            if (item.importOptions.loadTextures && !item.importOptions.textureSet.empty()) {
+                Atlas::fillEmptyPbrTexturePaths(item.basePath, item.importOptions.textureSet,
+                    meshData.baseColorTexturePath, meshData.normalTexturePath,
+                    meshData.metallicRoughnessTexturePath, meshData.aoTexturePath,
+                    meshData.emissiveTexturePath);
+            }
             material.baseColor = meshData.baseColor;
             material.metallic = meshData.metallic;
             material.roughness = meshData.roughness;

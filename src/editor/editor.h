@@ -8,14 +8,17 @@
 
 namespace Atlas {
 
-class Engine;
+class Engine; // Legacy forward decl (Editor::m_Engine); the live path uses EditorApp.
 
+// Base interface for Walnut-style editor layers pumped by LayerStack
+// (see layer_stack.h). Layers receive what they need via constructor
+// injection (Hazel/Cherno pattern); onAttach takes no engine pointer.
 class EditorLayer {
 public:
     EditorLayer() = default;
     virtual ~EditorLayer() = default;
 
-    virtual void onAttach(Engine* engine) { m_Engine = engine; }
+    virtual void onAttach() {}
     virtual void onDetach() {}
 
     virtual void update(float deltaTime) {}
@@ -23,11 +26,6 @@ public:
     virtual void renderUI() {}
 
     virtual void onResize(int width, int height) {}
-
-    Engine* getEngine() const { return m_Engine; }
-
-protected:
-    Engine* m_Engine = nullptr;
 };
 
 class Editor {

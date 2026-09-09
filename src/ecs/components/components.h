@@ -34,6 +34,8 @@ struct MeshComponent {
     }
 };
 
+
+
 struct MaterialComponent {
     glm::vec4 baseColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
     float metallic = 0.0f;
@@ -81,6 +83,8 @@ struct MaterialComponent {
     bool useEmissiveTexture = false;
 };
 
+
+
 struct RenderableComponent {
     bool visible = true;
     uint32_t renderOrder = 0;
@@ -103,6 +107,8 @@ struct HLODComponent {
     float screenSizeBias = 1.0f;  // Screen size threshold for LOD transition
     entt::entity ownerEntity = entt::null;
 };
+
+
 
 // Component to store HLOD mesh reference (for rendering)
 struct HLODMeshRef {
@@ -142,15 +148,16 @@ struct TagComponent {
 };
 
 struct LightComponent {
-    enum class Type : uint32_t {
-        Directional = 0,
-        Point = 1,
-        Spot = 2
-    };
-
-    Type type = Type::Point;
+    // Type encoded as uint32_t for shader compatibility (packed into direction.w)
+    // 0 = Directional, 1 = Point, 2 = Spot
+    enum class Type : uint32_t { Directional = 0, Point = 1, Spot = 2 };
+    uint32_t type = 1; // Point
     glm::vec3 color = glm::vec3(1.0f);
     float intensity = 1.0f;
+
+    // For directional lights: direction vector (normalized)
+    // For point/spot: unused (position comes from Transform)
+    glm::vec3 direction = glm::vec3(0.0f, -1.0f, 0.0f);
 
     float constant = 1.0f;
     float linear = 0.09f;
@@ -162,18 +169,26 @@ struct LightComponent {
     bool castShadows = false;
 };
 
+
+
 struct ParentComponent {
     entt::entity parent = entt::null;
 };
+
+
 
 struct ChildrenComponent {
     std::vector<entt::entity> children;
 };
 
+
+
 // Editor-only state used for soft deletes/hiding entities without releasing GPU resources.
 struct EditorHiddenComponent {
     bool hidden = true;
 };
+
+
 
 struct ScriptEntry {
     bool enabled = true;
@@ -213,11 +228,15 @@ struct RigidBodyComponent {
     bool allowSleep = true;
 };
 
+
+
 struct BoxColliderComponent {
     glm::vec3 halfExtent = glm::vec3(0.5f);
     glm::vec3 offset = glm::vec3(0.0f);
     bool isTrigger = false;
 };
+
+
 
 struct SphereColliderComponent {
     float radius = 0.5f;
@@ -225,12 +244,16 @@ struct SphereColliderComponent {
     bool isTrigger = false;
 };
 
+
+
 struct CapsuleColliderComponent {
     float radius = 0.5f;
     float halfHeight = 0.5f;
     glm::vec3 offset = glm::vec3(0.0f);
     bool isTrigger = false;
 };
+
+
 
 // Triangle-mesh collider (V1). Source geometry comes from the entity's own
 // ::Mesh component (meshPath): file meshes are reloaded from disk and cached
@@ -241,10 +264,9 @@ struct MeshColliderComponent {
     bool isTrigger = false;
     // Reserved: convex-hull approximation path (currently triangle soup).
     bool convex = false;
-
-    COMPONENT_FIELDS(MeshColliderComponent, &MeshColliderComponent::offset,
-                     &MeshColliderComponent::isTrigger, &MeshColliderComponent::convex)
 };
+
+
 
 // Skeletal animation (V1): one skeleton shared across skinned meshes + one clip player per entity.
 struct SkeletonComponent {
@@ -252,15 +274,21 @@ struct SkeletonComponent {
     std::vector<Atlas::Anim::AnimationClip> clips;
 };
 
+
+
 struct AnimationPlayerComponent {
     Atlas::Anim::AnimationPlayer player;
 };
+
+
 
 struct BonePoseOverrideComponent {
     bool enabled = false;
     std::vector<uint8_t> hasRotation;
     std::vector<glm::quat> rotation;
 };
+
+
 
 struct SkinnedMeshComponent {
     // Entity that owns the skeleton/clips/player state (usually the model root).
@@ -270,4 +298,288 @@ struct SkinnedMeshComponent {
     uint32_t bonePaletteOffsetBytes = 0;
 };
 
-}}
+
+
+}} // namespace Atlas::ECS
+
+// ============================================================================
+// Component field registrations (global scope: explicit specializations of
+// ecs::refl::ComponentFields must live in ecs::refl, so they cannot be nested
+// inside namespace Atlas::ECS).
+// ============================================================================
+
+COMPONENT_FIELDS(Atlas::ECS::MeshComponent,
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, meshPath, "Mesh Path")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, vertexBuffer, "Vertex Buffer")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, indexBuffer, "Index Buffer")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, vertexCount, "Vertex Count")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, indexCount, "Index Count")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, firstIndex, "First Index")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MeshComponent, vertexOffset, "Vertex Offset")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::MaterialComponent,
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, baseColor, "Base Color")
+        .tooltip("Base color of the material")
+        .color_picker(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, metallic, "Metallic")
+        .range(0.0f, 1.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, roughness, "Roughness")
+        .range(0.0f, 1.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, ambientOcclusion, "Ambient Occlusion")
+        .range(0.0f, 1.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, emissiveFactor, "Emissive Factor")
+        .tooltip("Emissive color factor")
+        .color_picker(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, alphaMode, "Alpha Mode")
+        .tooltip("Alpha blending mode"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, alphaCutoff, "Alpha Cutoff")
+        .range(0.0f, 1.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, doubleSided, "Double Sided"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, invertCulling, "Invert Culling"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, albedoTextureId, "Albedo Texture ID")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, albedoTexturePath, "Albedo Texture Path")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, useAlbedoTexture, "Use Albedo Texture"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, normalTextureId, "Normal Texture ID")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, normalTexturePath, "Normal Texture Path")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, useNormalTexture, "Use Normal Texture"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, metallicRoughnessTextureId, "Metallic/Roughness Texture ID")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, metallicRoughnessTexturePath, "Metallic/Roughness Texture Path")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, useMetallicRoughnessTexture, "Use Metallic/Roughness Texture"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, aoTextureId, "AO Texture ID")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, aoTexturePath, "AO Texture Path")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, useAOTexture, "Use AO Texture"),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, emissiveTextureId, "Emissive Texture ID")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, emissiveTexturePath, "Emissive Texture Path")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::MaterialComponent, useEmissiveTexture, "Use Emissive Texture"))
+
+COMPONENT_FIELDS(Atlas::ECS::HLODComponent,
+    COMPONENT_FIELD(Atlas::ECS::HLODComponent, currentLevel, "Current Level")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::HLODComponent, targetLevel, "Target Level")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::HLODComponent, screenSizeBias, "Screen Size Bias")
+        .range(0.1f, 8.0f)
+        .step(0.1f),
+    COMPONENT_FIELD(Atlas::ECS::HLODComponent, ownerEntity, "Owner Entity")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::LightComponent,
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, type, "Type")
+        .tooltip("Light type: 0=Directional, 1=Point, 2=Spot")
+        .range(0, 2)
+        .step(1),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, color, "Color")
+        .color_picker(true),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, intensity, "Intensity")
+        .range(0.0f, 100.0f)
+        .step(0.1f),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, direction, "Direction")
+        .tooltip("Light direction (for directional lights)"),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, constant, "Constant Attenuation")
+        .range(0.0f, 10.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, linear, "Linear Attenuation")
+        .range(0.0f, 1.0f)
+        .step(0.001f),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, quadratic, "Quadratic Attenuation")
+        .range(0.0f, 1.0f)
+        .step(0.001f),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, cutOff, "Cutoff Angle")
+        .range(0.0f, 90.0f)
+        .step(0.1f),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, outerCutOff, "Outer Cutoff")
+        .range(0.0f, 90.0f)
+        .step(0.1f),
+    COMPONENT_FIELD(Atlas::ECS::LightComponent, castShadows, "Cast Shadows")
+        .tooltip("Enable shadow casting for this light"))
+
+COMPONENT_FIELDS(Atlas::ECS::ParentComponent,
+    COMPONENT_FIELD(Atlas::ECS::ParentComponent, parent, "Parent Entity")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::ChildrenComponent,
+    COMPONENT_FIELD(Atlas::ECS::ChildrenComponent, children, "Children")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::EditorHiddenComponent,
+    COMPONENT_FIELD(Atlas::ECS::EditorHiddenComponent, hidden, "Hidden"))
+
+COMPONENT_FIELDS(Atlas::ECS::RigidBodyComponent,
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, motionType, "Motion Type")
+        .tooltip("Static / Dynamic / Kinematic"),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, friction, "Friction")
+        .range(0.0f, 2.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, restitution, "Restitution")
+        .range(0.0f, 2.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, linearDamping, "Linear Damping")
+        .range(0.0f, 10.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, angularDamping, "Angular Damping")
+        .range(0.0f, 10.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, gravityScale, "Gravity Scale")
+        .range(-10.0f, 10.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, continuous, "Continuous Collision"),
+    COMPONENT_FIELD(Atlas::ECS::RigidBodyComponent, allowSleep, "Allow Sleep"))
+
+COMPONENT_FIELDS(Atlas::ECS::BoxColliderComponent,
+    COMPONENT_FIELD(Atlas::ECS::BoxColliderComponent, halfExtent, "Half Extent")
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::BoxColliderComponent, offset, "Offset")
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::BoxColliderComponent, isTrigger, "Is Trigger"))
+
+COMPONENT_FIELDS(Atlas::ECS::SphereColliderComponent,
+    COMPONENT_FIELD(Atlas::ECS::SphereColliderComponent, radius, "Radius")
+        .range(0.01f, 100.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::SphereColliderComponent, offset, "Offset")
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::SphereColliderComponent, isTrigger, "Is Trigger"))
+
+COMPONENT_FIELDS(Atlas::ECS::CapsuleColliderComponent,
+    COMPONENT_FIELD(Atlas::ECS::CapsuleColliderComponent, radius, "Radius")
+        .range(0.01f, 100.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::CapsuleColliderComponent, halfHeight, "Half Height")
+        .range(0.01f, 100.0f)
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::CapsuleColliderComponent, offset, "Offset")
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::CapsuleColliderComponent, isTrigger, "Is Trigger"))
+
+COMPONENT_FIELDS(Atlas::ECS::MeshColliderComponent,
+    COMPONENT_FIELD(Atlas::ECS::MeshColliderComponent, offset, "Offset")
+        .step(0.01f),
+    COMPONENT_FIELD(Atlas::ECS::MeshColliderComponent, isTrigger, "Is Trigger"),
+    COMPONENT_FIELD(Atlas::ECS::MeshColliderComponent, convex, "Convex (reserved)")
+        .tooltip("Reserved for future convex-hull approximation")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::SkeletonComponent,
+    COMPONENT_FIELD(Atlas::ECS::SkeletonComponent, skeleton, "Skeleton")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::SkeletonComponent, clips, "Clips")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::AnimationPlayerComponent,
+    COMPONENT_FIELD(Atlas::ECS::AnimationPlayerComponent, player, "Animation Player")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::BonePoseOverrideComponent,
+    COMPONENT_FIELD(Atlas::ECS::BonePoseOverrideComponent, enabled, "Enabled"),
+    COMPONENT_FIELD(Atlas::ECS::BonePoseOverrideComponent, hasRotation, "Has Rotation")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::BonePoseOverrideComponent, rotation, "Rotation")
+        .read_only(true))
+
+COMPONENT_FIELDS(Atlas::ECS::SkinnedMeshComponent,
+    COMPONENT_FIELD(Atlas::ECS::SkinnedMeshComponent, skeletonEntity, "Skeleton Entity")
+        .tooltip("Entity owning the skeleton (usually the model root)")
+        .read_only(true),
+    COMPONENT_FIELD(Atlas::ECS::SkinnedMeshComponent, bonePaletteOffsetBytes, "Bone Palette Offset")
+        .tooltip("Per-frame byte offset into the renderer bone palette")
+        .read_only(true))
+
+
+// ============================================================================
+// Custom field renderers for engine types used by the components above.
+// Must live in ecs::refl::detail (NOT nested inside Atlas::ECS) and be
+// declared before any renderAutoComponentProperties<T> instantiation
+// (i.e. before ui_manager.cpp uses them).
+// ============================================================================
+
+namespace ecs { namespace refl { namespace detail {
+
+template <>
+struct FieldRenderer<Atlas::StringID> {
+    static void renderFieldImpl(Atlas::StringID& v, const FieldMeta& m) {
+        const char* label = (m.label && m.label[0]) ? m.label : "StringID";
+        ImGui::Text("%s: #%llu", label,
+                    static_cast<unsigned long long>(v.getID()));
+    }
+};
+
+template <>
+struct FieldRenderer<entt::entity> {
+    static void renderFieldImpl(entt::entity& v, const FieldMeta& m) {
+        const char* label = (m.label && m.label[0]) ? m.label : "Entity";
+        if (v == entt::null) {
+            ImGui::Text("%s: (none)", label);
+        } else {
+            ImGui::Text("%s: %u", label, static_cast<uint32_t>(v));
+        }
+    }
+};
+
+template <>
+struct FieldRenderer<Atlas::ECS::PhysicsMotionType> {
+    static void renderFieldImpl(Atlas::ECS::PhysicsMotionType& v, const FieldMeta& m) {
+        const char* label = (m.label && m.label[0]) ? m.label : "Motion Type";
+        const char* items[] = {"Static", "Dynamic", "Kinematic"};
+        int current = static_cast<int>(v);
+        if (current < 0 || current > 2) current = 0;
+        if (ImGui::Combo(label, &current, items, 3)) {
+            v = static_cast<Atlas::ECS::PhysicsMotionType>(current);
+        }
+    }
+};
+
+template <>
+struct FieldRenderer<Atlas::ECS::MaterialComponent::AlphaMode> {
+    static void renderFieldImpl(Atlas::ECS::MaterialComponent::AlphaMode& v, const FieldMeta& m) {
+        const char* label = (m.label && m.label[0]) ? m.label : "Alpha Mode";
+        const char* items[] = {"Opaque", "Mask", "Blend"};
+        int current = static_cast<int>(v);
+        if (current < 0 || current > 2) current = 0;
+        if (ImGui::Combo(label, &current, items, 3)) {
+            v = static_cast<Atlas::ECS::MaterialComponent::AlphaMode>(current);
+        }
+    }
+};
+
+template <>
+struct FieldRenderer<Atlas::ECS::HLODLevel> {
+    static void renderFieldImpl(Atlas::ECS::HLODLevel& v, const FieldMeta& m) {
+        const char* label = (m.label && m.label[0]) ? m.label : "HLOD Level";
+        if (m.read_only) {
+            const char* names[] = {"Full Detail", "HLOD0", "HLOD1"};
+            const int idx = static_cast<int>(v);
+            ImGui::Text("%s: %s", label, (idx >= 0 && idx < 3) ? names[idx] : "(unknown)");
+            return;
+        }
+        const char* items[] = {"Full Detail", "HLOD0", "HLOD1"};
+        int current = static_cast<int>(v);
+        if (current < 0 || current > 2) current = 0;
+        if (ImGui::Combo(label, &current, items, 3)) {
+            v = static_cast<Atlas::ECS::HLODLevel>(current);
+        }
+    }
+};
+
+} } } // namespace ecs::refl::detail
+  

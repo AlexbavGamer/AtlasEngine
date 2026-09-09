@@ -12,11 +12,14 @@
 #include <glm/glm.hpp>
 
 #include "editor_viewport.h"
+#include "editor.h"
+#include "layer_stack.h"
 #include "../imgui/imgui_manager.h"
 #include "../project/project_manager.h"
 #include "../ui/ui_manager.h"
 #include "../utils/camera_controller.h"
 #include "../utils/model_loader.h"
+#include "../utils/pbr_texture_sets.h"
 
 namespace Atlas {
 class WorldPartition;
@@ -38,6 +41,9 @@ class Scene;
 
 class EditorApp {
 public:
+    friend class WorldStreamingLayer;
+    friend class HLODViewerLayer;
+
     EditorApp();
     ~EditorApp();
 
@@ -50,6 +56,8 @@ private:
         bool importAnimations = true;
         bool startPlaying = true;
         bool loadTextures = true;
+        // PBR texture-set override (name from discoverPbrTextureSets, empty = none).
+        std::string textureSet;
     };
 
     struct PendingModel {
@@ -82,6 +90,7 @@ private:
     void cloneSceneToRuntime();
     Entity createPrimitiveEntity(const std::string& primitiveType, Entity parent = entt::null);
     Entity createGameCameraEntity(Entity parent = entt::null);
+    Entity createLightEntity(ECS::LightComponent::Type type = ECS::LightComponent::Type::Directional, Entity parent = entt::null);
     void resetEditorScene(bool createEditorCamera = true);
     void ensureEditorCamera();
     void rebindEditorCameraController();
@@ -183,6 +192,12 @@ private:
     std::string m_ActiveImportModelName;
     ImportOptions m_ActiveImportOptions;
     ImportOptions m_LastImportOptions;
+    // PBR sets discovered next to the active import (popup chooser).
+    std::vector<Atlas::PbrTextureSet> m_ActiveImportTextureSets;
+
+    // Walnut-style layer stack (tool/debug layers render on top of the editor UI).
+    // Declared last so layers detach before engine systems are torn down.
+    LayerStack<EditorLayer> m_LayerStack;
 };
 
 }

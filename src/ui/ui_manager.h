@@ -69,6 +69,7 @@ public:
 
     // Debug panels (owned/controlled by EditorApp)
     bool m_ShowWorldStreamingWindow = false;
+    bool m_ShowHLODViewerWindow = false;
 
     void updateProfiler(float deltaTime);
     void renderProfilerWindow();
@@ -379,6 +380,9 @@ private:
 
     struct SoftDeleteCommand final : UndoCommand {
         std::vector<Entity> entities;
+        // Direction of the redo step (undo applies the opposite). Delete and
+        // deactivate use hideOnRedo=true; re-activate uses hideOnRedo=false.
+        bool hideOnRedo = true;
 
         void setHidden(Atlas::Scene* scene, bool hidden) {
             if (!scene) return;
@@ -395,8 +399,8 @@ private:
             }
         }
 
-        void undo(Atlas::Scene* scene) override { setHidden(scene, false); }
-        void redo(Atlas::Scene* scene) override { setHidden(scene, true); }
+        void undo(Atlas::Scene* scene) override { setHidden(scene, !hideOnRedo); }
+        void redo(Atlas::Scene* scene) override { setHidden(scene, hideOnRedo); }
     };
 
     struct MaterialScalarState {
@@ -467,6 +471,17 @@ private:
     bool m_PropTransformMultiEditing = false;
     std::vector<Entity> m_PropTransformMultiEntities;
     std::vector<TransformState> m_PropTransformBeforeMulti;
+
+    // Inspector (Properties panel) filter text.
+    char m_InspectorFilter[128] = {};
+    // Hierarchy / Content Explorer / Console filters.
+    char m_HierarchyFilter[128] = {};
+    char m_ContentFilter[128] = {};
+    char m_ConsoleFilter[128] = {};
+    bool m_ConsoleShowInfo = true;
+    bool m_ConsoleShowWarn = true;
+    bool m_ConsoleShowError = true;
+    bool m_ConsoleAutoScroll = true;
 
     uint32_t m_PropNameEditEntityId = 0;
     bool m_PropNameEditing = false;

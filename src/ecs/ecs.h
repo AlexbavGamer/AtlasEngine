@@ -73,9 +73,14 @@ struct WorldChunk {
 struct Renderable {
     bool visible = true;
     uint32_t materialID = 0;
-
-    COMPONENT_FIELDS(Renderable, &Renderable::visible, &Renderable::materialID)
 };
+
+COMPONENT_FIELDS(Renderable,
+    COMPONENT_FIELD(Renderable, visible, "Visible")
+        .tooltip("Toggle rendering for this entity"),
+    COMPONENT_FIELD(Renderable, materialID, "Material ID")
+        .tooltip("Index into the renderer material palette")
+        .read_only(true))
 
 struct CameraBase {
     glm::vec3 position{0.0f, 0.0f, 5.0f};

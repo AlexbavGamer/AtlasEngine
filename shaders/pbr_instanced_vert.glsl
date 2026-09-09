@@ -6,9 +6,9 @@
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
-    mat4 viewProj;
+    mat4 view;
+    mat4 proj;
     vec4 baseColor;
-    vec4 emissiveFactor;
     float metallic;
     float roughness;
     float alphaCutoff;
@@ -49,7 +49,7 @@ void main() {
     vec4 localPos = skin * vec4(inPosition, 1.0);
     vec4 worldPos = pc.model * inInstance * localPos;
 
-    gl_Position = pc.viewProj * worldPos;
+    gl_Position = pc.proj * pc.view * worldPos;
     fragColor = pc.baseColor.rgb * inColor;
     fragTexCoord = inTexCoord;
     fragNormal = mat3(transpose(inverse(pc.model * inInstance))) * (mat3(skin) * inNormal);

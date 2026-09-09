@@ -7,6 +7,7 @@
 #include "ecs.h"
 #include "components/components.h"
 
+#include "../ui/inspector_widgets.h"
 #include <imgui.h>
 
 #include <cctype>
@@ -128,11 +129,14 @@ void renderComponentProperties(T& component, uint32_t entityId) {
             ImGui::Text("Bounds: (none)");
         }
     } else if constexpr (std::is_same_v<T, Camera> || std::is_same_v<T, EditorCamera>) {
-        ImGui::DragFloat3("Position##C", &component.position.x, 0.1f);
-        ImGui::DragFloat3("Target##C", &component.target.x, 0.1f);
-        ImGui::DragFloat("FOV##C", &component.fov, 1.0f, 1.0f, 180.0f);
-        ImGui::DragFloat("Near##C", &component.nearPlane, 0.1f);
-        ImGui::DragFloat("Far##C", &component.farPlane, 1.0f);
+        ::Atlas::InspectorUI::Vec3Row("Position", &component.position.x, 0.1f, "campos");
+        ::Atlas::InspectorUI::Vec3Row("Target", &component.target.x, 0.1f, "camtgt");
+        ::Atlas::InspectorUI::FieldRow("FOV");
+        ImGui::DragFloat("##fov", &component.fov, 1.0f, 1.0f, 180.0f);
+        ::Atlas::InspectorUI::FieldRow("Near");
+        ImGui::DragFloat("##near", &component.nearPlane, 0.1f);
+        ::Atlas::InspectorUI::FieldRow("Far");
+        ImGui::DragFloat("##far", &component.farPlane, 1.0f);
 
         if (component.nearPlane < 0.001f) component.nearPlane = 0.001f;
         if (component.farPlane < component.nearPlane + 0.001f) component.farPlane = component.nearPlane + 0.001f;
@@ -140,8 +144,10 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         // TDD §5: read-only live state + editable importance bias.
         const char* levelNames[] = {"LOD0", "LOD1", "LOD2", "Impostor", "Culled"};
         const uint8_t idx = (component.current <= 4) ? component.current : 0;
-        ImGui::Text("Level: %s (dist %.1fm, screen %.3f)", levelNames[idx], component.distance, component.screenSize);
-        ImGui::DragFloat("Importance bias##LOD", &component.screenSizeBias, 0.05f, 0.1f, 8.0f, "%.2f");
+        ::Atlas::InspectorUI::FieldRow("Level");
+        ImGui::Text("%s  (dist %.1fm, screen %.3f)", levelNames[idx], component.distance, component.screenSize);
+        ::Atlas::InspectorUI::FieldRow("Importance Bias");
+        ImGui::DragFloat("##bias", &component.screenSizeBias, 0.05f, 0.1f, 8.0f, "%.2f");
         if (component.screenSizeBias < 0.1f) component.screenSizeBias = 0.1f;
     } else if constexpr (std::is_same_v<T, Atlas::ECS::LightComponent>) {
         using LightT = Atlas::ECS::LightComponent;
@@ -160,9 +166,9 @@ void renderComponentProperties(T& component, uint32_t entityId) {
             ImGui::DragFloat("Linear##L", &component.linear, 0.001f, 0.0f, 1.0f);
             ImGui::DragFloat("Quadratic##L", &component.quadratic, 0.001f, 0.0f, 1.0f);
         }
-    } else if constexpr (is_auto_reflected_v<T>) {
-        // Automatic UI from COMPONENT_FIELDS (e.g. Renderable).
-        renderAutoComponentProperties(component);
+    } else if constexpr (::ecs::refl::ComponentFields<T>::count > 0) {
+        // Automatic UI from COMPONENT_FIELDS via new reflection system.
+        ::ecs::refl::renderAutoComponentProperties(component);
     }
     (void)entityId;
 

@@ -87,6 +87,10 @@ struct HLODConfig {
     bool enableHLOD = true;
     float transitionDistance = 20.0f; // distance over which cross-fade happens (meters) - reserved for smooth dithering window
     float ditheringDuration = 0.3f;   // seconds for transitionAlpha to go 0->1
+    // Screen-size selection for per-entity HLOD (fraction of viewport height,
+    // after HLOD screenSizeBias). Scale-aware: tiny/distant objects degrade.
+    float fullDetailMinScreen = 0.05f; // >= this -> FullDetail
+    float hlod0MinScreen = 0.01f;      // >= this -> HLOD0, else HLOD1
 };
 
 using HLODCache = std::unordered_map<WorldCellCoord, std::vector<HLODActor>, WorldCellCoordHash>;
