@@ -25,8 +25,8 @@ struct StubLayer {
     explicit StubLayer(std::string n = "", std::vector<std::string>* l = nullptr)
         : name(std::move(n)), log(l) {}
 
-    void onAttach() { ++attachCount; }
-    void onDetach() { ++detachCount; }
+    void onAttach() { ++attachCount; if (log) log->push_back("attach:" + name); }
+    void onDetach() { ++detachCount; if (log) log->push_back("detach:" + name); }
     void update(float dt) { ++updateCount; lastDt = dt; if (log) log->push_back("update:" + name); }
     void render() { ++renderCount; }
     void renderUI() { ++renderUICount; if (log) log->push_back("ui:" + name); }
@@ -47,10 +47,11 @@ ATLAS_TEST(LayerStack, PushAttachesAndCounts) {
 }
 
 ATLAS_TEST(LayerStack, OverlaysRunAfterLayers) {
-    Atlas::LayerStack<StubLayer> stack;
     std::vector<std::string> log;
+    Atlas::LayerStack<StubLayer> stack;
     stack.pushOverlay<StubLayer>("overlay", &log);
     stack.pushLayer<StubLayer>("layer", &log);
+    log.clear(); // drop attach entries; only dispatch order matters below
     stack.renderUI();
     EXPECT_EQ(log.size(), 2u);
     EXPECT_TRUE(log[0] == "ui:layer");
@@ -62,21 +63,27 @@ ATLAS_TEST(LayerStack, OverlaysRunAfterLayers) {
 }
 
 ATLAS_TEST(LayerStack, PopDetachesOnlyItsKind) {
+    std::vector<std::string> log; // declared first: stack detaches into it on destruction
     Atlas::LayerStack<StubLayer> stack;
-    StubLayer* layer = stack.pushLayer<StubLayer>("l");
-    StubLayer* overlay = stack.pushOverlay<StubLayer>("o");
+    StubLayer* layer = stack.pushLayer<StubLayer>("l", &log);
+    StubLayer* overlay = stack.pushOverlay<StubLayer>("o", &log);
+    log.clear(); // drop attach entries; only detach events matter below
     // Wrong-kind pops fail and detach nothing.
     EXPECT_TRUE(!stack.popLayer(overlay));
     EXPECT_TRUE(!stack.popOverlay(layer));
+    EXPECT_TRUE(log.empty());
     EXPECT_EQ(layer->detachCount, 0);
     EXPECT_EQ(overlay->detachCount, 0);
-    // Right-kind pops detach exactly once.
+    // Right-kind pops detach exactly once (assert via log: the object is
+    // destroyed by pop, so its members must not be touched afterwards).
     EXPECT_TRUE(stack.popOverlay(overlay));
-    EXPECT_EQ(overlay->detachCount, 1);
+    EXPECT_EQ(log.size(), 1u);
+    EXPECT_TRUE(log[0] == "detach:o");
     EXPECT_TRUE(stack.popLayer(layer));
-    EXPECT_EQ(layer->detachCount, 1);
+    EXPECT_EQ(log.size(), 2u);
+    EXPECT_TRUE(log[1] == "detach:l");
     EXPECT_TRUE(stack.empty());
-    // Double pop fails.
+    // Double pop fails (address compare only — both pointers dangle here).
     EXPECT_TRUE(!stack.popLayer(layer));
 }
 
@@ -92,12 +99,18 @@ ATLAS_TEST(LayerStack, ResizeBroadcastsToAll) {
 }
 
 ATLAS_TEST(LayerStack, ClearDetachesEverything) {
+    std::vector<std::string> log; // declared first: stack detaches into it on destruction
     Atlas::LayerStack<StubLayer> stack;
-    StubLayer* a = stack.pushLayer<StubLayer>("a");
-    StubLayer* b = stack.pushOverlay<StubLayer>("b");
+    stack.pushLayer<StubLayer>("a", &log);
+    stack.pushOverlay<StubLayer>("b", &log);
+    log.clear(); // drop attach entries; only detach events matter below
     stack.clear();
-    EXPECT_EQ(a->detachCount, 1);
-    EXPECT_EQ(b->detachCount, 1);
+    // Overlays detach first (back to front), then layers.
+    // Assert via log: clear() destroys the objects, so their members must
+    // not be touched afterwards (use-after-free).
+    EXPECT_EQ(log.size(), 2u);
+    EXPECT_TRUE(log[0] == "detach:b");
+    EXPECT_TRUE(log[1] == "detach:a");
     EXPECT_TRUE(stack.empty());
     EXPECT_EQ(stack.layerCount(), 0u);
 }

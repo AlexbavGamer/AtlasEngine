@@ -75,7 +75,10 @@ jobs:
       - name: Generate + build
         run: |
           premake5 ninja
-          ninja -C build AtlasEngine_Release
+          ninja -C build AtlasEngine_Release AtlasTests_Release
+
+      - name: Run unit tests
+        run: ./bin/Release/AtlasTests
 
       - name: Stage Linux artifact
         run: |
@@ -183,7 +186,11 @@ jobs:
         run: |
           export PATH="$VULKAN_SDK/Bin:$PATH"
           premake5 ninja
-          ninja -C build AtlasEngine_Release
+          ninja -C build AtlasEngine_Release AtlasTests_Release
+
+      - name: Run unit tests
+        shell: bash
+        run: ./bin/Release/AtlasTests.exe
 
       - name: Stage Windows artifact
         shell: pwsh

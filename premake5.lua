@@ -418,4 +418,23 @@ project "AtlasEngine"
 -- ---------------------------------------------------------------------------
 -- AtlasTests — stdlib-only unit tests (no Vulkan, fast to build/run)
 -- ---------------------------------------------------------------------------
--- AtlasTests removed.
+project "AtlasTests"
+    kind "ConsoleApp"
+    language "C++"
+    cppdialect "C++17"
+
+    targetdir "bin/%{cfg.buildcfg}"
+    debugdir "bin/%{cfg.buildcfg}"
+
+    files {
+        "tests/**.cpp",
+        "tests/**.h",
+        "src/export/package_manifest.cpp",
+        "src/renderer/render_resources.cpp",
+        "src/renderer/render_resources.h",
+    }
+
+    includedirs {
+        "src",
+        "tests",
+    }
