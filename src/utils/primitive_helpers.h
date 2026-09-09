@@ -10,7 +10,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../renderer/vertex.h"
-#include "../utils/model_loader.h"
+#include "../utils/mesh_data.h"
 
 namespace Atlas::PrimitiveHelpers {
 

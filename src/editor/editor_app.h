@@ -18,7 +18,7 @@
 #include "../project/project_manager.h"
 #include "../ui/ui_manager.h"
 #include "../utils/camera_controller.h"
-#include "../utils/model_loader.h"
+#include "../utils/mesh_data.h"
 #include "../utils/pbr_texture_sets.h"
 
 namespace Atlas {
