@@ -205,6 +205,7 @@ std::unordered_map<uint32_t, entt::entity> applyGameScene(
             sun.color = src.sunColor;
             sun.intensity = src.sunIntensity;
             sun.castShadows = src.sunCastShadows;
+            sun.shadowRange = src.sunShadowRange;
             registry.emplace_or_replace<Atlas::ECS::SunComponent>(entity, sun);
         }
         if (src.hasSky) {

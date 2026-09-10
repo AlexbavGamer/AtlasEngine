@@ -16,7 +16,7 @@ constexpr const char* kMagicText = "ATLAS_SCENE_V1";
 
 // Binary format magic/version
 constexpr uint8_t kMagicBin[] = {'A','T','L','A','S','_','S','C','N','_','B','I','N'};
-constexpr uint32_t kBinVersion = 1;
+constexpr uint32_t kBinVersion = 2;
 
 std::string escapeString(const std::string& value) {
     std::ostringstream oss;
@@ -475,6 +475,7 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
             if (!writeVec3(out, s.color)) return false;
             if (!writeF32(out, s.intensity)) return false;
             if (!writeU8(out, s.castShadows ? 1 : 0)) return false;
+            if (!writeF32(out, s.shadowRange)) return false;
         }
 
         if (flags & kHasSky) {
@@ -540,7 +541,7 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
 
 bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
     uint32_t version = 0;
-    if (!readU32(in, version) || version != kBinVersion) {
+    if (!readU32(in, version) || version < 1 || version > kBinVersion) {
         return false;
     }
 
@@ -670,6 +671,10 @@ bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
             if (!readF32(in, e.sunIntensity)) return false;
             if (!readU8(in, castShadows)) return false;
             e.sunCastShadows = (castShadows != 0);
+            // v2 added the shadow range; v1 files keep the default.
+            if (version >= 2) {
+                if (!readF32(in, e.sunShadowRange)) return false;
+            }
         }
 
         if (flags & kHasSky) {

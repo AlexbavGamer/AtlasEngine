@@ -128,6 +128,10 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
   only a sub-near sliver); the shadow ortho needed an explicit remap to
   `[0,1]` (`proj[2][2]*=0.5; proj[3][2]*0.5+0.5`) — without it the whole
   depth map came out empty. Touch this code only with a GPU readback.
+- Quality (v1 polish): 5x5 manual PCF + slope-scaled bias + receiver normal
+  offset; `SunComponent::shadowRange` drives the frustum half-extent live
+  (smaller = sharper, less coverage). Scene format is v2 (range appended
+  to the sun block; v1 files load with the default).
 - NOTE: `LightBuffer` layout is std140-sensitive — the `static_assert`s on
   `Light` (48B) / `LightBuffer` (304B) in `renderer.h` must match
   `pbr_frag.glsl` exactly; change both sides together.

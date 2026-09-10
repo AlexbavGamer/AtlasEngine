@@ -160,6 +160,9 @@ struct SunComponent {
     glm::vec3 color = glm::vec3(1.0f, 0.96f, 0.90f);
     float intensity = 3.0f;
     bool castShadows = true;
+    // Shadow frustum half-extent in meters (smaller = sharper shadows, less
+    // coverage). The map is fixed 2048px, so texel size = 2*range/2048.
+    float shadowRange = 80.0f;
 
     // Unit vector pointing FROM the scene TOWARD the sun.
     glm::vec3 sunDirection() const {

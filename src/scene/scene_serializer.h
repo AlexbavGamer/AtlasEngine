@@ -96,6 +96,8 @@ struct SerializedEntity {
     glm::vec3 sunColor = glm::vec3(1.0f, 0.96f, 0.90f);
     float sunIntensity = 3.0f;
     bool sunCastShadows = true;
+    // v2+: shadow frustum half-extent (m). Absent in v1 files -> default.
+    float sunShadowRange = 80.0f;
 
     bool hasSky = false;
     bool skyEnabled = true;

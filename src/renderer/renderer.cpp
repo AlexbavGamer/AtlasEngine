@@ -2246,6 +2246,9 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
     int slot = 0;
     entt::entity casterEntity = entt::null;
     glm::vec3 shadowDir(0.0f, -1.0f, 0.0f);
+    // Shadow frustum half-extent (m): sun-owned when the sun casts (slider
+    // in the Sun inspector), legacy fixed extent for ad-hoc light casters.
+    float shadowExtent = kShadowOrthoExtent;
     if (scene) {
         auto& registry = scene->getRegistry();
         if (const ECS::SunComponent* sun = findFirstSun(registry)) {
@@ -2260,6 +2263,7 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
             dst.direction = sun->lightDirection();
             dst.position = cameraTarget - dst.direction * 100.0f;
             shadowDir = dst.direction;
+            shadowExtent = glm::clamp(sun->shadowRange, 5.0f, 250.0f);
             if (sun->castShadows && toSun.y > 0.0f) {
                 for (auto e : registry.view<ECS::SunComponent>()) {
                     casterEntity = e;
@@ -2322,8 +2326,9 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
     }
 
     if (m_ShadowsEnabled && casterEntity != entt::null) {
-        // Fixed ortho frustum around the main-camera target (v1; see ARCHITECTURE.md).
-        const float e = kShadowOrthoExtent;
+        // Fixed ortho frustum around the main-camera target (v1; extent from
+        // the sun slider, see ARCHITECTURE.md).
+        const float e = shadowExtent;
         const glm::vec3 center = cameraTarget;
         const glm::vec3 lightPos = center - shadowDir * (e * 1.5f);
         const glm::vec3 up = (std::abs(shadowDir.y) > 0.99f) ? glm::vec3(0.0f, 0.0f, -1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);

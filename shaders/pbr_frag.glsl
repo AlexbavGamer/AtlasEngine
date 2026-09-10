@@ -109,17 +109,17 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 // NOTE: the C++ shadowViewProj is a raw view*proj (NDC in [-1,1]); the
 // *0.5+0.5 scale-bias to sampler UV space happens here (same matrix wrote
 // the depth, so the mapping is self-consistent including the Y-flip).
-// 3x3 manual PCF (softer than the HW 2x2) + slope-scaled bias: grazing
-// surfaces need more bias (acne), facing surfaces nearly none.
+// 5x5 manual PCF (soft edges) + slope-scaled bias: grazing surfaces need
+// more bias (acne), facing surfaces nearly none.
 // shadowParams = (enabled, baseBias, mapSize, slopeScale). N is the
 // (possibly normal-mapped, double-side-flipped) surface normal.
 float sampleShadow(vec3 worldPos, vec3 N, float NdotL) {
     // Receiver-side normal offset: sample slightly off the surface along N.
     // This kills self-acne without the detachment of a large depth bias
     // (a fixed NDC bias detaches meters at low sun = peter-panning).
-    // Frustum width is fixed (2*kShadowOrthoExtent = 160m, keep in sync).
-    float texelWorld = 160.0 / max(lightData.shadowParams.z, 1.0);
-    vec3 anchor = worldPos + N * (texelWorld * 1.5);
+    // Fixed world-space offset (frustum-independent): the depth slope part
+    // is covered by the slope-scaled bias below.
+    vec3 anchor = worldPos + N * 0.05;
     vec4 sc = lightData.shadowViewProj * vec4(anchor, 1.0);
     vec3 proj = sc.xyz / max(sc.w, 0.0001);
     vec2 uv = proj.xy * 0.5 + 0.5;
@@ -130,12 +130,12 @@ float sampleShadow(vec3 worldPos, vec3 N, float NdotL) {
         - (1.0 - clamp(NdotL, 0.0, 1.0)) * lightData.shadowParams.w;
     vec2 texel = vec2(1.0) / max(lightData.shadowParams.z, 1.0);
     float sum = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
+    for (int x = -2; x <= 2; ++x) {
+        for (int y = -2; y <= 2; ++y) {
             sum += texture(shadowMap, vec3(uv + vec2(float(x), float(y)) * texel, ref));
         }
     }
-    return sum / 9.0;
+    return sum / 25.0;
 }
 
 void main() {

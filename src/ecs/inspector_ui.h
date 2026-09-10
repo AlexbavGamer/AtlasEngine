@@ -185,6 +185,9 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         ImGui::ColorEdit3("Color##Sun", &component.color.x);
         ImGui::DragFloat("Intensity##Sun", &component.intensity, 0.1f, 0.0f, 100.0f);
         ImGui::Checkbox("Cast shadows##Sun", &component.castShadows);
+        ImGui::DragFloat("Shadow range##Sun", &component.shadowRange, 1.0f, 5.0f, 250.0f, "%.0f m");
+        if (component.shadowRange < 5.0f) component.shadowRange = 5.0f;
+        ImGui::TextDisabled("Smaller range = sharper shadows, less coverage.");
         const glm::vec3 toSun = component.sunDirection();
         ImGui::TextDisabled("Dir (to sun): %.2f %.2f %.2f", toSun.x, toSun.y, toSun.z);
     } else if constexpr (std::is_same_v<T, Atlas::ECS::SkyComponent>) {
