@@ -65,3 +65,31 @@ ATLAS_TEST(PackageManifest, UnknownKeyFails) {
     EXPECT_TRUE(!Atlas::Export::loadPackageManifest(path, out));
     std::remove(path.c_str());
 }
+
+ATLAS_TEST(PackageManifest, PakFileRoundTrip) {
+    Atlas::Export::PackageManifest in;
+    in.pakFile = "game.pak";
+    const std::string path = tempPath("atlas_manifest_pak.txt");
+    EXPECT_TRUE(Atlas::Export::savePackageManifest(in, path));
+
+    Atlas::Export::PackageManifest out;
+    EXPECT_TRUE(Atlas::Export::loadPackageManifest(path, out));
+    EXPECT_EQ(out.pakFile, std::string("game.pak"));
+    std::remove(path.c_str());
+}
+
+ATLAS_TEST(PackageManifest, MissingPakFileDefaultsEmpty) {
+    // Pre-pak manifests have no pak_file line: must load with empty default
+    // (loose-file mode), not fail.
+    const std::string path = tempPath("atlas_manifest_nopak.txt");
+    FILE* f = std::fopen(path.c_str(), "w");
+    EXPECT_TRUE(f != nullptr);
+    std::fputs("ATLAS_PACKAGE_V1\nstartup_scene \"assets/scenes/main.scene\"\n", f);
+    std::fclose(f);
+
+    Atlas::Export::PackageManifest out;
+    EXPECT_TRUE(Atlas::Export::loadPackageManifest(path, out));
+    EXPECT_EQ(out.pakFile, std::string(""));
+    EXPECT_EQ(out.startupScene, std::string("assets/scenes/main.scene"));
+    std::remove(path.c_str());
+}

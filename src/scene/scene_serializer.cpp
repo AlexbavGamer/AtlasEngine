@@ -960,6 +960,23 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
     return saveToBinary(scene, out);
 }
 
+bool SceneSerializer::loadFromMemory(const uint8_t* data, size_t size, SerializedScene& outScene) {
+    if (size > 0 && !data) return false;
+    const char* bytes = data ? reinterpret_cast<const char*>(data) : "";
+    // Same dispatch as loadFromFile: binary magic first, else legacy text.
+    if (size >= sizeof(kMagicBin) && std::memcmp(bytes, kMagicBin, sizeof(kMagicBin)) == 0) {
+        std::string rest(bytes + sizeof(kMagicBin), size - sizeof(kMagicBin));
+        std::istringstream in(std::move(rest), std::ios::binary);
+        return loadFromBinary(in, outScene);
+    }
+    std::istringstream in(std::string(bytes, size));
+    return loadFromText(in, outScene);
+}
+
+bool SceneSerializer::loadFromMemory(const std::vector<uint8_t>& data, SerializedScene& outScene) {
+    return loadFromMemory(data.data(), data.size(), outScene);
+}
+
 bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& outScene) {
     // Detect format
     {

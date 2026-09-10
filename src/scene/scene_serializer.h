@@ -125,6 +125,10 @@ class SceneSerializer {
 public:
     static bool saveToFile(Scene& scene, const std::string& path);
     static bool loadFromFile(const std::string& path, SerializedScene& outScene);
+    // Memory twin of loadFromFile (same magic dispatch: binary vs legacy
+    // text). Feeds bytes from the VFS so packed games never touch disk.
+    static bool loadFromMemory(const uint8_t* data, size_t size, SerializedScene& outScene);
+    static bool loadFromMemory(const std::vector<uint8_t>& data, SerializedScene& outScene);
 };
 
 } // namespace Atlas

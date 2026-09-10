@@ -23,6 +23,8 @@
 #include "scene/scene.h"
 #include "scene/scene_serializer.h"
 #include "assets/asset_manager.h"
+#include "assets/vfs/filesystem.h"
+#include "assets/vfs/pack_reader.h"
 #include "export/package_manifest.h"
 #include "physics/physics_system.h"
 #include "platform/window.h"
@@ -345,6 +347,24 @@ int main(int argc, char** argv) {
         const std::string assetsRoot = (std::filesystem::path(packageRoot) / manifest.assetsRoot).lexically_normal().string();
         const std::string scenePath = (std::filesystem::path(packageRoot) / manifest.startupScene).lexically_normal().string();
 
+        // Mount the asset pack first (if the manifest names one), then the
+        // loose package dir as fallback/dev override. With no pack, every
+        // read below degrades to direct disk access (unchanged behavior).
+        auto& vfs = Atlas::VFS::FileSystem::instance();
+        if (!manifest.pakFile.empty()) {
+            const std::string pakPath =
+                (std::filesystem::path(packageRoot) / manifest.pakFile).lexically_normal().string();
+            std::string packErr;
+            auto pack = Atlas::VFS::PackReader::open(pakPath, packErr);
+            if (pack) {
+                vfs.mountPack(std::move(pack), 0);
+            } else {
+                std::cerr << "[Game] WARNING: cannot mount pack '" << pakPath << "' (" << packErr
+                          << "); using loose files" << std::endl;
+            }
+        }
+        vfs.mountLoose(packageRoot, -1);
+
         Atlas::Window window(kWindowWidth, kWindowHeight, kWindowTitle);
         Atlas::Renderer renderer(&window);
         renderer.init();
@@ -368,7 +388,17 @@ int main(int argc, char** argv) {
         scriptEngine.setInputEnabled(true);
 
         Atlas::SerializedScene serializedScene;
-        if (!Atlas::SceneSerializer::loadFromFile(scenePath, serializedScene)) {
+        // manifest.startupScene is already a virtual path ("assets/...");
+        // resolve through the VFS (pack first, loose dir second) and parse
+        // from memory. Legacy direct path kept as a last-resort fallback.
+        std::vector<uint8_t> sceneBytes;
+        bool sceneOk = false;
+        if (Atlas::VFS::FileSystem::instance().readAll(manifest.startupScene, sceneBytes)) {
+            sceneOk = Atlas::SceneSerializer::loadFromMemory(sceneBytes, serializedScene);
+        } else {
+            sceneOk = Atlas::SceneSerializer::loadFromFile(scenePath, serializedScene);
+        }
+        if (!sceneOk) {
             std::cerr << "[Game] Failed to load scene: " << scenePath << std::endl;
             return EXIT_FAILURE;
         }

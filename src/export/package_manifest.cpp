@@ -31,6 +31,9 @@ bool savePackageManifest(const PackageManifest& manifest, const std::string& pat
     out << "assets_root " << quote(manifest.assetsRoot) << '\n';
     out << "use_embedded_shaders " << (manifest.useEmbeddedShaders ? 1 : 0) << '\n';
     out << "shaders_path " << quote(manifest.shadersPath) << '\n';
+    if (!manifest.pakFile.empty()) {
+        out << "pak_file " << quote(manifest.pakFile) << '\n';
+    }
     return true;
 }
 
@@ -57,6 +60,8 @@ bool loadPackageManifest(const std::string& path, PackageManifest& outManifest) 
             manifest.useEmbeddedShaders = (value != 0);
         } else if (token == "shaders_path") {
             if (!readQuoted(in, manifest.shadersPath)) return false;
+        } else if (token == "pak_file") {
+            if (!readQuoted(in, manifest.pakFile)) return false;
         } else {
             return false;
         }
