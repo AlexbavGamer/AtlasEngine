@@ -4229,6 +4229,11 @@ void UIManager::renderMenuBar() {
                 if (ImGui::ColorEdit3("Background", &color.x, ImGuiColorEditFlags_Float)) {
                     renderer->setClearColor(color);
                 }
+                // Global shadow-map switch (Sun "Cast shadows" picks the caster).
+                bool shadows = renderer->isShadowsEnabled();
+                if (ImGui::MenuItem("Shadows", nullptr, &shadows)) {
+                    renderer->setShadowsEnabled(shadows);
+                }
             }
             ImGui::EndMenu();
         }

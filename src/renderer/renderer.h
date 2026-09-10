@@ -455,7 +455,7 @@ private:
     VkFramebuffer m_ShadowFramebuffer = VK_NULL_HANDLE;
     VkPipelineLayout m_ShadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_ShadowPipeline = VK_NULL_HANDLE;
-    bool m_ShadowsEnabled = false; // TEMP-DIAG-SHADOW: disabled by default while diagnosing the gradient artifact
+    bool m_ShadowsEnabled = true; // global shadow-map switch (per-light/caster flags gate the rest)
     bool m_ShadowEnabledFrame = false;
     // Tracks the shadow image layout across frames: the render pass moves it
     // to SHADER_READ_ONLY when it runs; otherwise recordShadowPass issues a
