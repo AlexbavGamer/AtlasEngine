@@ -49,13 +49,6 @@ filter "configurations:Debug"
 filter "configurations:Release"
     defines { "NDEBUG" }
     optimize "Speed"
-
-filter "system:windows"
-    buildoptions {
-        "-Wa,-mbig-obj",
-    }
-
-filter {}
 -- ---------------------------------------------------------------------------
 -- Dependencies (header-only) — just include dirs, referenced by AtlasEngine
 -- ---------------------------------------------------------------------------
@@ -419,7 +412,11 @@ project "AtlasEngine"
     }
 
     filter "system:windows"
-        links { "ole32", "shell32", "shlwapi", "uuid", "ws2_32", "dbghelp", "gdi32" }
+    links { "ole32", "shell32", "shlwapi", "uuid", "ws2_32", "dbghelp", "gdi32" }
+
+    buildoptions {
+        "-Wa,-mbig-obj",
+    }
 
     filter {}
 
