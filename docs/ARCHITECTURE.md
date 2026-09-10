@@ -24,30 +24,29 @@ Rules:
 
 ## Known violations (do not extend)
 
-- `src/ecs/ecs.h ::Mesh` still stores `VkBuffer`/`VkDeviceMemory` (marked
-  DEPRECATED in-code), but no longer includes `<imgui.h>`: inspector UI moved
-  to `src/ecs/inspector_ui.h` (only `ui/ui_manager.cpp` includes it).
-  Handle wiring (Phase 2, done): every GPU mesh backing a `::Mesh` carries
-  `Mesh::renderMeshId` from `Renderer::getMeshRegistry()`
-  (`src/renderer/render_resources.h`):
-  - allocate: the 4 ownership-transfer sites (editor primitive creation,
-    editor model import, `game_main` primitive, city generator — the latter
-    shares ONE handle across all boxes, freed by the first/owning entity);
-  - publish: each site calls `setMeshData(handle, MeshBinding)` right after
-    `allocateMesh()` (Phase 3a) — the registry holds the bit-cast `Vk*`
-    binding + vertex/index counts and stays Vulkan-free (`uint64_t`);
+- `src/ecs/ecs.h ::Mesh` is Vulkan-free (Phase 3b, done): GPU handles live
+  only in the renderer-side `RenderResourceManager` as opaque `MeshHandle`s.
+  Inspector UI lives in `src/ecs/inspector_ui.h` (only `ui/ui_manager.cpp`
+  includes it). Handle wiring:
+  - allocate + publish: the 4 ownership-transfer sites (editor primitive
+    creation, editor model import, `game_main` primitive, city generator —
+    the latter shares ONE handle across all boxes, freed by the first/owning
+    entity) call `allocateMesh()` + `setMeshData()` back-to-back;
   - free: `EditorApp::onMeshDestroyed` (central `on_destroy` hook, under the
-    same `ownsGpuResources` guard as the deferred `vkDestroy` — mirror rule);
-    `freeMesh` also clears the slot binding so dead slots never resolve;
-  - draw (Phase 3a, done): ALL renderer paths (shadow, picking, main +
-    instancing batch keys, outline, auto-LOD resolve) bind buffers via
-    `resolveMeshDrawBuffers()` → `getMeshData()`; `Mesh::Vk*` is only the
-    legacy fallback when `renderMeshId == 0`. `isMeshHandleLive` deleted.
+    same `ownsGpuResources` guard as before) resolves the binding via
+    `getMeshData()` for the deferred `vkDestroy`, then `freeMesh()` (which
+    also clears the slot binding so dead slots never resolve);
+  - draw: ALL renderer paths (shadow, picking, main + instancing batch keys,
+    outline, auto-LOD resolve) bind buffers via `resolveMeshDrawBuffers()`
+    → `getMeshData()`; there is no `Mesh::Vk*` fallback anymore.
+  - world systems (`lod.cpp`, `hlod.cpp`) gate on `Mesh::hasGpuBacking()`
+    and group by `renderMeshId` — never touching `Vk*` objects.
   - the standalone game never destroys meshes (no hook) → handles live until
     exit, mirroring the pre-existing Vk-buffer behavior.
-  Remaining (Phase 3b): delete the deprecated `Mesh::Vk*` fields (+ serializer
-  migration); handle 0 legacy path goes with them. Covered by
-  `tests/test_render_resources.cpp` (publish/resolve, stale isolation).
+  - serializer: no migration needed — only `primitiveType`/`meshPath` are
+    persisted; GPU buffers are recreated on load through the same
+    allocate+publish sites. Covered by `tests/test_render_resources.cpp`
+    (publish/resolve, stale isolation).
 - `src/ecs/components/components.h ::MeshComponent` was deleted (dead duplicate
   of `::Mesh` — never instantiated; only `SkinnedMeshComponent` remains).
   The header no longer includes `<vulkan/vulkan.h>`.

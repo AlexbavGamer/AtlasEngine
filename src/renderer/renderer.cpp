@@ -49,31 +49,22 @@ void setDebugName(VkDevice device, VkObjectType type, uint64_t handle, const cha
 }
 }
 
-// Phase 3a: resolve the buffers actually bound for a draw via the registry.
-// Handle != 0 → registry is the source of truth (dead/unpublished → skip).
-// Handle 0 → legacy fallback to Mesh::Vk* (old scenes, pending uploads).
-// Returns false when the entity must be skipped.
+// Phase 3b: resolve the buffers actually bound for a draw via the registry,
+// the sole source of truth. Mesh carries no Vk* fields anymore (ecs.h is
+// Vulkan-free). A dead/unpublished handle — including handle 0, which no
+// longer has a legacy path — skips the draw. Returns false to skip.
 static bool resolveMeshDrawBuffers(const Atlas::RenderResourceManager& registry, const Mesh& mesh,
                                    VkBuffer& outVB, VkBuffer& outIB, uint32_t& outIndexCount) {
-    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
-        Atlas::MeshBinding binding{};
-        if (!registry.getMeshData(mesh.renderMeshId, binding)) {
-            return false;
-        }
-        if (binding.vertexBuffer == 0 || binding.indexBuffer == 0 || binding.indexCount == 0) {
-            return false;
-        }
-        outVB = reinterpret_cast<VkBuffer>(binding.vertexBuffer);
-        outIB = reinterpret_cast<VkBuffer>(binding.indexBuffer);
-        outIndexCount = binding.indexCount;
-        return true;
-    }
-    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+    Atlas::MeshBinding binding{};
+    if (!registry.getMeshData(mesh.renderMeshId, binding)) {
         return false;
     }
-    outVB = mesh.vertexBuffer;
-    outIB = mesh.indexBuffer;
-    outIndexCount = mesh.indexCount;
+    if (binding.vertexBuffer == 0 || binding.indexBuffer == 0 || binding.indexCount == 0) {
+        return false;
+    }
+    outVB = reinterpret_cast<VkBuffer>(binding.vertexBuffer);
+    outIB = reinterpret_cast<VkBuffer>(binding.indexBuffer);
+    outIndexCount = binding.indexCount;
     return true;
 }
 

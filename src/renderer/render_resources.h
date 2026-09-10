@@ -9,12 +9,11 @@
 // Phase 1 (this file): CPU-side handle registry with generational indices.
 // Deliberately Vulkan-free (only <cstdint>/<vector>/<mutex>) so it stays
 // unit-testable in AtlasTests without a GPU.
-// Phase 2: store VkBuffer/VkDeviceMemory + descriptors per slot and consume
-//          Mesh::renderMeshId in renderer.cpp; then deprecate Mesh's Vk*.
-// Phase 3 (in progress): renderer draw paths resolve buffers through the
-//          registry (MeshBinding below); Mesh::Vk* are a legacy fallback for
-//          handle 0 only. (MeshComponent unification done: dead duplicate
-//          deleted; vertex.h moved to renderer/; city_generator.h Vulkan-free.)
+// Phase 2: per-slot MeshBinding (bit-cast Vk* + counts) published at upload.
+// Phase 3b (done): renderer draw/batching resolve solely via getMeshData();
+//   ::Mesh holds no Vk* fields and ecs.h is Vulkan-free. (MeshComponent
+//   unification done: dead duplicate deleted; vertex.h moved to renderer/;
+//   city_generator.h Vulkan-free; lod/hlod gate on hasGpuBacking()/handle.)
 
 #include <cstdint>
 #include <mutex>

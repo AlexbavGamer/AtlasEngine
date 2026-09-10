@@ -89,10 +89,8 @@ CityGenResult generateProceduralCity(Scene* scene, Renderer* renderer, const Cit
         }
         auto& mesh = registry.emplace<::Mesh>(entity);
         mesh.meshPath = "primitive://CityBox";
-        mesh.vertexBuffer = boxData.vertexBuffer;
-        mesh.indexBuffer = boxData.indexBuffer;
-        mesh.vertexMemory = boxData.vertexMemory;
-        mesh.indexMemory = boxData.indexMemory;
+        // Phase 3b: ::Mesh holds no Vk* fields; the shared GPU binding was
+        // published once above under sharedMeshHandle.
         mesh.renderMeshId = sharedMeshHandle;
         mesh.vertexCount = boxData.vertexCount;
         mesh.indexCount = boxData.indexCount;
@@ -103,8 +101,9 @@ CityGenResult generateProceduralCity(Scene* scene, Renderer* renderer, const Cit
         // Auto-LOD variants for the shared box mesh (once: first entity).
         // Cubes are tiny so the simplifier declines them; harmless uniform call.
         if (result.entities.empty()) {
-            cacheImportLODs(renderer, boxData, reinterpret_cast<uint64_t>(mesh.vertexBuffer),
-                              reinterpret_cast<uint64_t>(mesh.indexBuffer), false);
+            cacheImportLODs(renderer, boxData,
+                              reinterpret_cast<uint64_t>(boxData.vertexBuffer),
+                              reinterpret_cast<uint64_t>(boxData.indexBuffer), false);
         }
         ECS::MaterialComponent material;
         material.baseColor = color;

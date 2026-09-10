@@ -168,20 +168,20 @@ void generateHLOD0(
 
     auto& registry = scene->getRegistry();
 
-    // Group by (mesh GPU buffers + materialID): only entities sharing the
-    // exact same vertex/index buffers can be GPU-instanced in one draw.
+    // Group by (mesh registry handle + materialID): only entities sharing
+    // the exact same GPU geometry can be GPU-instanced in one draw.
+    // Phase 3b: the key is the opaque renderMeshId (::Mesh is Vulkan-free;
+    // shared handles e.g. city boxes group together by construction).
     struct HLOD0Key {
-        VkBuffer vertexBuffer = VK_NULL_HANDLE;
-        VkBuffer indexBuffer = VK_NULL_HANDLE;
+        uint32_t renderMeshId = 0;
         uint32_t materialID = 0;
         bool operator==(const HLOD0Key& o) const {
-            return vertexBuffer == o.vertexBuffer && indexBuffer == o.indexBuffer && materialID == o.materialID;
+            return renderMeshId == o.renderMeshId && materialID == o.materialID;
         }
     };
     struct HLOD0KeyHash {
         size_t operator()(const HLOD0Key& k) const noexcept {
-            size_t h = std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.vertexBuffer));
-            h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.indexBuffer) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+            size_t h = std::hash<uint32_t>{}(k.renderMeshId);
             h ^= std::hash<uint32_t>{}(k.materialID + 0x9e3779b9u + (h << 6) + (h >> 2));
             return h;
         }
@@ -194,7 +194,7 @@ void generateHLOD0(
             continue; // HLOD0 instancing needs shared GPU geometry
         }
         const auto& mesh = registry.get<::Mesh>(e);
-        if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+        if (!mesh.hasGpuBacking() || mesh.indexCount == 0) {
             continue;
         }
         // Skinned meshes need per-entity bone palettes: not instanceable here.
@@ -205,7 +205,7 @@ void generateHLOD0(
         if (registry.all_of<Renderable>(e)) {
             matID = registry.get<Renderable>(e).materialID;
         }
-        HLOD0Key key{mesh.vertexBuffer, mesh.indexBuffer, matID};
+        HLOD0Key key{mesh.renderMeshId, matID};
         byMeshMaterial[key].push_back(e);
     }
 

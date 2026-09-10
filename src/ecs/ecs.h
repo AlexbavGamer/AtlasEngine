@@ -1,7 +1,6 @@
 #pragma once
 
 #include <entt/entt.hpp>
-#include <vulkan/vulkan_core.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <string>
@@ -11,6 +10,7 @@
 #include <tuple>
 #include <type_traits>
 #include <vector>
+#include "../renderer/render_resources.h"
 #include "../world/lod.h"
 #include "reflection.h"
 
@@ -45,16 +45,19 @@ struct Mesh {
     std::string meshPath;
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
-    // DEPRECATED (Phase 3): kept until renderer.cpp stops reading these directly
-    // (draw/batching paths). New code must use renderMeshId via RenderResourceManager.
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-    VkDeviceMemory indexMemory = VK_NULL_HANDLE;
 
-    // RenderResourceManager handle (Phase 1: allocated by the renderer-side
-    // registry; Phase 2 will consume it and the Vk* members become deprecated).
-    uint32_t renderMeshId = 0;
+    // GPU resources live in the renderer-side RenderResourceManager and are
+    // referenced by this opaque handle (0 = none). Phase 3b complete:
+    // the deprecated VkBuffer/VkDeviceMemory fields are gone, so this
+    // header is Vulkan-free. Draw/batching paths resolve via
+    // RenderResourceManager::getMeshData().
+    Atlas::MeshHandle renderMeshId = Atlas::kInvalidMeshHandle;
+
+    // True when the renderer has published GPU data for this mesh.
+    // NOTE: liveness (not freed) is checked renderer-side via
+    // RenderResourceManager::getMeshData(); this is only the "has backing"
+    // gate for world systems that cannot touch GPU objects.
+    bool hasGpuBacking() const { return renderMeshId != Atlas::kInvalidMeshHandle; }
 
     // Ownership of GPU buffers/memory. Cloned/runtime scenes should not free shared handles.
     bool ownsGpuResources = true;

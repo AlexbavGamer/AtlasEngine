@@ -1101,30 +1101,24 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
 
     auto& mesh = registry.emplace<::Mesh>(entity);
     mesh.meshPath = "primitive://" + entityName;
-    mesh.vertexBuffer = meshData.vertexBuffer;
-    mesh.indexBuffer = meshData.indexBuffer;
-    mesh.vertexMemory = meshData.vertexMemory;
-    mesh.indexMemory = meshData.indexMemory;
+    // Phase 3b: ::Mesh holds no Vk* fields (ecs.h is Vulkan-free). GPU
+    // handles transfer straight from MeshData into the registry binding.
     if (createdMeshBuffers) {
         mesh.renderMeshId = m_Renderer->getMeshRegistry().allocateMesh();
+        Atlas::MeshBinding binding{};
+        binding.vertexBuffer = reinterpret_cast<uint64_t>(meshData.vertexBuffer);
+        binding.indexBuffer = reinterpret_cast<uint64_t>(meshData.indexBuffer);
+        binding.vertexMemory = reinterpret_cast<uint64_t>(meshData.vertexMemory);
+        binding.indexMemory = reinterpret_cast<uint64_t>(meshData.indexMemory);
+        binding.vertexCount = meshData.vertexCount;
+        binding.indexCount = meshData.indexCount;
+        m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
     }
     mesh.vertexCount = meshData.vertexCount;
     mesh.indexCount = meshData.indexCount;
     mesh.hasBounds = hasBounds;
     mesh.boundsMin = boundsMin;
     mesh.boundsMax = boundsMax;
-    // Phase 3a: publish the GPU binding so renderer draws resolve via the
-    // registry (Mesh::Vk* stays as legacy fallback for handle 0 only).
-    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
-        Atlas::MeshBinding binding{};
-        binding.vertexBuffer = reinterpret_cast<uint64_t>(mesh.vertexBuffer);
-        binding.indexBuffer = reinterpret_cast<uint64_t>(mesh.indexBuffer);
-        binding.vertexMemory = reinterpret_cast<uint64_t>(mesh.vertexMemory);
-        binding.indexMemory = reinterpret_cast<uint64_t>(mesh.indexMemory);
-        binding.vertexCount = mesh.vertexCount;
-        binding.indexCount = mesh.indexCount;
-        m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
-    }
 
     meshData.vertexBuffer = VK_NULL_HANDLE;
     meshData.indexBuffer = VK_NULL_HANDLE;
@@ -1356,20 +1350,20 @@ void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
         return;
     }
 
-    VkBuffer vb = mesh.vertexBuffer;
-    VkDeviceMemory vm = mesh.vertexMemory;
-    VkBuffer ib = mesh.indexBuffer;
-    VkDeviceMemory im = mesh.indexMemory;
+    // Phase 3b: GPU handles live only in the registry. Resolve the binding
+    // for the deferred vkDestroy, then release the handle — same ownership
+    // guard (ownsGpuResources checked on entry) as before.
+    Atlas::MeshBinding binding{};
+    const bool hasBinding =
+        m_Renderer->getMeshRegistry().getMeshData(mesh.renderMeshId, binding);
+    VkBuffer vb = hasBinding ? reinterpret_cast<VkBuffer>(binding.vertexBuffer) : VK_NULL_HANDLE;
+    VkDeviceMemory vm = hasBinding ? reinterpret_cast<VkDeviceMemory>(binding.vertexMemory) : VK_NULL_HANDLE;
+    VkBuffer ib = hasBinding ? reinterpret_cast<VkBuffer>(binding.indexBuffer) : VK_NULL_HANDLE;
+    VkDeviceMemory im = hasBinding ? reinterpret_cast<VkDeviceMemory>(binding.indexMemory) : VK_NULL_HANDLE;
 
-    mesh.vertexBuffer = VK_NULL_HANDLE;
-    mesh.vertexMemory = VK_NULL_HANDLE;
-    mesh.indexBuffer = VK_NULL_HANDLE;
-    mesh.indexMemory = VK_NULL_HANDLE;
-    // Mirror the deferred vkDestroy above: release the registry handle under
-    // the exact same ownership guard (ownsGpuResources checked on entry).
     if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
         m_Renderer->getMeshRegistry().freeMesh(mesh.renderMeshId);
-        mesh.renderMeshId = 0;
+        mesh.renderMeshId = Atlas::kInvalidMeshHandle;
     }
 
     m_Renderer->defer([device, vb, vm, ib, im]() {
@@ -2620,27 +2614,21 @@ void EditorApp::processPendingModels() {
 
             auto& mesh = m_Scene->getRegistry().emplace<::Mesh>(entity);
             mesh.meshPath = item.basePath + "#" + meshData.name;
-            mesh.vertexBuffer = meshData.vertexBuffer;
-            mesh.indexBuffer = meshData.indexBuffer;
-            mesh.vertexMemory = meshData.vertexMemory;
-            mesh.indexMemory = meshData.indexMemory;
+            // Phase 3b: ::Mesh holds no Vk* fields. GPU handles transfer
+            // straight from MeshData into the registry binding.
             if (createdMeshBuffers) {
                 mesh.renderMeshId = m_Renderer->getMeshRegistry().allocateMesh();
+                Atlas::MeshBinding binding{};
+                binding.vertexBuffer = reinterpret_cast<uint64_t>(meshData.vertexBuffer);
+                binding.indexBuffer = reinterpret_cast<uint64_t>(meshData.indexBuffer);
+                binding.vertexMemory = reinterpret_cast<uint64_t>(meshData.vertexMemory);
+                binding.indexMemory = reinterpret_cast<uint64_t>(meshData.indexMemory);
+                binding.vertexCount = meshData.vertexCount;
+                binding.indexCount = meshData.indexCount;
+                m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
             }
             mesh.vertexCount = meshData.vertexCount;
             mesh.indexCount = meshData.indexCount;
-            // Phase 3a: publish the GPU binding so renderer draws resolve
-            // via the registry (Mesh::Vk* stays as legacy fallback).
-            if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
-                Atlas::MeshBinding binding{};
-                binding.vertexBuffer = reinterpret_cast<uint64_t>(mesh.vertexBuffer);
-                binding.indexBuffer = reinterpret_cast<uint64_t>(mesh.indexBuffer);
-                binding.vertexMemory = reinterpret_cast<uint64_t>(mesh.vertexMemory);
-                binding.indexMemory = reinterpret_cast<uint64_t>(mesh.indexMemory);
-                binding.vertexCount = mesh.vertexCount;
-                binding.indexCount = mesh.indexCount;
-                m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
-            }
 
             // Compute local bounds while CPU vertices still exist.
             if (!meshData.vertices.empty()) {
@@ -2698,9 +2686,16 @@ void EditorApp::processPendingModels() {
             m_Scene->getRegistry().emplace_or_replace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
             // Auto-LOD variants while CPU data is alive (skipped for skinned).
             // NOTE: each submesh caches its own variants (keyed by its buffers).
-            Atlas::cacheImportLODs(m_Renderer.get(), meshData, reinterpret_cast<uint64_t>(mesh.vertexBuffer),
-                reinterpret_cast<uint64_t>(mesh.indexBuffer),
-                m_Scene->getRegistry().all_of<ECS::SkinnedMeshComponent>(entity));
+            // Phase 3b: buffer keys resolve via the registry (::Mesh holds
+            // no Vk* fields anymore).
+            if (const auto* meshPtr = m_Scene->getRegistry().try_get<::Mesh>(entity)) {
+                Atlas::MeshBinding lodBinding{};
+                if (m_Renderer->getMeshRegistry().getMeshData(meshPtr->renderMeshId, lodBinding)) {
+                    Atlas::cacheImportLODs(m_Renderer.get(), meshData, lodBinding.vertexBuffer,
+                        lodBinding.indexBuffer,
+                        m_Scene->getRegistry().all_of<ECS::SkinnedMeshComponent>(entity));
+                }
+            }
             meshData.freeCPUMemory();
         };
 

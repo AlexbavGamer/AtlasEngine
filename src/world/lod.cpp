@@ -93,7 +93,9 @@ LODStats updateLODSystem(Scene* scene,
             continue;
         }
         const auto& mesh = registry.get<::Mesh>(e);
-        if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+        // Phase 3b: GPU backing is tracked by registry handle (::Mesh is
+        // Vulkan-free; world systems never touch Vk* objects).
+        if (!mesh.hasGpuBacking() || mesh.indexCount == 0) {
             continue;
         }
 

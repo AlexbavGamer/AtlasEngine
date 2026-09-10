@@ -108,30 +108,24 @@ entt::entity createPrimitiveEntity(Atlas::Scene& scene, Atlas::Renderer& rendere
 
     auto& mesh = registry.emplace<Mesh>(entity);
     mesh.meshPath = "primitive://" + type;
-    mesh.vertexBuffer = meshData.vertexBuffer;
-    mesh.indexBuffer = meshData.indexBuffer;
-    mesh.vertexMemory = meshData.vertexMemory;
-    mesh.indexMemory = meshData.indexMemory;
+    // Phase 3b: ::Mesh holds no Vk* fields (ecs.h is Vulkan-free). GPU
+    // handles transfer straight from MeshData into the registry binding.
     if (createdMeshBuffers) {
         mesh.renderMeshId = renderer.getMeshRegistry().allocateMesh();
+        Atlas::MeshBinding binding{};
+        binding.vertexBuffer = reinterpret_cast<uint64_t>(meshData.vertexBuffer);
+        binding.indexBuffer = reinterpret_cast<uint64_t>(meshData.indexBuffer);
+        binding.vertexMemory = reinterpret_cast<uint64_t>(meshData.vertexMemory);
+        binding.indexMemory = reinterpret_cast<uint64_t>(meshData.indexMemory);
+        binding.vertexCount = meshData.vertexCount;
+        binding.indexCount = meshData.indexCount;
+        renderer.getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
     }
     mesh.vertexCount = meshData.vertexCount;
     mesh.indexCount = meshData.indexCount;
     mesh.hasBounds = hasBounds;
     mesh.boundsMin = boundsMin;
     mesh.boundsMax = boundsMax;
-    // Phase 3a: publish the GPU binding so renderer draws resolve via the
-    // registry (Mesh::Vk* stays as legacy fallback for handle 0 only).
-    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
-        Atlas::MeshBinding binding{};
-        binding.vertexBuffer = reinterpret_cast<uint64_t>(mesh.vertexBuffer);
-        binding.indexBuffer = reinterpret_cast<uint64_t>(mesh.indexBuffer);
-        binding.vertexMemory = reinterpret_cast<uint64_t>(mesh.vertexMemory);
-        binding.indexMemory = reinterpret_cast<uint64_t>(mesh.indexMemory);
-        binding.vertexCount = mesh.vertexCount;
-        binding.indexCount = mesh.indexCount;
-        renderer.getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
-    }
 
     // Transfer GPU buffer ownership to the ECS Mesh component.
     meshData.vertexBuffer = VK_NULL_HANDLE;
