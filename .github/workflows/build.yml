@@ -84,14 +84,23 @@ jobs:
           chmod +x ./scripts/build_shaders.sh
           ./scripts/fetch_deps.sh
 
+      # Premake currently declares Vulkan as "vulkan-1", which is the
+      # Windows import-library name. Linux provides libvulkan.so instead.
+      # Keep the build Premake5 + Ninja only; normalize the generated build
+      # input on Linux before Premake runs.
+      - name: Configure Linux Vulkan for Premake
+        run: |
+          sed -i 's/"vulkan-1"/"vulkan"/g' premake5.lua
+          grep -n 'vulkan' premake5.lua | head -20
+
       - name: Build shaders
         run: ./scripts/build_shaders.sh
 
       - name: Generate + build
         run: |
           premake5 ninja
-          ninja -C build
-            AtlasEngine_${{ inputs.build_config }}
+          ninja -C build \
+            AtlasEngine_${{ inputs.build_config }} \
             AtlasTests_${{ inputs.build_config }}
 
       - name: Run unit tests
@@ -146,6 +155,9 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -205,8 +217,8 @@ jobs:
         run: |
           export PATH="$VULKAN_SDK/Bin:$PATH"
           premake5 ninja
-          ninja -C build
-            AtlasEngine_${{ inputs.build_config }}
+          ninja -C build \
+            AtlasEngine_${{ inputs.build_config }} \
             AtlasTests_${{ inputs.build_config }}
 
       - name: Run unit tests
