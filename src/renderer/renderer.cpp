@@ -2075,7 +2075,7 @@ void Renderer::destroyShadowResources() {
 }
 
 void Renderer::createShadowPipeline() {
-    auto vertShaderCode = readFile("shaders/shadow_vert.spv");
+    auto vertShaderCode = readFile("shaders/shadow.spv");
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
 
     VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
