@@ -48,8 +48,8 @@ if [ -f "${ASSIMP_DIR}/include/assimp/config.h.in" ]; then
     # optional feature definitions to valid C/C++ preprocessor directives
     # instead of copying the template verbatim (which GCC/MinGW rejects).
     sed -E \
-        -e 's/^[[:space:]]*#cmakedefine01[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*$/#define \\1 0/' \
-        -e 's/^[[:space:]]*#cmakedefine[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)([[:space:]]+.*)?$/#undef \\1/' \
+        -e 's/^[[:space:]]*#cmakedefine01[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*$/#define \1 0/' \
+        -e 's/^[[:space:]]*#cmakedefine[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)([[:space:]]+.*)?$/#undef \1/' \
         "${ASSIMP_DIR}/include/assimp/config.h.in" > "${ASSIMP_DIR}/include/assimp/config.h"
 
     # Never let a CMake directive leak into the compiler input.
