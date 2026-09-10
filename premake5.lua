@@ -50,6 +50,12 @@ filter "configurations:Release"
     defines { "NDEBUG" }
     optimize "Speed"
 
+filter "system:windows"
+    buildoptions {
+        "-Wa,-mbig-obj",
+    }
+
+filter {}
 -- ---------------------------------------------------------------------------
 -- Dependencies (header-only) — just include dirs, referenced by AtlasEngine
 -- ---------------------------------------------------------------------------
