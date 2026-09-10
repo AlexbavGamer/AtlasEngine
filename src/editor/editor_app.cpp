@@ -18,6 +18,7 @@
 #include <imgui.h>
 
 #include "../assets/asset_manager.h"
+#include "../assets/pack/pack_builder.h"
 #include "../core/profiler.h"
 #include "../core/threading/async_loader.h"
 #include "../export/package_manifest.h"
@@ -600,6 +601,7 @@ bool EditorApp::exportGamePackage() {
         inc += " -I" + q(engineRoot + "/deps/src/vma/include");
         inc += " -I" + q(engineRoot + "/deps/src/assimp/include");
         inc += " -I" + q(engineRoot + "/deps/src/lua");
+        inc += " -I" + q(engineRoot + "/deps/src/assimp/contrib/zlib");
         inc += " -I" + q(engineRoot + "/deps/src/glfw/include");
         inc += " -I" + q(engineRoot + "/deps/src/tracy/public");
         inc += " -I" + q(std::string(getenv("VULKAN_SDK")) + "/Include");
@@ -636,6 +638,24 @@ bool EditorApp::exportGamePackage() {
         return false;
     }
 
+    // Build the asset pack next to the loose tree (P1: the game boots from
+    // the pack when present; the loose dir stays as fallback/dev override).
+    std::string pakFile;
+    {
+        Atlas::Pack::PackOptions packOpts;
+        Atlas::Pack::PackStats packStats;
+        std::string packErr;
+        if (Atlas::Pack::PackBuilder::build((packageRoot / "assets").string(),
+                                            (packageRoot / "game.pak").string(), packOpts, packStats,
+                                            packErr)) {
+            std::cout << "[Export] Packed " << packStats.fileCount << " assets into game.pak" << std::endl;
+            pakFile = "game.pak";
+        } else {
+            std::cerr << "[Export] WARNING: asset pack failed (" << packErr << "); shipping loose files"
+                      << std::endl;
+        }
+    }
+
     // Copy the MinGW runtime DLLs next to the exported executable so the game
     // runs on machines that don't have the MinGW toolchain in PATH.
     {
@@ -670,6 +690,7 @@ bool EditorApp::exportGamePackage() {
     manifest.assetsRoot = "assets";
     manifest.useEmbeddedShaders = true;
     manifest.shadersPath = "shaders";
+    manifest.pakFile = pakFile;
     if (!Atlas::Export::savePackageManifest(manifest, (packageRoot / "package.manifest").string())) {
         std::cerr << "[Export] Failed to write package manifest" << std::endl;
         return false;
@@ -727,12 +748,30 @@ bool EditorApp::exportGamePackageLinux() {
         return false;
     }
 
+    // Build the asset pack next to the loose tree (same as Windows export).
+    std::string pakFile;
+    {
+        Atlas::Pack::PackOptions packOpts;
+        Atlas::Pack::PackStats packStats;
+        std::string packErr;
+        if (Atlas::Pack::PackBuilder::build((packageRoot / "assets").string(),
+                                            (packageRoot / "game.pak").string(), packOpts, packStats,
+                                            packErr)) {
+            std::cout << "[Export] Packed " << packStats.fileCount << " assets into game.pak" << std::endl;
+            pakFile = "game.pak";
+        } else {
+            std::cerr << "[Export] WARNING: asset pack failed (" << packErr << "); shipping loose files"
+                      << std::endl;
+        }
+    }
+
     // Write the package manifest.
     Atlas::Export::PackageManifest manifest;
     manifest.startupScene = "assets/" + (m_CurrentSceneAssetPath.empty() ? std::string("scenes/main.scene") : m_CurrentSceneAssetPath);
     manifest.assetsRoot = "assets";
     manifest.useEmbeddedShaders = true;
     manifest.shadersPath = "shaders";
+    manifest.pakFile = pakFile;
     if (!Atlas::Export::savePackageManifest(manifest, (packageRoot / "package.manifest").string())) {
         std::cerr << "[Export] Failed to write package manifest" << std::endl;
         return false;
@@ -1035,14 +1074,20 @@ Entity EditorApp::createGameCameraEntity(Entity parent) {
     auto& transform = registry.get<Transform>(entity);
     transform.position = (parent != entt::null && registry.valid(parent)) ? glm::vec3(0.0f) : spawnPos;
 
+    // Orient the Transform so -Z looks along the editor view direction.
+    // NOTE: do NOT go through quatLookAtRH+eulerAngles here: eulerAngles
+    // extracts YXZ order but Transform::getModelMatrix composes XYZ, so a
+    // pitched+yawed view came out rotated (game camera looked elsewhere).
+    // Exact XYZ-order solution for R = Rx(p)*Ry(y) applied to (0,0,-1):
     glm::vec3 forward = spawnTarget - spawnPos;
     if (glm::length(forward) < 1e-5f) {
         forward = glm::vec3(0.0f, 0.0f, -1.0f);
     } else {
         forward = glm::normalize(forward);
     }
-    glm::quat rot = glm::quatLookAtRH(forward, spawnUp);
-    transform.rotation = glm::degrees(glm::eulerAngles(rot));
+    const float yaw = std::atan2(-forward.x, std::hypot(forward.y, forward.z));
+    const float pitch = std::atan2(forward.y, -forward.z);
+    transform.rotation = glm::degrees(glm::vec3(pitch, yaw, 0.0f));
 
     Camera camera;
     camera.position = spawnPos;
