@@ -363,6 +363,8 @@ project "AtlasEngine"
 
     -- The game main is a separate entry point (AtlasGame project).
     removefiles { "src/game_main.cpp" }
+    -- AtlasPack has its own main (tools project below).
+    removefiles { "src/tools/atlaspack/main.cpp" }
 
     includedirs {
         "src",
@@ -378,6 +380,8 @@ project "AtlasEngine"
         path.join(deps_src, "lua"),
         path.join(deps_src, "glfw/include"),
         path.join(deps_src, "tracy/public"),
+        path.join(deps_src, "assimp/contrib/zlib"),
+        path.join(deps_build, "assimp/contrib/zlib"),
         vulkan_inc,
     }
 
@@ -432,9 +436,45 @@ project "AtlasTests"
         "src/export/package_manifest.cpp",
         "src/renderer/render_resources.cpp",
         "src/renderer/render_resources.h",
+        "src/assets/vfs/**.cpp",
+        "src/assets/vfs/**.h",
+        "src/assets/pack/**.cpp",
+        "src/assets/pack/**.h",
     }
 
     includedirs {
         "src",
         "tests",
+        path.join(deps_src, "assimp/contrib/zlib"),
+        path.join(deps_build, "assimp/contrib/zlib"),
     }
+
+    links { "zlib" }
+
+-- ---------------------------------------------------------------------------
+-- AtlasPack: headless `.atlaspack` build tool (pack/verify/list).
+-- Entry is src/tools/atlaspack/main.cpp (excluded from engine/game globs).
+-- ---------------------------------------------------------------------------
+project "AtlasPack"
+    kind "ConsoleApp"
+    language "C++"
+    cppdialect "C++17"
+
+    targetdir "bin/%{cfg.buildcfg}"
+    debugdir "bin/%{cfg.buildcfg}"
+
+    files {
+        "src/tools/atlaspack/main.cpp",
+        "src/assets/vfs/**.cpp",
+        "src/assets/vfs/**.h",
+        "src/assets/pack/**.cpp",
+        "src/assets/pack/**.h",
+    }
+
+    includedirs {
+        "src",
+        path.join(deps_src, "assimp/contrib/zlib"),
+        path.join(deps_build, "assimp/contrib/zlib"),
+    }
+
+    links { "zlib" }

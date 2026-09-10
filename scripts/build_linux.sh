@@ -77,6 +77,7 @@ INCLUDES="-I${ROOT}/src \
     -I${ROOT}/deps/src/imguifiledialog -I${ROOT}/deps/src/imguizmo/src \
     -I${ROOT}/deps/src/glm -I${ROOT}/deps/src/stb -I${ROOT}/deps/src/entt/src \
     -I${ROOT}/deps/src/vma/include -I${ROOT}/deps/src/assimp/include \
+    -I${ROOT}/deps/src/assimp/contrib/zlib \
     -I${ROOT}/deps/src/lua -I${ROOT}/deps/src/glfw/include \
     -I${ROOT}/deps/src/tracy/public -I${VULKAN_INC}"
 
