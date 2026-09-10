@@ -2249,29 +2249,56 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
     // Shadow frustum half-extent (m): sun-owned when the sun casts (slider
     // in the Sun inspector), legacy fixed extent for ad-hoc light casters.
     float shadowExtent = kShadowOrthoExtent;
+
+    // Caster resolution: the frag shadows slot 0 only, so slot 0 MUST be the
+    // caster when one exists. Priority: casting sun first, then the first
+    // cast-flagged directional light. Shadows only ever come from components
+    // (a sun that doesn't cast yields to a directional that does).
+    const ECS::SunComponent* sun = nullptr;
+    entt::entity sunEntity = entt::null;
+    float sunNightFade = 1.0f;
+    bool sunCasts = false;
+    entt::entity dirCaster = entt::null;
     if (scene) {
         auto& registry = scene->getRegistry();
-        if (const ECS::SunComponent* sun = findFirstSun(registry)) {
+        if (const ECS::SunComponent* s = findFirstSun(registry)) {
+            sun = s;
+            for (auto e : registry.view<ECS::SunComponent>()) { sunEntity = e; break; }
             const glm::vec3 toSun = sun->sunDirection();
-            // Night fade: a sun below the horizon contributes no light and
-            // casts no shadow (0 at/below -0.08, full above +0.08).
-            const float nightFade = glm::clamp((toSun.y + 0.08f) / 0.16f, 0.0f, 1.0f);
-            Light& dst = m_LightBufferData.lights[0];
-            dst.color = sun->color;
-            dst.intensity = sun->intensity * nightFade;
-            dst.type = 1; // directional
-            dst.direction = sun->lightDirection();
-            dst.position = cameraTarget - dst.direction * 100.0f;
-            shadowDir = dst.direction;
-            shadowExtent = glm::clamp(sun->shadowRange, 5.0f, 250.0f);
-            if (sun->castShadows && toSun.y > 0.0f) {
-                for (auto e : registry.view<ECS::SunComponent>()) {
-                    casterEntity = e;
+            // Night fade: a sun below the horizon contributes no light
+            // (0 at/below -0.08, full above +0.08).
+            sunNightFade = glm::clamp((toSun.y + 0.08f) / 0.16f, 0.0f, 1.0f);
+            sunCasts = sun->castShadows && toSun.y > 0.0f;
+        }
+        if (!sunCasts) {
+            for (auto e : registry.view<ECS::LightComponent>()) {
+                const auto& lc = registry.get<ECS::LightComponent>(e);
+                if (lc.type == ECS::LightComponent::Type::Directional && lc.castShadows) {
+                    dirCaster = e;
                     break;
                 }
             }
-            slot = 1;
         }
+    }
+    casterEntity = sunCasts ? sunEntity : dirCaster;
+
+    // Sun fill (slot system: shadowed slot 0 when it casts, deferred slot 1
+    // when yielding to a directional caster, lone slot 0 when unshadowed).
+    auto fillSun = [&]() {
+        Light& dst = m_LightBufferData.lights[slot];
+        dst.color = sun->color;
+        dst.intensity = sun->intensity * sunNightFade;
+        dst.type = 1; // directional
+        dst.direction = sun->lightDirection();
+        dst.position = cameraTarget - dst.direction * 100.0f;
+        ++slot;
+    };
+    bool sunPlaced = false;
+    if (sunCasts) {
+        fillSun();
+        shadowDir = sun->lightDirection();
+        shadowExtent = glm::clamp(sun->shadowRange, 5.0f, 250.0f);
+        sunPlaced = true;
     }
 
     // Gather scene lights: shadow-casting directional first (slot 0), rest after.
@@ -2298,13 +2325,15 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
     };
     if (scene) {
         auto& registry = scene->getRegistry();
-        for (auto e : registry.view<ECS::LightComponent>()) {
-            const auto& lc = registry.get<ECS::LightComponent>(e);
-            if (lc.type == ECS::LightComponent::Type::Directional && lc.castShadows && slot == 0) {
-                fillLight(registry, e, true);
-                casterEntity = e;
-                break;
-            }
+        if (dirCaster != entt::null && !sunCasts) {
+            // Caster claims shadowed slot 0 (fillLight sets shadowDir from
+            // the entity Transform). Skipped below to avoid double-fill.
+            fillLight(registry, dirCaster, true);
+        }
+        if (sun != nullptr && !sunPlaced) {
+            // Deferred sun: slot 1 behind a directional caster, or lone
+            // unshadowed slot 0 when nothing casts.
+            fillSun();
         }
         for (auto e : registry.view<ECS::LightComponent>()) {
             if (e == casterEntity) continue;

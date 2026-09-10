@@ -90,11 +90,12 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
   (`Renderer::updateLightsAndShadow`): shadow-casting directional first
   (slot 0), then others up to 4. No lights → legacy hardcoded default.
 - **Sun** (`ECS::SunComponent`, `components.h`): procedural directional light
-  driven by azimuth/elevation (no Transform needed). The first sun found
-  owns **slot 0** as the scene directional + shadow caster, ahead of ad-hoc
-  lights; its `lightDirection()` matches the frag convention
-  (`L = normalize(-light.direction)`). `setTimeOfDay(h)` runs a full 24h
-  cycle (6h sunrise, 12h peak, 18h sunset, 0h/24h nadir 65 deg below the
+  driven by azimuth/elevation (no Transform needed). Caster priority (the
+  frag shadows slot 0 only, so slot 0 MUST be the caster): casting sun
+  first, then the first cast-flagged **directional** `LightComponent` (a sun
+  that doesn't cast yields its slot to one that does), then an unshadowed
+  sun as key light. Shadows only ever come from components — no phantom
+  shadow without a caster. `setTimeOfDay(h)` runs a full 24h cycle (6h sunrise, 12h peak, 18h sunset, 0h/24h nadir 65 deg below the
   horizon). Below the horizon the renderer fades intensity to 0 and drops
   the shadow caster (night = ambient only). Created via the toolbar
   "Sun & Sky" menu or Add Component > Sun; persisted by the serializer
