@@ -1,39 +1,63 @@
+---
 name: Build
 
-on:
-  push:
-  pull_request:
+# Premake5-only pipeline (CMake was removed from the repo).
+# Dependencies are fetched by scripts/fetch_deps.sh
+# into deps/src (cached).
+
+# Manual-only pipeline: automatic builds on push/PR are disabled (they
+# burned CI minutes on every WIP commit). Run it from the Actions tab via
+# "Run workflow" when a green check is actually needed.
+"on":
   workflow_dispatch:
+    inputs:
+      build_config:
+        description: "Build configuration"
+        required: false
+        default: "Release"
+        type: choice
+        options:
+          - Release
+          - Debug
+      run_tests:
+        description: "Run AtlasTests after building"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
 
+env:
+  PREMAKE_VERSION: v5.0.0-beta8
+  PREMAKE_URL: https://github.com/premake/premake-core/releases/download
+
 jobs:
   build-linux:
-    name: Ubuntu CMake build
+    name: Linux premake build
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      CMAKE_BUILD_PARALLEL_LEVEL: 1
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Cache FetchContent sources
+      - name: Cache dependency sources
         uses: actions/cache@v4
         with:
           path: deps/src
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          key: >-
+            ${{ runner.os }}-deps-${{
+            hashFiles('premake5.lua', 'scripts/fetch_deps.sh') }}
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake \
             ninja-build \
             pkg-config \
             build-essential \
+            python3 \
             libvulkan-dev \
             glslc \
             xorg-dev \
@@ -44,16 +68,40 @@ jobs:
             libgl1-mesa-dev \
             libglu1-mesa-dev
 
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TRACY=OFF
+      - name: Install premake5
+        run: |
+          VER="${PREMAKE_VERSION}"
+          FILEVER="${VER#v}"
+          wget -q "$PREMAKE_URL/$VER/premake-$FILEVER-linux.tar.gz"
+          tar xzf "premake-$FILEVER-linux.tar.gz"
+          chmod +x premake5
+          sudo mv premake5 /usr/local/bin/
+          premake5 --version
 
-      - name: Build
-        run: cmake --build build --config Release --target AtlasEngine
+      - name: Fetch dependencies
+        run: |
+          chmod +x ./scripts/fetch_deps.sh
+          chmod +x ./scripts/build_shaders.sh
+          ./scripts/fetch_deps.sh
+
+      - name: Build shaders
+        run: ./scripts/build_shaders.sh
+
+      - name: Generate + build
+        run: |
+          premake5 ninja
+          ninja -C build
+            AtlasEngine_${{ inputs.build_config }}
+            AtlasTests_${{ inputs.build_config }}
+
+      - name: Run unit tests
+        if: ${{ inputs.run_tests }}
+        run: ./bin/${{ inputs.build_config }}/AtlasTests
 
       - name: Stage Linux artifact
         run: |
           mkdir -p dist/linux
-          cp build/AtlasEngine dist/linux/
+          cp bin/${{ inputs.build_config }}/AtlasEngine dist/linux/
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
@@ -61,22 +109,53 @@ jobs:
           path: dist/linux
           if-no-files-found: error
 
-  build-windows:
-    name: Windows CMake build
-    runs-on: windows-2022
-    timeout-minutes: 90
-    env:
-      CMAKE_BUILD_PARALLEL_LEVEL: 1
+  sanitizers:
+    name: Unit tests (ASan + UBSan)
+    if: ${{ inputs.run_tests }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Cache FetchContent sources
+      - name: Build + run under sanitizers
+        run: |
+          g++ -std=c++17 -g -fno-omit-frame-pointer \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -Wall -Wextra -Isrc -Itests \
+            tests/test_main.cpp tests/test_string_id.cpp \
+            tests/test_package_manifest.cpp tests/test_render_resources.cpp \
+            src/export/package_manifest.cpp src/renderer/render_resources.cpp \
+            -o /tmp/AtlasTests_asan
+          /tmp/AtlasTests_asan
+
+      - name: Build + run with libstdc++ debug mode
+        run: |
+          g++ -std=c++17 -g -D_GLIBCXX_DEBUG -D_GLIBCXX_DEBUG_PEDANTIC \
+            -Wall -Wextra -Isrc -Itests \
+            tests/test_main.cpp tests/test_string_id.cpp \
+            tests/test_package_manifest.cpp tests/test_render_resources.cpp \
+            src/export/package_manifest.cpp src/renderer/render_resources.cpp \
+            -o /tmp/AtlasTests_dbg
+          /tmp/AtlasTests_dbg
+
+  build-windows:
+    name: Windows premake build
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Cache dependency sources
         uses: actions/cache@v4
         with:
           path: deps/src
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          key: >-
+            ${{ runner.os }}-deps-${{
+            hashFiles('premake5.lua', 'scripts/fetch_deps.sh') }}
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -88,23 +167,58 @@ jobs:
           if (-not $sdkRoot) {
             throw 'Vulkan SDK installation failed.'
           }
-          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "$sdkRoot\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "VULKAN_SDK=$sdkRoot" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$sdkRoot\Bin" | Out-File `
+            -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TRACY=OFF
+      - name: Install MinGW + Ninja + premake5
+        shell: pwsh
+        run: |
+          choco install mingw ninja --yes --no-progress
+          $ver = $env:PREMAKE_VERSION
+          $fileVer = $ver -replace '^v', ''
+          $base = $env:PREMAKE_URL
+          $zip = "$env:RUNNER_TEMP\premake.zip"
+          Invoke-WebRequest -Uri "$base/$ver/premake-$fileVer-windows.zip" `
+            -OutFile $zip
+          Expand-Archive $zip `
+            -DestinationPath "$env:RUNNER_TEMP\premake"
+          "$env:RUNNER_TEMP\premake" | Out-File `
+            -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # No RefreshEnv.cmd here: it only affects the current shell
+          # and fails under pwsh. Later steps run in new processes,
+          # which already see the machine PATH updated by choco.
+          # Belt and braces: also expose the mingw bin dir explicitly.
+          $mingwBin = 'C:\ProgramData\mingw64\mingw64\bin'
+          if (Test-Path $mingwBin) {
+            $mingwBin | Out-File `
+              -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
 
-      - name: Build
-        run: cmake --build build --config Release --target AtlasEngine
+      - name: Fetch dependencies
+        shell: bash
+        run: ./scripts/fetch_deps.sh
+
+      - name: Generate + build
+        shell: bash
+        run: |
+          export PATH="$VULKAN_SDK/Bin:$PATH"
+          premake5 ninja
+          ninja -C build
+            AtlasEngine_${{ inputs.build_config }}
+            AtlasTests_${{ inputs.build_config }}
+
+      - name: Run unit tests
+        if: ${{ inputs.run_tests }}
+        shell: bash
+        run: ./bin/${{ inputs.build_config }}/AtlasTests.exe
 
       - name: Stage Windows artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/windows | Out-Null
-          Copy-Item build/AtlasEngine.exe dist/windows/
-          if (Test-Path build/shaders) {
-            Copy-Item build/shaders dist/windows/ -Recurse
-          }
+          Copy-Item bin/${{ inputs.build_config }}/AtlasEngine.exe dist/windows/
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -112,4 +226,3 @@ jobs:
           name: AtlasEngine-windows
           path: dist/windows
           if-no-files-found: error
-

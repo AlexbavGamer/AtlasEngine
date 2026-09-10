@@ -1,12 +1,15 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "ui_manager.h"
+#include "inspector_widgets.h"
 #include "../platform/native_file_dialog.h"
+#include <type_traits>
 #include <imgui.h>
 #include "../utils/camera_controller.h"
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
 #include <ImGuizmo.h>
 #include "../ecs/ecs.h"
+#include "../ecs/inspector_ui.h"
 #include "../ecs/components.h"
 #include "../assets/asset_manager.h"
 #include "../core/runtime_console.h"
@@ -353,6 +356,10 @@ void UIManager::copySelectedEntitiesToClipboard() {
             item.hasMaterial = true;
             item.material = registry.get<Atlas::ECS::MaterialComponent>(e);
         }
+        if (registry.all_of<Atlas::LODComponent>(e)) {
+            item.hasLOD = true;
+            item.lod = registry.get<Atlas::LODComponent>(e);
+        }
         if (registry.all_of<Atlas::ECS::RigidBodyComponent>(e)) {
             item.hasRigidBody = true;
             item.rigidBody = registry.get<Atlas::ECS::RigidBodyComponent>(e);
@@ -372,6 +379,14 @@ void UIManager::copySelectedEntitiesToClipboard() {
         if (registry.all_of<Atlas::ECS::LightComponent>(e)) {
             item.hasLight = true;
             item.light = registry.get<Atlas::ECS::LightComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::SunComponent>(e)) {
+            item.hasSun = true;
+            item.sun = registry.get<Atlas::ECS::SunComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::SkyComponent>(e)) {
+            item.hasSky = true;
+            item.sky = registry.get<Atlas::ECS::SkyComponent>(e);
         }
         if (registry.all_of<Atlas::ECS::ScriptComponent>(e)) {
             item.hasScript = true;
@@ -472,11 +487,19 @@ void UIManager::pasteEntitiesFromClipboard() {
         }
 
         if (item.hasMaterial) registry.emplace_or_replace<Atlas::ECS::MaterialComponent>(e, item.material);
+        if (item.hasLOD) {
+            // Fresh runtime state, but preserve the artist-tuned bias.
+            Atlas::LODComponent lod;
+            lod.screenSizeBias = item.lod.screenSizeBias;
+            registry.emplace_or_replace<Atlas::LODComponent>(e, lod);
+        }
         if (item.hasRigidBody) registry.emplace_or_replace<Atlas::ECS::RigidBodyComponent>(e, item.rigidBody);
         if (item.hasBoxCollider) registry.emplace_or_replace<Atlas::ECS::BoxColliderComponent>(e, item.boxCollider);
         if (item.hasSphereCollider) registry.emplace_or_replace<Atlas::ECS::SphereColliderComponent>(e, item.sphereCollider);
         if (item.hasCapsuleCollider) registry.emplace_or_replace<Atlas::ECS::CapsuleColliderComponent>(e, item.capsuleCollider);
         if (item.hasLight) registry.emplace_or_replace<Atlas::ECS::LightComponent>(e, item.light);
+        if (item.hasSun) registry.emplace_or_replace<Atlas::ECS::SunComponent>(e, item.sun);
+        if (item.hasSky) registry.emplace_or_replace<Atlas::ECS::SkyComponent>(e, item.sky);
         if (item.hasScript) registry.emplace_or_replace<Atlas::ECS::ScriptComponent>(e, item.script);
         if (item.hasFollowCamera) registry.emplace_or_replace<Atlas::ECS::FollowCameraComponent>(e, item.followCamera);
         if (item.hasGameCamera) registry.emplace_or_replace<Atlas::ECS::GameCameraComponent>(e, item.gameCamera);
@@ -664,6 +687,21 @@ void UIManager::renderToolbar(bool gameModeActive, bool gameModePaused) {
     ImGui::SameLine(0.0f, 8.0f);
     if (pill("##gamecam", "Game Camera", false, ImVec2(132.0f, 28.0f))) {
         if (onCreateGameCamera) onCreateGameCamera(entt::null);
+    }
+
+    // Sun & Sky (Sun/Sky task): procedural sun + gradient sky backdrop.
+    ImGui::SameLine(0.0f, 8.0f);
+    if (pill("##sunsky", "Sun & Sky", false, ImVec2(110.0f, 28.0f))) {
+        ImGui::OpenPopup("toolbar_sunsky");
+    }
+    if (ImGui::BeginPopup("toolbar_sunsky")) {
+        if (ImGui::MenuItem("Sun") && onCreateSun) {
+            onCreateSun(entt::null);
+        }
+        if (ImGui::MenuItem("Sky") && onCreateSky) {
+            onCreateSky(entt::null);
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::SameLine();
@@ -1523,6 +1561,35 @@ void UIManager::renderHierarchy() {
     if (m_Scene) {
         auto& registry = m_Scene->getRegistry();
 
+        // Unity-style hierarchy search: flat match list while filtering.
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##hierfilter", "Search...", m_HierarchyFilter, sizeof(m_HierarchyFilter));
+        const bool hierFiltering = m_HierarchyFilter[0] != '\0';
+        if (hierFiltering) {
+            for (auto e : m_Scene->getAllEntities()) {
+                if (e == entt::null || !registry.valid(e)) continue;
+                if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(e)) continue;
+                if (registry.all_of<EditorCamera>(e)) continue;
+                std::string matchName;
+                if (registry.all_of<Atlas::ECS::TagComponent>(e)) {
+                    matchName = registry.get<Atlas::ECS::TagComponent>(e).name;
+                } else {
+                    matchName = "Entity " + std::to_string(static_cast<uint32_t>(e));
+                }
+                if (!::Atlas::InspectorUI::PassesFilter(m_HierarchyFilter, matchName.c_str())) continue;
+                ImGui::PushID(static_cast<int>(static_cast<uint32_t>(e)));
+                if (ImGui::Selectable(matchName.c_str(), isSelected(e))) {
+                    ImGuiIO& io = ImGui::GetIO();
+                    if (io.KeyCtrl) {
+                        toggleSelectedEntity(e);
+                    } else {
+                        setSelectedEntity(e);
+                    }
+                }
+                ImGui::PopID();
+            }
+        }
+
         struct PendingReparent {
             Entity child = entt::null;
             Entity afterParent = entt::null;
@@ -1814,6 +1881,7 @@ void UIManager::renderHierarchy() {
         };
 
         auto roots = m_Scene->getRootEntities();
+        if (!hierFiltering) {
         if (roots.empty()) {
             auto all = m_Scene->getAllEntities();
 
@@ -1846,6 +1914,7 @@ void UIManager::renderHierarchy() {
                 }
             }
             clipper.End();
+        }
         }
 
         // Right-click empty area: context menu
@@ -2044,14 +2113,46 @@ void UIManager::renderHierarchy() {
 void UIManager::renderProperties() {
     ImGui::Begin("Properties", &m_ShowPropertiesWindow, ImGuiWindowFlags_NoCollapse);
 
+    // Unity-style inspector search: filters component cards below.
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##inspectorfilter", "Search components...", m_InspectorFilter, sizeof(m_InspectorFilter));
+    ImGui::Spacing();
+
     Entity selectedEntity = m_PrimarySelected;
 
     if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
-        ImGui::Text("Entity ID: %u", static_cast<uint32_t>(selectedEntity));
-
-        // Name / tag (undoable)
+        // ---- Entity header card (Unity GameObject header look) ----
+        ImGui::BeginChild("##entityheader", ImVec2(0.0f, 0.0f),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
         {
             auto& registry = m_Scene->getRegistry();
+            const bool isProtected = registry.all_of<EditorCamera>(selectedEntity);
+            const bool hidden = registry.all_of<Atlas::ECS::EditorHiddenComponent>(selectedEntity);
+
+            // Active checkbox + name on one row.
+            bool active = !hidden;
+            ImGui::BeginDisabled(isProtected);
+            if (ImGui::Checkbox("##entityactive", &active)) {
+                if (!active) {
+                    auto cmd = std::make_unique<SoftDeleteCommand>();
+                    cmd->entities = {selectedEntity};
+                    cmd->redo(m_Scene);
+                    pushCommand(std::move(cmd));
+                } else {
+                    if (registry.all_of<Atlas::ECS::EditorHiddenComponent>(selectedEntity)) {
+                        registry.remove<Atlas::ECS::EditorHiddenComponent>(selectedEntity);
+                    }
+                    auto cmd = std::make_unique<SoftDeleteCommand>();
+                    cmd->entities = {selectedEntity};
+                    cmd->hideOnRedo = false;
+                    pushCommand(std::move(cmd));
+                }
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Active in scene (maps to EditorHiddenComponent)");
+            }
+            ImGui::SameLine();
             if (registry.all_of<Atlas::ECS::TagComponent>(selectedEntity)) {
                 auto& tag = registry.get<Atlas::ECS::TagComponent>(selectedEntity);
                 uint32_t sid = static_cast<uint32_t>(selectedEntity);
@@ -2066,7 +2167,8 @@ void UIManager::renderProperties() {
                     }
                 }
 
-                bool changed = ImGui::InputText("Name##entity", m_PropNameBuf, sizeof(m_PropNameBuf));
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                bool changed = ImGui::InputText("##entityname", m_PropNameBuf, sizeof(m_PropNameBuf));
                 if (ImGui::IsItemActivated()) {
                     m_PropNameEditing = true;
                     m_PropNameBefore = tag.name;
@@ -2084,8 +2186,23 @@ void UIManager::renderProperties() {
                         pushCommand(std::move(cmd));
                     }
                 }
+            } else {
+                ImGui::TextDisabled("(no TagComponent)");
+            }
+            if (m_SelectedEntities.size() > 1) {
+                ImGui::TextDisabled("Name editing applies to primary only (%zu selected)", m_SelectedEntities.size());
+            } else {
+                size_t childCount = 0;
+                for (auto c : m_Scene->getChildren(selectedEntity)) {
+                    (void)c;
+                    ++childCount;
+                }
+                ImGui::TextDisabled("ID %u  |  %zu child%s", static_cast<uint32_t>(selectedEntity),
+                                    childCount, childCount == 1 ? "" : "ren");
             }
         }
+        ImGui::EndChild();
+        ImGui::Spacing();
 
 bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selectedEntity);
         if (isProtectedCameraEntity) {
@@ -2132,16 +2249,25 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             return;
         }
 
-        auto renderComponent = [this, selectedEntity](auto&& component, const char* name) {
-            if (ImGui::CollapsingHeader(name, ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto renderComponent = [this, selectedEntity](auto&& component, const char* name, bool canRemove = false) {
+            if (!::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, name)) return;
+            bool removeClicked = false;
+            const bool open = ::Atlas::InspectorUI::BeginComponentCard(name, name, true, canRemove, &removeClicked);
+            if (open) {
                 ecs::renderComponentProperties(component, static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(open);
+            if (removeClicked) {
+                m_Scene->getRegistry().remove<std::decay_t<decltype(component)>>(selectedEntity);
             }
         };
 
-        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity)) {
-            if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
-                auto& t = m_Scene->getRegistry().get<Transform>(selectedEntity);
-
+        // Transform: single vs bulk (multi-selection)
+        if (m_Scene->getRegistry().all_of<Transform>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Transform")) {
+            const bool transformOpen = ::Atlas::InspectorUI::BeginComponentCard("transform", "Transform", true, false, nullptr);
+            if (transformOpen) {
+                auto& registry = m_Scene->getRegistry();
                 auto makeState = [&](const Transform& tr) -> TransformState {
                     TransformState s;
                     s.position = tr.position;
@@ -2149,66 +2275,285 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                     s.scale = tr.scale;
                     return s;
                 };
-
                 auto isDifferent = [&](const TransformState& a, const TransformState& b) -> bool {
                     const float eps = 1e-4f;
                     return glm::length(a.position - b.position) > eps ||
                            glm::length(a.rotation - b.rotation) > eps ||
                            glm::length(a.scale - b.scale) > eps;
                 };
-
-                bool deactivated = false;
-
-                ImGui::DragFloat3("Position##T", &t.position.x, 0.1f);
-                if (ImGui::IsItemActivated()) {
-                    m_PropTransformEditing = true;
-                    m_PropTransformEntity = selectedEntity;
-                    m_PropTransformBefore = makeState(t);
+                // Build list of selected entities that have Transform (for bulk)
+                std::vector<Entity> bulkEntities;
+                bulkEntities.reserve(m_SelectedEntities.size());
+                for (Entity e : m_SelectedEntities) {
+                    if (e == entt::null || !registry.valid(e)) continue;
+                    if (!registry.all_of<Transform>(e)) continue;
+                    bulkEntities.push_back(e);
                 }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    deactivated = true;
-                }
-
-                ImGui::DragFloat3("Rotation##T", &t.rotation.x, 1.0f);
-                if (ImGui::IsItemActivated()) {
-                    m_PropTransformEditing = true;
-                    m_PropTransformEntity = selectedEntity;
-                    m_PropTransformBefore = makeState(t);
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    deactivated = true;
-                }
-
-                ImGui::DragFloat3("Scale##T", &t.scale.x, 0.1f);
-                if (ImGui::IsItemActivated()) {
-                    m_PropTransformEditing = true;
-                    m_PropTransformEntity = selectedEntity;
-                    m_PropTransformBefore = makeState(t);
-                }
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    deactivated = true;
-                }
-
-                if (deactivated && m_PropTransformEditing && m_PropTransformEntity == selectedEntity) {
-                    TransformState after = makeState(t);
-                    if (isDifferent(m_PropTransformBefore, after)) {
-                        auto cmd = std::make_unique<TransformCommand>();
-                        cmd->entity = selectedEntity;
-                        cmd->before = m_PropTransformBefore;
-                        cmd->after = after;
-                        pushCommand(std::move(cmd));
+                const bool isBulk = bulkEntities.size() > 1;
+                if (isBulk) {
+                    ImGui::TextDisabled("%zu entities selected - bulk edit (delta applied to all)", bulkEntities.size());
+                    auto& tPrimary = registry.get<Transform>(selectedEntity);
+                    // Invalidate bulk capture if selection changed mid-edit
+                    if (m_PropTransformMultiEditing) {
+                        if (m_PropTransformMultiEntities.size() != bulkEntities.size()) {
+                            m_PropTransformMultiEditing = false;
+                            m_PropTransformMultiEntities.clear();
+                            m_PropTransformBeforeMulti.clear();
+                        } else {
+                            for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                                if (m_PropTransformMultiEntities[i] != bulkEntities[i]) {
+                                    m_PropTransformMultiEditing = false;
+                                    m_PropTransformMultiEntities.clear();
+                                    m_PropTransformBeforeMulti.clear();
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    m_PropTransformEditing = false;
-                    m_PropTransformEntity = entt::null;
+                    bool deactivated = false;
+                    // Position - edit primary, propagate delta to others live
+                    bool bulkPosAct = false, bulkPosDeact = false;
+                    ::Atlas::InspectorUI::Vec3Row("Position", &tPrimary.position.x, 0.1f, "bulkpos",
+                                                 &bulkPosAct, &bulkPosDeact);
+                    if (bulkPosAct) {
+                        m_PropTransformMultiEditing = true;
+                        m_PropTransformMultiEntities = bulkEntities;
+                        m_PropTransformBeforeMulti.clear();
+                        m_PropTransformBeforeMulti.reserve(bulkEntities.size());
+                        for (Entity e : bulkEntities) m_PropTransformBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
+                        // Also clear single-track to avoid conflict
+                        m_PropTransformEditing = false;
+                    }
+                    if (m_PropTransformMultiEditing) {
+                        // Propagate position/rotation/scale delta from primary to others (recomputed each frame)
+                        size_t primaryIdx = 0;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (bulkEntities[i]==selectedEntity) { primaryIdx=i; break; }
+                        const TransformState& beforePrimary = m_PropTransformBeforeMulti[primaryIdx];
+                        glm::vec3 dPos = tPrimary.position - beforePrimary.position;
+                        glm::vec3 dRot = tPrimary.rotation - beforePrimary.rotation;
+                        glm::vec3 dScale = tPrimary.scale - beforePrimary.scale;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                            if (bulkEntities[i]==selectedEntity) continue;
+                            auto& ti = registry.get<Transform>(bulkEntities[i]);
+                            ti.position = m_PropTransformBeforeMulti[i].position + dPos;
+                            ti.rotation = m_PropTransformBeforeMulti[i].rotation + dRot;
+                            ti.scale    = m_PropTransformBeforeMulti[i].scale + dScale;
+                        }
+                    }
+                    if (bulkPosDeact) deactivated = true;
+
+                    bool bulkRotAct = false, bulkRotDeact = false;
+                    ::Atlas::InspectorUI::Vec3Row("Rotation", &tPrimary.rotation.x, 1.0f, "bulkrot",
+                                                 &bulkRotAct, &bulkRotDeact);
+                    if (bulkRotAct) {
+                        if (!m_PropTransformMultiEditing) {
+                            m_PropTransformMultiEditing = true;
+                            m_PropTransformMultiEntities = bulkEntities;
+                            m_PropTransformBeforeMulti.clear();
+                            m_PropTransformBeforeMulti.reserve(bulkEntities.size());
+                            for (Entity e : bulkEntities) m_PropTransformBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
+                            m_PropTransformEditing = false;
+                        }
+                    }
+                    if (m_PropTransformMultiEditing) {
+                        size_t primaryIdx = 0;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (bulkEntities[i]==selectedEntity) { primaryIdx=i; break; }
+                        const TransformState& beforePrimary = m_PropTransformBeforeMulti[primaryIdx];
+                        glm::vec3 dPos = tPrimary.position - beforePrimary.position;
+                        glm::vec3 dRot = tPrimary.rotation - beforePrimary.rotation;
+                        glm::vec3 dScale = tPrimary.scale - beforePrimary.scale;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                            if (bulkEntities[i]==selectedEntity) continue;
+                            auto& ti = registry.get<Transform>(bulkEntities[i]);
+                            ti.position = m_PropTransformBeforeMulti[i].position + dPos;
+                            ti.rotation = m_PropTransformBeforeMulti[i].rotation + dRot;
+                            ti.scale    = m_PropTransformBeforeMulti[i].scale + dScale;
+                        }
+                    }
+                    if (bulkRotDeact) deactivated = true;
+
+                    bool bulkScaleAct = false, bulkScaleDeact = false;
+                    ::Atlas::InspectorUI::Vec3Row("Scale", &tPrimary.scale.x, 0.1f, "bulkscale",
+                                                 &bulkScaleAct, &bulkScaleDeact);
+                    if (bulkScaleAct) {
+                        if (!m_PropTransformMultiEditing) {
+                            m_PropTransformMultiEditing = true;
+                            m_PropTransformMultiEntities = bulkEntities;
+                            m_PropTransformBeforeMulti.clear();
+                            m_PropTransformBeforeMulti.reserve(bulkEntities.size());
+                            for (Entity e : bulkEntities) m_PropTransformBeforeMulti.push_back(makeState(registry.get<Transform>(e)));
+                            m_PropTransformEditing = false;
+                        }
+                    }
+                    if (m_PropTransformMultiEditing) {
+                        size_t primaryIdx = 0;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (bulkEntities[i]==selectedEntity) { primaryIdx=i; break; }
+                        const TransformState& beforePrimary = m_PropTransformBeforeMulti[primaryIdx];
+                        glm::vec3 dPos = tPrimary.position - beforePrimary.position;
+                        glm::vec3 dRot = tPrimary.rotation - beforePrimary.rotation;
+                        glm::vec3 dScale = tPrimary.scale - beforePrimary.scale;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) {
+                            if (bulkEntities[i]==selectedEntity) continue;
+                            auto& ti = registry.get<Transform>(bulkEntities[i]);
+                            ti.position = m_PropTransformBeforeMulti[i].position + dPos;
+                            ti.rotation = m_PropTransformBeforeMulti[i].rotation + dRot;
+                            ti.scale    = m_PropTransformBeforeMulti[i].scale + dScale;
+                        }
+                    }
+                    if (bulkScaleDeact) deactivated = true;
+
+                    if (deactivated && m_PropTransformMultiEditing) {
+                        std::vector<TransformState> after;
+                        after.reserve(bulkEntities.size());
+                        for (Entity e : bulkEntities) after.push_back(makeState(registry.get<Transform>(e)));
+                        bool anyDiff = false;
+                        for (size_t i = 0; i < bulkEntities.size(); ++i) if (isDifferent(m_PropTransformBeforeMulti[i], after[i])) { anyDiff = true; break; }
+                        if (anyDiff) {
+                            auto cmd = std::make_unique<MultiTransformCommand>();
+                            cmd->entities = bulkEntities;
+                            cmd->before = m_PropTransformBeforeMulti;
+                            cmd->after = after;
+                            pushCommand(std::move(cmd));
+                        }
+                        m_PropTransformMultiEditing = false;
+                        m_PropTransformMultiEntities.clear();
+                        m_PropTransformBeforeMulti.clear();
+                    }
+                } else {
+                    // Single selection path (original)
+                    auto& t = registry.get<Transform>(selectedEntity);
+                    // If we were in bulk editing but now single, reset bulk state
+                    if (m_PropTransformMultiEditing) { m_PropTransformMultiEditing=false; m_PropTransformMultiEntities.clear(); m_PropTransformBeforeMulti.clear(); }
+                    bool deactivated = false;
+                    bool posAct = false, posDeact = false;
+                    ::Atlas::InspectorUI::Vec3Row("Position", &t.position.x, 0.1f, "pos", &posAct, &posDeact);
+                    if (posAct) {
+                        m_PropTransformEditing = true;
+                        m_PropTransformEntity = selectedEntity;
+                        m_PropTransformBefore = makeState(t);
+                    }
+                    if (posDeact) deactivated = true;
+                    bool rotAct = false, rotDeact = false;
+                    ::Atlas::InspectorUI::Vec3Row("Rotation", &t.rotation.x, 1.0f, "rot", &rotAct, &rotDeact);
+                    if (rotAct) {
+                        m_PropTransformEditing = true;
+                        m_PropTransformEntity = selectedEntity;
+                        m_PropTransformBefore = makeState(t);
+                    }
+                    if (rotDeact) deactivated = true;
+                    bool sclAct = false, sclDeact = false;
+                    ::Atlas::InspectorUI::Vec3Row("Scale", &t.scale.x, 0.1f, "scl", &sclAct, &sclDeact);
+                    if (sclAct) {
+                        m_PropTransformEditing = true;
+                        m_PropTransformEntity = selectedEntity;
+                        m_PropTransformBefore = makeState(t);
+                    }
+                    if (sclDeact) deactivated = true;
+                    if (deactivated && m_PropTransformEditing && m_PropTransformEntity == selectedEntity) {
+                        TransformState after = makeState(t);
+                        if (isDifferent(m_PropTransformBefore, after)) {
+                            auto cmd = std::make_unique<TransformCommand>();
+                            cmd->entity = selectedEntity;
+                            cmd->before = m_PropTransformBefore;
+                            cmd->after = after;
+                            pushCommand(std::move(cmd));
+                        }
+                        m_PropTransformEditing = false;
+                        m_PropTransformEntity = entt::null;
+                    }
                 }
             }
+            ::Atlas::InspectorUI::EndComponentCard(transformOpen);
         }
 
         if (m_Scene->getRegistry().all_of<Renderable>(selectedEntity)) {
-            renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable");
+            renderComponent(m_Scene->getRegistry().get<Renderable>(selectedEntity), "Renderable", true);
+        }
+
+        // TDD §5: live LOD state + importance bias (auto-added at import).
+        if (m_Scene->getRegistry().all_of<Atlas::LODComponent>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Atlas::LODComponent>(selectedEntity), "LOD", true);
+        }
+
+        // Light (fully reflection-driven via COMPONENT_FIELDS(LightComponent)).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::LightComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Light")) {
+            bool removeLight = false;
+            const bool lightOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("light", "Light", true, true, &removeLight);
+            if (lightOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::LightComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(lightOpen);
+            if (removeLight) {
+                m_Scene->getRegistry().remove<Atlas::ECS::LightComponent>(selectedEntity);
+            }
+        }
+
+        // HLOD state (reflection-driven: live level read-only, bias editable).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::HLODComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "HLOD")) {
+            bool removeHlod = false;
+            const bool hlodOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("hlod", "HLOD", true, true, &removeHlod);
+            if (hlodOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::HLODComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(hlodOpen);
+            if (removeHlod) {
+                m_Scene->getRegistry().remove<Atlas::ECS::HLODComponent>(selectedEntity);
+            }
+        }
+
+        // Light editor: type/intensity/color/shadows (direction from Transform).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::LightComponent>(selectedEntity)) {
+            renderComponent(m_Scene->getRegistry().get<Atlas::ECS::LightComponent>(selectedEntity), "Light");
+        }
+
+        // Sun editor: procedural sun (az/el -> slot-0 directional + shadows + sky disk).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::SunComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Sun")) {
+            bool removeSun = false;
+            const bool sunOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("sun", "Sun", true, true, &removeSun);
+            if (sunOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::SunComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(sunOpen);
+            if (removeSun) {
+                m_Scene->getRegistry().remove<Atlas::ECS::SunComponent>(selectedEntity);
+            }
+        }
+
+        // Sky editor: procedural gradient + sun disk backdrop.
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::SkyComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Sky")) {
+            bool removeSky = false;
+            const bool skyOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("sky", "Sky", true, true, &removeSky);
+            if (skyOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::SkyComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(skyOpen);
+            if (removeSky) {
+                m_Scene->getRegistry().remove<Atlas::ECS::SkyComponent>(selectedEntity);
+            }
         }
 
         // Script inspector (V1)
+        if (::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Scripts")) {
+            bool removeScripts = false;
+            const bool scriptsOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("scripts", "Scripts", true, true, &removeScripts);
+            if (scriptsOpen) {
         {
             auto& registry = m_Scene->getRegistry();
 
@@ -2219,7 +2564,7 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                     registry.emplace<Atlas::ECS::ScriptComponent>(selectedEntity, std::move(sc));
                     m_ScriptInspectError.clear();
                 }
-            } else if (ImGui::CollapsingHeader("Scripts", ImGuiTreeNodeFlags_DefaultOpen)) {
+            } else {
                 auto& sc = registry.get<Atlas::ECS::ScriptComponent>(selectedEntity);
 
                 if (ImGui::Button("Add Script##entry")) {
@@ -2245,13 +2590,15 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
 
                     bool removeEntry = false;
                     if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
-                        ImGui::Checkbox("Enabled", &entry.enabled);
+                        ::Atlas::InspectorUI::FieldRow("Enabled");
+                        ImGui::Checkbox("##enabled", &entry.enabled);
 
                         char pathBuf[512] = {};
                         if (!entry.scriptPath.empty()) {
                             std::strncpy(pathBuf, entry.scriptPath.c_str(), sizeof(pathBuf) - 1);
                         }
-                        if (ImGui::InputText("Script Path", pathBuf, sizeof(pathBuf))) {
+                        ::Atlas::InspectorUI::FieldRow("Script Path");
+                        if (ImGui::InputText("##scriptpath", pathBuf, sizeof(pathBuf))) {
                             entry.scriptPath = std::string(pathBuf);
                         }
 
@@ -2273,39 +2620,46 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                             switch (type) {
                             case Atlas::Scripting::ScriptFieldType::Bool: {
                                 bool v = std::get<bool>(value);
-                                if (ImGui::Checkbox(name.c_str(), &v)) value = v;
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::Checkbox(("##" + name).c_str(), &v)) value = v;
                                 break;
                             }
                             case Atlas::Scripting::ScriptFieldType::Int: {
                                 int v = std::get<int>(value);
-                                if (ImGui::DragInt(name.c_str(), &v, 1.0f)) value = v;
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::DragInt(("##" + name).c_str(), &v, 1.0f)) value = v;
                                 break;
                             }
                             case Atlas::Scripting::ScriptFieldType::Float: {
                                 float v = std::get<float>(value);
-                                if (ImGui::DragFloat(name.c_str(), &v, 0.1f)) value = v;
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::DragFloat(("##" + name).c_str(), &v, 0.1f)) value = v;
                                 break;
                             }
                             case Atlas::Scripting::ScriptFieldType::String: {
                                 char buf[256] = {};
                                 const auto& s = std::get<std::string>(value);
                                 std::strncpy(buf, s.c_str(), sizeof(buf) - 1);
-                                if (ImGui::InputText(name.c_str(), buf, sizeof(buf))) value = std::string(buf);
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::InputText(("##" + name).c_str(), buf, sizeof(buf))) value = std::string(buf);
                                 break;
                             }
                             case Atlas::Scripting::ScriptFieldType::Vec2: {
                                 auto v = std::get<glm::vec2>(value);
-                                if (ImGui::DragFloat2(name.c_str(), &v.x, 0.1f)) value = v;
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::DragFloat2(("##" + name).c_str(), &v.x, 0.1f)) value = v;
                                 break;
                             }
                             case Atlas::Scripting::ScriptFieldType::Vec3: {
                                 auto v = std::get<glm::vec3>(value);
-                                if (ImGui::DragFloat3(name.c_str(), &v.x, 0.1f)) value = v;
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::DragFloat3(("##" + name).c_str(), &v.x, 0.1f)) value = v;
                                 break;
                             }
                             case Atlas::Scripting::ScriptFieldType::Vec4: {
                                 auto v = std::get<glm::vec4>(value);
-                                if (ImGui::DragFloat4(name.c_str(), &v.x, 0.1f)) value = v;
+                                ::Atlas::InspectorUI::FieldRow(name.c_str());
+                                if (ImGui::DragFloat4(("##" + name).c_str(), &v.x, 0.1f)) value = v;
                                 break;
                             }
                             default:
@@ -2328,8 +2682,20 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 }
             }
         }
+            }
+            ::Atlas::InspectorUI::EndComponentCard(scriptsOpen);
+            if (removeScripts) {
+                m_Scene->getRegistry().remove<Atlas::ECS::ScriptComponent>(selectedEntity);
+                m_ScriptInspectError.clear();
+            }
+        }
 
         // Skeletal animation inspector (V1)
+        if (::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Skeleton")) {
+            bool removeSkeleton = false;
+            const bool skeletonOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("skeleton", "Skeleton", true, true, &removeSkeleton);
+            if (skeletonOpen) {
         {
             auto& registry = m_Scene->getRegistry();
 
@@ -2341,7 +2707,7 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             }
 
             if (skelEntity != entt::null && registry.valid(skelEntity) && registry.all_of<Atlas::ECS::SkeletonComponent>(skelEntity)) {
-                if (ImGui::CollapsingHeader("Skeleton", ImGuiTreeNodeFlags_DefaultOpen)) {
+                {
                     auto& skc = registry.get<Atlas::ECS::SkeletonComponent>(skelEntity);
                     Atlas::Anim::Skeleton* skel = skc.skeleton.get();
 
@@ -2363,7 +2729,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
 
                         // Edit pose toggle (pauses playback)
                         bool editPose = ov.enabled;
-                        if (ImGui::Checkbox("Edit Pose", &editPose)) {
+                        ::Atlas::InspectorUI::FieldRow("Edit Pose");
+                        if (ImGui::Checkbox("##editpose", &editPose)) {
                             ov.enabled = editPose;
                             if (ov.enabled) {
                                 ap.playing = false;
@@ -2377,8 +2744,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                             }
                         }
 
-                        ImGui::SameLine();
-                        ImGui::Checkbox("Show Skeleton", &m_RigShowSkeleton);
+                        ::Atlas::InspectorUI::FieldRow("Show Skeleton");
+                        ImGui::Checkbox("##showskel", &m_RigShowSkeleton);
 
                         // Clip selection + playback controls
                         if (skc.clips.empty()) {
@@ -2394,7 +2761,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                                 ? "<unnamed>"
                                 : skc.clips[static_cast<size_t>(ap.clipIndex)].name.c_str();
 
-                            if (ImGui::BeginCombo("Clip", preview)) {
+                            ::Atlas::InspectorUI::FieldRow("Clip");
+                            if (ImGui::BeginCombo("##clip", preview)) {
                                 for (int i = 0; i < static_cast<int>(skc.clips.size()); ++i) {
                                     const auto& clip = skc.clips[static_cast<size_t>(i)];
                                     const char* name = clip.name.empty() ? "<unnamed>" : clip.name.c_str();
@@ -2411,18 +2779,21 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                             const float dur = skc.clips[static_cast<size_t>(ap.clipIndex)].durationSeconds;
 
                             ImGui::BeginDisabled(ov.enabled);
-                            ImGui::Checkbox("Playing", &ap.playing);
-                            ImGui::SameLine();
-                            ImGui::Checkbox("Loop", &ap.loop);
+                            ::Atlas::InspectorUI::FieldRow("Playing");
+                            ImGui::Checkbox("##playing", &ap.playing);
+                            ::Atlas::InspectorUI::FieldRow("Loop");
+                            ImGui::Checkbox("##loop", &ap.loop);
                             ImGui::EndDisabled();
 
-                            const bool rootMotionToggled = ImGui::Checkbox("Enable Root Motion", &ap.enableRootMotion);
+                            ::Atlas::InspectorUI::FieldRow("Enable Root Motion");
+                            const bool rootMotionToggled = ImGui::Checkbox("##rootmotion", &ap.enableRootMotion);
                             if (rootMotionToggled && ap.enableRootMotion && skel->rootMotionBoneIndex < 0) {
                                 skel->rootMotionBoneIndex = Atlas::Anim::chooseRootMotionBone(*skel, skc.clips);
                             }
 
                             ImGui::BeginDisabled(!ap.enableRootMotion);
-                            if (ImGui::BeginCombo("Root Motion Bone", (skel->rootMotionBoneIndex >= 0 && static_cast<size_t>(skel->rootMotionBoneIndex) < skel->boneNames.size()) ? skel->boneNames[static_cast<size_t>(skel->rootMotionBoneIndex)].c_str() : "<none>")) {
+                            ::Atlas::InspectorUI::FieldRow("Root Motion Bone");
+                            if (ImGui::BeginCombo("##rootmotionbone", (skel->rootMotionBoneIndex >= 0 && static_cast<size_t>(skel->rootMotionBoneIndex) < skel->boneNames.size()) ? skel->boneNames[static_cast<size_t>(skel->rootMotionBoneIndex)].c_str() : "<none>")) {
                                 bool noneSelected = (skel->rootMotionBoneIndex < 0);
                                 if (ImGui::Selectable("<none>", noneSelected)) {
                                     skel->rootMotionBoneIndex = -1;
@@ -2442,15 +2813,19 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                             if (ImGui::Button("Auto Detect")) {
                                 skel->rootMotionBoneIndex = Atlas::Anim::chooseRootMotionBone(*skel, skc.clips);
                             }
-                            ImGui::Checkbox("Root Motion Rotation", &ap.rootMotionApplyRotation);
-                            ImGui::Checkbox("Root Motion Y", &ap.rootMotionApplyY);
+                            ::Atlas::InspectorUI::FieldRow("Root Motion Rotation");
+                            ImGui::Checkbox("##rmrot", &ap.rootMotionApplyRotation);
+                            ::Atlas::InspectorUI::FieldRow("Root Motion Y");
+                            ImGui::Checkbox("##rmy", &ap.rootMotionApplyY);
                             ImGui::EndDisabled();
 
-                            ImGui::DragFloat("Speed", &ap.speed, 0.05f, -5.0f, 5.0f, "%.2f");
+                            ::Atlas::InspectorUI::FieldRow("Speed");
+                            ImGui::DragFloat("##speed", &ap.speed, 0.05f, -5.0f, 5.0f, "%.2f");
 
                             if (dur > 0.0f) {
                                 float t = ap.timeSeconds;
-                                if (ImGui::SliderFloat("Time", &t, 0.0f, dur, "%.3f")) {
+                                ::Atlas::InspectorUI::FieldRow("Time");
+                                if (ImGui::SliderFloat("##time", &t, 0.0f, dur, "%.3f")) {
                                     ap.timeSeconds = t;
                                 }
                             }
@@ -2506,9 +2881,36 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 }
             }
         }
+            }
+            ::Atlas::InspectorUI::EndComponentCard(skeletonOpen);
+            if (removeSkeleton) {
+                m_Scene->getRegistry().remove<Atlas::ECS::SkeletonComponent>(selectedEntity);
+            }
+        }
 
-        if (m_Scene->getRegistry().all_of<::Mesh>(selectedEntity)) {
-            if (ImGui::CollapsingHeader("Mesh", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Skinned mesh link (read-only reflection; pose edited in Skeleton above).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::SkinnedMeshComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Skinned Mesh")) {
+            bool removeSkinned = false;
+            const bool skinnedOpen = ::Atlas::InspectorUI::BeginComponentCard("skinned", "Skinned Mesh", true, true,
+                                                                              &removeSkinned);
+            if (skinnedOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::SkinnedMeshComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(skinnedOpen);
+            if (removeSkinned) {
+                m_Scene->getRegistry().remove<Atlas::ECS::SkinnedMeshComponent>(selectedEntity);
+            }
+        }
+
+        if (m_Scene->getRegistry().all_of<::Mesh>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Mesh")) {
+            bool removeMesh = false;
+            const bool meshOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("mesh", "Mesh", true, true, &removeMesh);
+            if (meshOpen) {
                 auto& registry = m_Scene->getRegistry();
                 auto& mesh = registry.get<::Mesh>(selectedEntity);
 
@@ -2712,23 +3114,28 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                         };
 
                         ImGui::SeparatorText("Surface");
-                        ImGui::ColorEdit4("Base Color##Mat", &mat.baseColor.x, ImGuiColorEditFlags_Float);
+                        ::Atlas::InspectorUI::FieldRow("Base Color");
+                        ImGui::ColorEdit4("##basecolor", &mat.baseColor.x, ImGuiColorEditFlags_Float);
                         if (ImGui::IsItemActivated()) beginMatScalarEdit();
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
-                        ImGui::DragFloat("Metallic##Mat", &mat.metallic, 0.01f, 0.0f, 1.0f);
+                        ::Atlas::InspectorUI::FieldRow("Metallic");
+                        ImGui::DragFloat("##metallic", &mat.metallic, 0.01f, 0.0f, 1.0f);
                         if (ImGui::IsItemActivated()) beginMatScalarEdit();
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
-                        ImGui::DragFloat("Roughness##Mat", &mat.roughness, 0.01f, 0.0f, 1.0f);
+                        ::Atlas::InspectorUI::FieldRow("Roughness");
+                        ImGui::DragFloat("##roughness", &mat.roughness, 0.01f, 0.0f, 1.0f);
                         if (ImGui::IsItemActivated()) beginMatScalarEdit();
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
-                        ImGui::DragFloat("AO##Mat", &mat.ambientOcclusion, 0.01f, 0.0f, 1.0f);
+                        ::Atlas::InspectorUI::FieldRow("AO");
+                        ImGui::DragFloat("##ao", &mat.ambientOcclusion, 0.01f, 0.0f, 1.0f);
                         if (ImGui::IsItemActivated()) beginMatScalarEdit();
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
-                        ImGui::ColorEdit3("Emissive Factor##Mat", &mat.emissiveFactor.x, ImGuiColorEditFlags_Float);
+                        ::Atlas::InspectorUI::FieldRow("Emissive Factor");
+                        ImGui::ColorEdit3("##emissive", &mat.emissiveFactor.x, ImGuiColorEditFlags_Float);
                         if (ImGui::IsItemActivated()) beginMatScalarEdit();
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
@@ -2736,7 +3143,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                         const char* alphaItems[] = {"Opaque", "Mask", "Blend"};
                         int alphaIdx = (mat.alphaMode == Atlas::ECS::MaterialComponent::AlphaMode::Mask) ? 1 :
                                        (mat.alphaMode == Atlas::ECS::MaterialComponent::AlphaMode::Blend) ? 2 : 0;
-                        if (ImGui::Combo("Alpha Mode##Mat", &alphaIdx, alphaItems, 3)) {
+                        ::Atlas::InspectorUI::FieldRow("Alpha Mode");
+                        if (ImGui::Combo("##alphamode", &alphaIdx, alphaItems, 3)) {
                             if (alphaIdx == 1) mat.alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Mask;
                             else if (alphaIdx == 2) mat.alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Blend;
                             else mat.alphaMode = Atlas::ECS::MaterialComponent::AlphaMode::Opaque;
@@ -2745,18 +3153,21 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
                         if (mat.alphaMode == Atlas::ECS::MaterialComponent::AlphaMode::Mask) {
-                            ImGui::DragFloat("Alpha Cutoff##Mat", &mat.alphaCutoff, 0.01f, 0.0f, 1.0f);
+                            ::Atlas::InspectorUI::FieldRow("Alpha Cutoff");
+                            ImGui::DragFloat("##alphacutoff", &mat.alphaCutoff, 0.01f, 0.0f, 1.0f);
                             if (ImGui::IsItemActivated()) beginMatScalarEdit();
                             if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
                         }
 
-                        if (ImGui::Checkbox("Double Sided##Mat", &mat.doubleSided)) {
+                        ::Atlas::InspectorUI::FieldRow("Double Sided");
+                        if (ImGui::Checkbox("##doublesided", &mat.doubleSided)) {
                             beginMatScalarEdit();
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
 
                         ImGui::SameLine();
-                        if (ImGui::Checkbox("Invert Culling##Mat", &mat.invertCulling)) {
+                        ::Atlas::InspectorUI::FieldRow("Invert Culling");
+                        if (ImGui::Checkbox("##invertculling", &mat.invertCulling)) {
                             beginMatScalarEdit();
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit()) endMatScalarEdit();
@@ -2864,6 +3275,10 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                     }
                 }
             }
+            ::Atlas::InspectorUI::EndComponentCard(meshOpen);
+            if (removeMesh) {
+                m_Scene->getRegistry().remove<::Mesh>(selectedEntity);
+            }
         }
 
         auto& registry = m_Scene->getRegistry();
@@ -2871,7 +3286,11 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             const bool isRuntimeCamera = registry.all_of<Camera>(selectedEntity);
             const bool isEditorCamera = registry.all_of<EditorCamera>(selectedEntity);
 
-            if (isRuntimeCamera && ImGui::CollapsingHeader("Game Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (isRuntimeCamera && ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Game Camera")) {
+                bool removeGameCam = false;
+                const bool gameCamOpen =
+                    ::Atlas::InspectorUI::BeginComponentCard("gamecam", "Game Camera", true, true, &removeGameCam);
+                if (gameCamOpen) {
                 bool hasGameCamera = registry.all_of<Atlas::ECS::GameCameraComponent>(selectedEntity);
                 if (!hasGameCamera) {
                     if (ImGui::Button("Add Game Camera Component")) {
@@ -2883,7 +3302,8 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 } else {
                     auto& gcc = registry.get<Atlas::ECS::GameCameraComponent>(selectedEntity);
                     bool primaryInPlay = gcc.primary;
-                    if (ImGui::Checkbox("Primary In Play Mode", &primaryInPlay)) {
+                    ::Atlas::InspectorUI::FieldRow("Primary In Play");
+                    if (ImGui::Checkbox("##primary", &primaryInPlay)) {
                         gcc.primary = primaryInPlay;
                         if (gcc.primary) {
                             auto gameCameraView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
@@ -2898,9 +3318,18 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                         registry.remove<Atlas::ECS::GameCameraComponent>(selectedEntity);
                     }
                 }
+                }
+                ::Atlas::InspectorUI::EndComponentCard(gameCamOpen);
+                if (removeGameCam) {
+                    registry.remove<Atlas::ECS::GameCameraComponent>(selectedEntity);
+                }
             }
 
-            if (isRuntimeCamera && ImGui::CollapsingHeader("Follow Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (isRuntimeCamera && ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Follow Camera")) {
+                bool removeFollowCam = false;
+                const bool followCamOpen =
+                    ::Atlas::InspectorUI::BeginComponentCard("followcam", "Follow Camera", true, true, &removeFollowCam);
+                if (followCamOpen) {
                 bool hasFollow = registry.all_of<Atlas::ECS::FollowCameraComponent>(selectedEntity);
 
                 if (!hasFollow) {
@@ -2914,10 +3343,12 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                     if (follow.target != entt::null && registry.valid(follow.target) && registry.all_of<Atlas::ECS::TagComponent>(follow.target)) {
                         targetLabel = registry.get<Atlas::ECS::TagComponent>(follow.target).name;
                     }
-                    ImGui::Text("Target: %s", targetLabel.c_str());
+                    ::Atlas::InspectorUI::FieldRow("Target");
+                    ImGui::Text("%s", targetLabel.c_str());
 
                     int targetId = (follow.target == entt::null) ? -1 : static_cast<int>(static_cast<uint32_t>(follow.target));
-                    if (ImGui::InputInt("Target Entity ID", &targetId)) {
+                    ::Atlas::InspectorUI::FieldRow("Target Entity ID");
+                    if (ImGui::InputInt("##targetid", &targetId)) {
                         if (targetId < 0) {
                             follow.target = entt::null;
                         } else {
@@ -2941,48 +3372,51 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                         follow.target = entt::null;
                     }
 
-                    ImGui::DragFloat3("Offset", &follow.offset.x, 0.1f);
-                    ImGui::DragFloat("Smoothness", &follow.smoothness, 0.1f, 0.0f, 30.0f, "%.2f");
-                    ImGui::Checkbox("Look At Target", &follow.lookAtTarget);
+                    ::Atlas::InspectorUI::Vec3Row("Offset", &follow.offset.x, 0.1f, "followoff");
+                    ::Atlas::InspectorUI::FieldRow("Smoothness");
+                    ImGui::DragFloat("##smooth", &follow.smoothness, 0.1f, 0.0f, 30.0f, "%.2f");
+                    ::Atlas::InspectorUI::FieldRow("Look At Target");
+                    ImGui::Checkbox("##lookat", &follow.lookAtTarget);
 
                     if (ImGui::Button("Remove Follow Camera")) {
                         registry.remove<Atlas::ECS::FollowCameraComponent>(selectedEntity);
                     }
                 }
+                }
+                ::Atlas::InspectorUI::EndComponentCard(followCamOpen);
+                if (removeFollowCam) {
+                    registry.remove<Atlas::ECS::FollowCameraComponent>(selectedEntity);
+                }
             }
 
             if (isRuntimeCamera) {
-                renderComponent(m_Scene->getRegistry().get<Camera>(selectedEntity), "Runtime Camera");
+                renderComponent(m_Scene->getRegistry().get<Camera>(selectedEntity), "Runtime Camera", true);
             } else if (isEditorCamera) {
                 renderComponent(m_Scene->getRegistry().get<EditorCamera>(selectedEntity), "Editor Camera");
             }
         }
 
-        if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Physics")) {
+            const bool physicsOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("physics", "Physics", true, false, nullptr);
+            if (physicsOpen) {
             const bool hasRigidBody = registry.all_of<Atlas::ECS::RigidBodyComponent>(selectedEntity);
             const bool hasBox = registry.all_of<Atlas::ECS::BoxColliderComponent>(selectedEntity);
             const bool hasSphere = registry.all_of<Atlas::ECS::SphereColliderComponent>(selectedEntity);
             const bool hasCapsule = registry.all_of<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
-            const bool hasAnyCollider = hasBox || hasSphere || hasCapsule;
+            const bool hasMesh = registry.all_of<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+            const bool hasAnyCollider = hasBox || hasSphere || hasCapsule || hasMesh;
 
             if (!hasRigidBody) {
                 if (ImGui::Button("Add Rigid Body")) {
                     registry.emplace<Atlas::ECS::RigidBodyComponent>(selectedEntity);
                 }
             } else {
-                auto& rb = registry.get<Atlas::ECS::RigidBodyComponent>(selectedEntity);
-                const char* motionItems[] = {"Static", "Dynamic", "Kinematic"};
-                int motion = static_cast<int>(rb.motionType);
-                if (ImGui::Combo("Motion Type", &motion, motionItems, IM_ARRAYSIZE(motionItems))) {
-                    rb.motionType = static_cast<Atlas::ECS::PhysicsMotionType>(motion);
-                }
-                ImGui::DragFloat("Friction", &rb.friction, 0.01f, 0.0f, 2.0f, "%.2f");
-                ImGui::DragFloat("Restitution", &rb.restitution, 0.01f, 0.0f, 2.0f, "%.2f");
-                ImGui::DragFloat("Linear Damping", &rb.linearDamping, 0.01f, 0.0f, 10.0f, "%.2f");
-                ImGui::DragFloat("Angular Damping", &rb.angularDamping, 0.01f, 0.0f, 10.0f, "%.2f");
-                ImGui::DragFloat("Gravity Scale", &rb.gravityScale, 0.01f, -10.0f, 10.0f, "%.2f");
-                ImGui::Checkbox("Continuous Collision", &rb.continuous);
-                ImGui::Checkbox("Allow Sleep", &rb.allowSleep);
+                // Reflection-driven editor (COMPONENT_FIELDS(RigidBodyComponent));
+                // the Motion Type combo comes from the PhysicsMotionType renderer.
+                ecs::renderComponentProperties(
+                    registry.get<Atlas::ECS::RigidBodyComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
                 if (ImGui::Button("Remove Rigid Body")) {
                     registry.remove<Atlas::ECS::RigidBodyComponent>(selectedEntity);
                 }
@@ -3008,42 +3442,191 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
                 if (ImGui::Button("Add Capsule Collider")) {
                     registry.emplace<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
                 }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!registry.all_of<::Mesh>(selectedEntity));
+                if (ImGui::Button("Add Mesh Collider")) {
+                    registry.emplace<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+                }
+                ImGui::EndDisabled();
+                if (!registry.all_of<::Mesh>(selectedEntity)) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(needs Mesh)");
+                }
             }
 
             if (hasBox) {
-                auto& c = registry.get<Atlas::ECS::BoxColliderComponent>(selectedEntity);
-                ImGui::DragFloat3("Box Half Extent", &c.halfExtent.x, 0.01f, 0.01f, 100.0f, "%.2f");
-                ImGui::DragFloat3("Box Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
-                ImGui::Checkbox("Box Trigger", &c.isTrigger);
+                ImGui::SeparatorText("Box Collider");
+                ecs::renderComponentProperties(
+                    registry.get<Atlas::ECS::BoxColliderComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
                 if (ImGui::Button("Remove Box Collider")) {
                     registry.remove<Atlas::ECS::BoxColliderComponent>(selectedEntity);
                 }
             }
 
             if (hasSphere) {
-                auto& c = registry.get<Atlas::ECS::SphereColliderComponent>(selectedEntity);
-                ImGui::DragFloat("Sphere Radius", &c.radius, 0.01f, 0.01f, 100.0f, "%.2f");
-                ImGui::DragFloat3("Sphere Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
-                ImGui::Checkbox("Sphere Trigger", &c.isTrigger);
+                ImGui::SeparatorText("Sphere Collider");
+                ecs::renderComponentProperties(
+                    registry.get<Atlas::ECS::SphereColliderComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
                 if (ImGui::Button("Remove Sphere Collider")) {
                     registry.remove<Atlas::ECS::SphereColliderComponent>(selectedEntity);
                 }
             }
 
             if (hasCapsule) {
-                auto& c = registry.get<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
-                ImGui::DragFloat("Capsule Radius", &c.radius, 0.01f, 0.01f, 100.0f, "%.2f");
-                ImGui::DragFloat("Capsule Half Height", &c.halfHeight, 0.01f, 0.01f, 100.0f, "%.2f");
-                ImGui::DragFloat3("Capsule Offset", &c.offset.x, 0.01f, -100.0f, 100.0f, "%.2f");
-                ImGui::Checkbox("Capsule Trigger", &c.isTrigger);
+                ImGui::SeparatorText("Capsule Collider");
+                ecs::renderComponentProperties(
+                    registry.get<Atlas::ECS::CapsuleColliderComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
                 if (ImGui::Button("Remove Capsule Collider")) {
                     registry.remove<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
                 }
             }
+
+            if (hasMesh) {
+                ImGui::SeparatorText("Mesh Collider");
+                std::string source = "(no Mesh component)";
+                if (registry.all_of<::Mesh>(selectedEntity)) {
+                    const auto& mesh = registry.get<::Mesh>(selectedEntity);
+                    source = mesh.meshPath.empty() ? "(empty path)" : mesh.meshPath;
+                }
+                ImGui::TextWrapped("Source: %s", source.c_str());
+                ecs::renderComponentProperties(
+                    registry.get<Atlas::ECS::MeshColliderComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+                ImGui::TextDisabled("Triangle soup (static); dynamic bodies use OBB.");
+                if (ImGui::Button("Remove Mesh Collider")) {
+                    registry.remove<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+                }
+            }
+            }
+            ::Atlas::InspectorUI::EndComponentCard(physicsOpen);
         }
     } else {
         ImGui::Text("No entity selected");
     }
+
+    // --- Add Component button (only when an entity is selected) ---
+    if (selectedEntity != entt::null && m_Scene && m_Scene->getRegistry().valid(selectedEntity)) {
+    ImGui::Separator();
+    if (ImGui::Button("Add Component", ImVec2(-FLT_MIN, 0.0f))) {
+        ImGui::OpenPopup("AddComponentPopup");
+    }
+    if (ImGui::BeginPopup("AddComponentPopup")) {
+        auto& registry = m_Scene->getRegistry();
+        // Data-driven component menu (Unity "Add Component" look; honors the inspector filter).
+        struct AddEntry {
+            const char* label;
+            bool present;
+            std::function<void()> add;
+        };
+        std::vector<AddEntry> addEntries;
+        addEntries.reserve(20);
+        addEntries.push_back({"Tag", registry.all_of<Atlas::ECS::TagComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::TagComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Material", registry.all_of<Atlas::ECS::MaterialComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::MaterialComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Renderable", registry.all_of<Renderable>(selectedEntity), [&] {
+            registry.emplace<Renderable>(selectedEntity);
+        }});
+        addEntries.push_back({"Light", registry.all_of<Atlas::ECS::LightComponent>(selectedEntity), [&] {
+            Atlas::ECS::LightComponent light;
+            light.type = Atlas::ECS::LightComponent::Type::Point;
+            light.color = glm::vec3(1.0f, 1.0f, 1.0f);
+            light.intensity = 5.0f;
+            light.direction = glm::vec3(0.0f, -1.0f, 0.0f);
+            light.castShadows = false;
+            registry.emplace<Atlas::ECS::LightComponent>(selectedEntity, light);
+        }});
+        addEntries.push_back({"Sun", registry.all_of<Atlas::ECS::SunComponent>(selectedEntity), [&] {
+            Atlas::ECS::SunComponent sun;
+            sun.setTimeOfDay(10.0f);
+            registry.emplace<Atlas::ECS::SunComponent>(selectedEntity, sun);
+        }});
+        addEntries.push_back({"Sky", registry.all_of<Atlas::ECS::SkyComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::SkyComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Camera",
+            registry.all_of<Camera>(selectedEntity) || registry.all_of<EditorCamera>(selectedEntity), [&] {
+            registry.emplace<Camera>(selectedEntity);
+        }});
+        addEntries.push_back({"Game Camera", registry.all_of<Atlas::ECS::GameCameraComponent>(selectedEntity), [&] {
+            Atlas::ECS::GameCameraComponent gcc;
+            auto gameCameraView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+            gcc.primary = (gameCameraView.begin() == gameCameraView.end());
+            registry.emplace<Atlas::ECS::GameCameraComponent>(selectedEntity, gcc);
+        }});
+        addEntries.push_back({"Follow Camera", registry.all_of<Atlas::ECS::FollowCameraComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::FollowCameraComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Rigid Body", registry.all_of<Atlas::ECS::RigidBodyComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::RigidBodyComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Box Collider", registry.all_of<Atlas::ECS::BoxColliderComponent>(selectedEntity), [&] {
+            Atlas::ECS::BoxColliderComponent c;
+            if (registry.all_of<::Mesh>(selectedEntity)) {
+                const auto& mesh = registry.get<::Mesh>(selectedEntity);
+                if (mesh.hasBounds) {
+                    c.halfExtent = glm::max((mesh.boundsMax - mesh.boundsMin) * 0.5f, glm::vec3(0.01f));
+                }
+            }
+            registry.emplace<Atlas::ECS::BoxColliderComponent>(selectedEntity, c);
+        }});
+        addEntries.push_back({"Sphere Collider", registry.all_of<Atlas::ECS::SphereColliderComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::SphereColliderComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Capsule Collider", registry.all_of<Atlas::ECS::CapsuleColliderComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::CapsuleColliderComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Mesh Collider", registry.all_of<Atlas::ECS::MeshColliderComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::MeshColliderComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Animation Player", registry.all_of<Atlas::ECS::AnimationPlayerComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::AnimationPlayerComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Skeleton", registry.all_of<Atlas::ECS::SkeletonComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::SkeletonComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Skinned Mesh", registry.all_of<Atlas::ECS::SkinnedMeshComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::SkinnedMeshComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Script", registry.all_of<Atlas::ECS::ScriptComponent>(selectedEntity), [&] {
+            Atlas::ECS::ScriptComponent sc;
+            sc.scripts.push_back(Atlas::ECS::ScriptEntry{});
+            registry.emplace<Atlas::ECS::ScriptComponent>(selectedEntity, std::move(sc));
+        }});
+        addEntries.push_back({"Bone Pose Override", registry.all_of<Atlas::ECS::BonePoseOverrideComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::BonePoseOverrideComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"LOD", registry.all_of<Atlas::LODComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::LODComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"HLOD", registry.all_of<Atlas::ECS::HLODComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::HLODComponent>(selectedEntity);
+        }});
+        addEntries.push_back({"Editor Hidden", registry.all_of<Atlas::ECS::EditorHiddenComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::EditorHiddenComponent>(selectedEntity);
+        }});
+        bool anyAddEntry = false;
+        for (auto& en : addEntries) {
+            if (en.present) continue;
+            if (!::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, en.label)) continue;
+            anyAddEntry = true;
+            if (ImGui::MenuItem(en.label)) {
+                en.add();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (!anyAddEntry) {
+            ImGui::TextDisabled("No components to add");
+        }
+
+        ImGui::EndPopup();
+    }
+    } // valid entity guard
 
     ImGui::End();
 }
@@ -3116,6 +3699,9 @@ void UIManager::renderContentExplorer()
 
         ImGui::PopStyleVar(2);
     }
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##contentfilter", "Search assets...", m_ContentFilter, sizeof(m_ContentFilter));
 
     ImGui::Separator();
 
@@ -3264,7 +3850,22 @@ void UIManager::renderContentExplorer()
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(gap * 0.5f, gap * 0.5f));
 
     if (ImGui::BeginTable("##content_grid", cols, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX)) {
-        bool hasItems = !currentFolder.children.empty();
+        // Search filter: match by file/folder name, folders always first.
+        std::vector<size_t> contentVisibleIdx;
+        const bool contentFiltering = m_ContentFilter[0] != '\0';
+        if (contentFiltering) {
+            for (size_t i = 0; i < currentFolder.children.size(); ++i) {
+                if (::Atlas::InspectorUI::PassesFilter(m_ContentFilter, currentFolder.children[i].name.c_str())) {
+                    contentVisibleIdx.push_back(i);
+                }
+            }
+        }
+        const size_t contentVisibleCount =
+            contentFiltering ? contentVisibleIdx.size() : currentFolder.children.size();
+        auto contentChildAt = [&](size_t n) -> const ::ProjectManager::FileEntry& {
+            return currentFolder.children[contentFiltering ? contentVisibleIdx[n] : n];
+        };
+        bool hasItems = contentVisibleCount > 0;
 
         auto drawTile = [&](const ::ProjectManager::FileEntry& child) {
             ImGui::PushID(child.relativePath.c_str());
@@ -3410,7 +4011,7 @@ void UIManager::renderContentExplorer()
         };
 
         if (hasItems) {
-            const int itemCount = static_cast<int>(currentFolder.children.size());
+            const int itemCount = static_cast<int>(contentVisibleCount);
             const int rows = (itemCount + cols - 1) / cols;
 
             ImGuiListClipper clipper;
@@ -3424,7 +4025,7 @@ void UIManager::renderContentExplorer()
                         if (idx >= itemCount) {
                             continue;
                         }
-                        drawTile(currentFolder.children[static_cast<size_t>(idx)]);
+                        drawTile(contentChildAt(static_cast<size_t>(idx)));
                     }
                 }
             }
@@ -3584,8 +4185,29 @@ void UIManager::renderMenuBar() {
             }
 
             if (ImGui::MenuItem("Import Model...", "Ctrl+I")) {
+                std::vector<Atlas::Platform::FileDialogFilter> modelFilters;
+                modelFilters.push_back({"Models", {"fbx", "gltf", "glb", "obj", "dae", "blend"}});
+                auto file = Atlas::Platform::openFileDialog("Import Model", ".", modelFilters);
+                if (file && onAssetDropped) {
+                    onAssetDropped(*file);
+                }
             }
             if (ImGui::MenuItem("Import Texture...", "Ctrl+T")) {
+                std::vector<Atlas::Platform::FileDialogFilter> imageFilters;
+                imageFilters.push_back({"Images", {"png", "jpg", "jpeg", "bmp", "tga", "hdr"}});
+                auto file = Atlas::Platform::openFileDialog("Import Texture", ".", imageFilters);
+                if (file && projectManager && projectManager->hasProject()) {
+                    std::error_code ec;
+                    std::filesystem::path src(*file);
+                    std::filesystem::path dst =
+                        std::filesystem::path(projectManager->getAssetsPath()) / src.filename();
+                    if (!std::filesystem::exists(dst, ec)) {
+                        std::filesystem::copy_file(src, dst, ec);
+                    }
+                    if (!ec) {
+                        projectManager->invalidateAssetTreeCache();
+                    }
+                }
             }
             ImGui::EndMenu();
         }
@@ -3597,6 +4219,7 @@ void UIManager::renderMenuBar() {
             ImGui::MenuItem("Properties", NULL, &m_ShowPropertiesWindow);
             ImGui::MenuItem("Content Explorer", NULL, &m_ShowContentExplorerWindow);
             ImGui::MenuItem("World Streaming", NULL, &m_ShowWorldStreamingWindow);
+            ImGui::MenuItem("HLOD Viewer", NULL, &m_ShowHLODViewerWindow);
             ImGui::Separator();
             ImGui::MenuItem("Profiler", NULL, &m_ShowProfilerWindow);
             ImGui::MenuItem("Camera", NULL, &m_ShowCameraWindow);
@@ -3606,15 +4229,34 @@ void UIManager::renderMenuBar() {
                 if (ImGui::ColorEdit3("Background", &color.x, ImGuiColorEditFlags_Float)) {
                     renderer->setClearColor(color);
                 }
+                // Global shadow-map switch (Sun "Cast shadows" picks the caster).
+                bool shadows = renderer->isShadowsEnabled();
+                if (ImGui::MenuItem("Shadows", nullptr, &shadows)) {
+                    renderer->setShadowsEnabled(shadows);
+                }
             }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About")) {
+                ImGui::OpenPopup("##about_atlas");
             }
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
+    }
+
+    if (ImGui::BeginPopupModal("##about_atlas", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("AtlasEngine");
+        ImGui::TextDisabled("Real-time 3D engine + editor (Vulkan)");
+        ImGui::Separator();
+        ImGui::TextUnformatted("Hierarchy - Properties - Content Explorer");
+        ImGui::TextUnformatted("Physics - Animation - Scripting - HLOD");
+        ImGui::Spacing();
+        if (ImGui::Button("Close")) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 
@@ -3636,11 +4278,29 @@ void UIManager::renderConsoleWindow()
     if (ImGui::Button("Clear")) {
         Atlas::RuntimeConsole::instance().clear();
     }
+    ImGui::SameLine();
+    ImGui::Checkbox("Info", &m_ConsoleShowInfo);
+    ImGui::SameLine();
+    ImGui::Checkbox("Warn", &m_ConsoleShowWarn);
+    ImGui::SameLine();
+    ImGui::Checkbox("Error", &m_ConsoleShowError);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##consolefilter", "Search...", m_ConsoleFilter, sizeof(m_ConsoleFilter));
+    ImGui::Checkbox("Autoscroll", &m_ConsoleAutoScroll);
     ImGui::Separator();
 
     const auto entries = Atlas::RuntimeConsole::instance().snapshot();
+    const bool consoleFiltering = m_ConsoleFilter[0] != '\0';
     ImGui::BeginChild("console_scroll");
     for (const auto& entry : entries) {
+        if (entry.level == Atlas::RuntimeConsole::Level::Info && !m_ConsoleShowInfo) continue;
+        if (entry.level == Atlas::RuntimeConsole::Level::Warn && !m_ConsoleShowWarn) continue;
+        if (entry.level == Atlas::RuntimeConsole::Level::Error && !m_ConsoleShowError) continue;
+        if (consoleFiltering &&
+            !::Atlas::InspectorUI::PassesFilter(m_ConsoleFilter, entry.text.c_str())) {
+            continue;
+        }
         ImVec4 color(0.85f, 0.87f, 0.90f, 1.0f);
         if (entry.level == Atlas::RuntimeConsole::Level::Warn) {
             color = ImVec4(0.95f, 0.75f, 0.25f, 1.0f);
@@ -3649,7 +4309,7 @@ void UIManager::renderConsoleWindow()
         }
         ImGui::TextColored(color, "%s", entry.text.c_str());
     }
-    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f) {
+    if (m_ConsoleAutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f) {
         ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
@@ -3751,6 +4411,43 @@ void UIManager::renderCameraWindow() {
         ImGui::TextUnformatted("- Scroll over viewport adjusts speed");
     } else {
         ImGui::TextUnformatted("No camera controller bound");
+    }
+
+    // Lens / clipping: edits the active scene camera (EditorCamera preferred,
+    // otherwise the first runtime Camera). Same clamps as the Properties panel.
+    ImGui::SeparatorText("Lens (clipping)");
+    if (!m_Scene) {
+        ImGui::TextUnformatted("No scene");
+    } else {
+        auto& registry = m_Scene->getRegistry();
+        Entity camEntity = entt::null;
+        bool isEditorCam = false;
+        auto editorView = registry.view<EditorCamera>();
+        if (editorView.begin() != editorView.end()) {
+            camEntity = *editorView.begin();
+            isEditorCam = true;
+        } else {
+            auto camView = registry.view<Camera>();
+            if (camView.begin() != camView.end()) {
+                camEntity = *camView.begin();
+            }
+        }
+
+        if (camEntity == entt::null) {
+            ImGui::TextUnformatted("No camera in scene");
+        } else {
+            CameraBase* cam = isEditorCam
+                ? static_cast<CameraBase*>(&registry.get<EditorCamera>(camEntity))
+                : static_cast<CameraBase*>(&registry.get<Camera>(camEntity));
+            ImGui::Text("Editing: %s", isEditorCam ? "Editor Camera" : "Game Camera");
+            ImGui::DragFloat("FOV##CamLens", &cam->fov, 0.5f, 1.0f, 179.0f, "%.1f");
+            ImGui::DragFloat("Near Clip##CamLens", &cam->nearPlane, 0.01f, 0.0f, 0.0f, "%.3f");
+            ImGui::DragFloat("Far Clip##CamLens", &cam->farPlane, 1.0f, 0.0f, 0.0f, "%.1f");
+            if (cam->nearPlane < 0.001f) cam->nearPlane = 0.001f;
+            if (cam->farPlane < cam->nearPlane + 0.01f) cam->farPlane = cam->nearPlane + 0.01f;
+            ImGui::Text("Aspect: %.3f (auto from viewport)", cam->aspectRatio);
+            ImGui::Text("Position: %.2f %.2f %.2f", cam->position.x, cam->position.y, cam->position.z);
+        }
     }
 
     ImGui::End();

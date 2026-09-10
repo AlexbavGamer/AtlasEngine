@@ -2,9 +2,16 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Fetch deps",
+            "type": "shell",
+            "command": "./scripts/fetch_deps.sh",
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
             "label": "Build",
             "type": "shell",
-            "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build",
+            "command": "premake5 ninja && ninja -C build AtlasEngine_Release",
             "problemMatcher": ["$gcc"],
             "group": "build"
         }

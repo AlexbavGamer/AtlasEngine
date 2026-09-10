@@ -1,0 +1,18 @@
+# AtlasEngine code style (clang-format). Applies to NEW/TOUCHED code only —
+# do not reformat the whole tree in one go (it would nuke git blame).
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+AlwaysBreakAfterReturnType: None
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceAfterCStyleCast: false
+SortIncludes: false
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false

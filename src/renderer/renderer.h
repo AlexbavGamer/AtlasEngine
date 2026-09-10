@@ -5,15 +5,18 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include <functional>
 #include <string>
 #include <deque>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "../core/base/non_copyable.h"
 #include "../vulkan/vulkan_structs.h"
 #include "memory/memory_manager.h"
+#include "render_resources.h"
 #include "../core/profiler.h"
 
 namespace Atlas {
@@ -22,20 +25,29 @@ struct Light {
     glm::vec3 position;
     float intensity;
     glm::vec3 color;
-    float padding;
+    float pad0 = 0.0f;
+    glm::vec3 direction = glm::vec3(0.0f, -1.0f, 0.0f);
+    // 0 = point, 1 = directional (spot falls back to point in v1)
+    int32_t type = 0;
 };
+static_assert(sizeof(Light) == 48, "Light must match pbr_frag.glsl std140 layout");
 
 struct LightBuffer {
     Light lights[4];
-    int lightCount;
-    glm::vec3 cameraPos;
-    float padding;
+    int32_t lightCount = 0;
+    // Explicit pad: std140 aligns the following vec3 to 16 bytes.
+    float _pad0 = 0.0f, _pad1 = 0.0f, _pad2 = 0.0f;
+    glm::vec3 cameraPos = glm::vec3(0.0f);
+    float padding = 0.0f;
+    glm::mat4 shadowViewProj{1.0f};
+    // x: shadow enabled (0/1), y: depth bias, z: map size, w: reserved
+    glm::vec4 shadowParams = glm::vec4(0.0f);
 };
+static_assert(sizeof(LightBuffer) == 304, "LightBuffer must match pbr_frag.glsl std140 layout");
 
 struct PushConstants {
     glm::mat4 model;
-    glm::mat4 view;
-    glm::mat4 proj;
+    glm::mat4 viewProj;
     glm::vec4 baseColor;
     glm::vec4 emissiveFactor;
     float metallic;
@@ -48,6 +60,29 @@ struct PushConstants {
     int32_t emissiveTexIndex;
     int32_t flags;
 };
+
+struct ShadowPushConstants {
+    glm::mat4 model;
+    glm::mat4 viewProj;
+};
+static_assert(sizeof(ShadowPushConstants) <= 128, "ShadowPushConstants must stay within 128 bytes");
+
+// Procedural sky (fullscreen triangle at far plane). Layout MUST match the
+// SkyPC block in shaders/sky_vert.glsl + sky_frag.glsl exactly (std430).
+struct SkyPushConstants {
+    glm::mat4 invViewProj;   // 0: inverse of (proj * rotation-only view)
+    glm::vec4 sunDir;        // 64: xyz = toward sun (normalized), w unused
+    glm::vec4 horizonColor;  // 80
+    glm::vec4 zenithColor;   // 96
+    glm::vec4 groundColor;   // 112
+    glm::vec4 sunColorSize;  // 128: rgb + disk size in degrees
+    glm::vec4 params;        // 144: x = glow strength, yzw reserved
+};
+static_assert(sizeof(SkyPushConstants) <= 256, "SkyPushConstants exceeds maxPushConstantsSize (256)");
+static_assert(offsetof(SkyPushConstants, sunDir) == 64, "SkyPushConstants.sunDir offset drifted from GLSL");
+static_assert(offsetof(SkyPushConstants, horizonColor) == 80, "SkyPushConstants.horizonColor drifted from GLSL");
+static_assert(offsetof(SkyPushConstants, sunColorSize) == 128, "SkyPushConstants.sunColorSize drifted from GLSL");
+static_assert(sizeof(SkyPushConstants) == 160, "SkyPushConstants size drifted from GLSL std430 layout (160B)");
 
 struct PickingPushConstants {
     glm::mat4 model;
@@ -68,6 +103,28 @@ struct OutlinePushConstants {
     float _pad0;
     float _pad1;
     float _pad2;
+};
+
+static_assert(sizeof(PushConstants) <= 256, "PushConstants exceeds maxPushConstantsSize (256)");
+// Pin the C++ layout to the GLSL push blocks in pbr_vert/frag.glsl and
+// pbr_instanced_vert.glsl (std430): field order/types must stay identical.
+// A drift here silently shifts every uniform after it (this exact bug hid
+// all geometry: vert read proj/view from the wrong offsets). Update GLSL
+// together with this struct.
+static_assert(offsetof(PushConstants, model) == 0, "PushConstants.model offset drifted from GLSL");
+static_assert(offsetof(PushConstants, viewProj) == 64, "PushConstants.viewProj offset drifted from GLSL");
+static_assert(offsetof(PushConstants, baseColor) == 128, "PushConstants.baseColor offset drifted from GLSL");
+static_assert(offsetof(PushConstants, emissiveFactor) == 144, "PushConstants.emissiveFactor offset drifted from GLSL");
+static_assert(offsetof(PushConstants, metallic) == 160, "PushConstants.metallic offset drifted from GLSL");
+static_assert(offsetof(PushConstants, flags) == 192, "PushConstants.flags offset drifted from GLSL");
+static_assert(sizeof(PushConstants) == 196, "PushConstants size drifted from GLSL std430 layout (196B)");
+static_assert(sizeof(PickingPushConstants) <= 256, "PickingPushConstants exceeds limit");
+static_assert(sizeof(OutlinePushConstants) <= 256, "OutlinePushConstants exceeds limit");
+
+// TDD §4.2/§5.2 HLOD1 impostor draw: view-aligned quad tinted per cell.
+struct ImpostorDraw {
+    glm::mat4 model{1.0f};
+    glm::vec4 color{1.0f};
 };
 
 class Window;
@@ -107,6 +164,16 @@ public:
     VkImageView getGameOffscreenImageView() const { return m_GameOffscreenImageView; }
     VkSampler getGameOffscreenSampler() const { return m_GameOffscreenSampler; }
     MemoryManager* getMemoryManager() { return m_MemoryManager.get(); }
+
+    // Phase 2 of ECS<->Vulkan decoupling: registry of opaque handles, one per
+    // GPU mesh allocation backing ::Mesh components (see render_resources.h).
+    // Renderer-owned; editor/game allocate on upload, free on destroy.
+    RenderResourceManager& getMeshRegistry() { return m_meshRegistry; }
+    const RenderResourceManager& getMeshRegistry() const { return m_meshRegistry; }
+    void setShadowsEnabled(bool enabled) { m_ShadowsEnabled = enabled; }
+    bool isShadowsEnabled() const { return m_ShadowsEnabled; }
+    // Debug aid: live mesh-handle count (leak detection for Phase-2 wiring).
+    uint32_t getLiveMeshHandleCount() const { return m_meshRegistry.liveMeshCount(); }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
@@ -157,6 +224,34 @@ public:
     glm::vec4 getClearColor() const { return m_ClearColor; }
     void setClearColor(const glm::vec4& color) { m_ClearColor = color; }
 
+    void setInstancingEnabled(bool enabled) { m_InstancingEnabled = enabled; }
+    bool isInstancingEnabled() const { return m_InstancingEnabled; }
+    void setImpostorDraws(std::vector<ImpostorDraw> draws) { m_ImpostorDraws = std::move(draws); }
+    size_t getImpostorDrawCount() const { return m_ImpostorDraws.size(); }
+    uint32_t getLastDrawCalls() const { return m_LastDrawCalls; }
+    uint32_t getLastTriangles() const { return m_LastTriangles; }
+    uint32_t getLastInstancedDraws() const { return m_LastInstancedDraws; }
+    uint32_t getLastInstancedInstances() const { return m_LastInstancedInstances; }
+
+    // Auto-LOD (§5): simplified GPU variants of dense static meshes.
+    // Keyed by source vertex buffer; level 1 = LOD1, 2 = LOD2.
+    struct StaticMeshBuffers {
+        VkBuffer vertexBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+        uint32_t vertexCount = 0;
+        uint32_t indexCount = 0;
+    };
+    StaticMeshBuffers uploadStaticMesh(const void* verts, size_t vertSize, size_t vertCount,
+                                       const uint32_t* indices, size_t indexCount);
+    void cacheSimplifiedVariant(VkBuffer srcVB, VkBuffer srcIB, int level, StaticMeshBuffers buffers);
+    bool findSimplifiedVariant(VkBuffer srcVB, VkBuffer srcIB, int level, StaticMeshBuffers* out) const;
+    void setAutoLODEnabled(bool enabled) { m_AutoLODEnabled = enabled; }
+    bool isAutoLODEnabled() const { return m_AutoLODEnabled; }
+    uint32_t getSimplifiedVariantCount() const;
+    uint32_t getLastSimplifiedDraws() const { return m_LastSimplifiedDraws; }
+
 private:
     void createInstance();
     void setupDebugMessenger();
@@ -168,6 +263,14 @@ private:
     void createRenderPass();
     void createDepthResources();
     void createGraphicsPipeline();
+    // TDD §6: GPU instancing (per-instance mat4 @ binding 1, locations 6-9).
+    // Opaque pipelines only; transparent (sorted) + picking + outline stay per-entity.
+    void createInstancedPipelines();
+    void createInstanceBuffers();
+    void destroyInstanceBuffers();
+    // TDD §4 HLOD1 impostor quad (unit quad, billboarded CPU-side per draw).
+    void createImpostorQuad();
+    void destroyImpostorQuad();
     void createFramebuffers();
     void createCommandPool();
     void createCommandBuffers();
@@ -176,7 +279,15 @@ private:
     void createOffscreenRenderPass();
     void createPickingRenderPass();
     void createPickingPipeline();
+    void createShadowResources();
+    void destroyShadowResources();
+    void createShadowPipeline();
+    // Gathers scene lights into the LightBuffer UBO (cameraPos always) and
+    // computes the shadow matrix when a directional+castShadows light exists.
+    void updateLightsAndShadow(Scene* scene);
+    void recordShadowPass(VkCommandBuffer commandBuffer, Scene* scene);
     void createOutlinePipeline();
+    void createSkyPipeline();
     void createLightBuffer();
     void createDescriptorSet();
     void createBonesDescriptorSetLayout();
@@ -221,6 +332,12 @@ private:
     QueueFamilyIndices m_QueueFamilyIndices{};
     std::unique_ptr<MemoryManager> m_MemoryManager;
 
+    // See getMeshRegistry(). Must outlive any ::Mesh referencing its handles;
+    // Renderer is destroyed after the scene in both editor and game flows.
+    RenderResourceManager m_meshRegistry;
+    // Current init() phase; reported in fatal-error context on failure.
+    std::string m_InitStep = "begin";
+
     VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
     bool m_VSyncEnabled = true;
     std::vector<VkImage> m_SwapChainImages;
@@ -246,6 +363,26 @@ private:
     VkPipeline m_GraphicsPipelineBlendFrontCull = VK_NULL_HANDLE;
     VkPipeline m_GraphicsPipelineBlendNoCull = VK_NULL_HANDLE;
 
+    // TDD §6 instanced variants (opaque only, same layout/descriptors).
+    VkPipeline m_GraphicsPipelineInstanced = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineInstancedFrontCull = VK_NULL_HANDLE;
+    VkPipeline m_GraphicsPipelineInstancedNoCull = VK_NULL_HANDLE;
+
+    // TDD §6 instancing toggle + batch threshold.
+    bool m_InstancingEnabled = true;
+    static constexpr uint32_t MIN_INSTANCES_PER_BATCH = 2;
+    static constexpr uint32_t MAX_INSTANCES_PER_FRAME = 8192;
+
+    // TDD §12 frame metrics (filled during recordCommandBuffer).
+    uint32_t m_FrameDrawCalls = 0;
+    uint32_t m_FrameTriangles = 0;
+    uint32_t m_FrameInstancedDraws = 0;
+    uint32_t m_FrameInstancedInstances = 0;
+    uint32_t m_LastDrawCalls = 0;
+    uint32_t m_LastTriangles = 0;
+    uint32_t m_LastInstancedDraws = 0;
+    uint32_t m_LastInstancedInstances = 0;
+
     VkPipelineLayout m_PickingPipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_PickingPipeline = VK_NULL_HANDLE;
     VkPipeline m_PickingPipelineFrontCull = VK_NULL_HANDLE;
@@ -253,6 +390,11 @@ private:
 
     VkPipelineLayout m_OutlinePipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_OutlinePipeline = VK_NULL_HANDLE;
+
+    // Procedural sky (fullscreen triangle, drawn first in the main pass).
+    // No vertex buffers, no descriptor sets — everything via push constants.
+    VkPipelineLayout m_SkyPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_SkyPipeline = VK_NULL_HANDLE;
 
     VkCommandPool m_CommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_CommandBuffers;
@@ -301,6 +443,30 @@ private:
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
 
+    // Directional shadow mapping (single fixed shadow map, v1 — see ARCHITECTURE.md).
+    static constexpr uint32_t kShadowMapSize = 2048;
+    static constexpr float kShadowOrthoExtent = 80.0f;
+    static constexpr float kShadowDepthBias = 0.0015f;
+    // Slope-scaled bias (NDC units, added as (1-NdotL)*scale). Residual only:
+    // acne is handled by the receiver normal offset in sampleShadow and edge
+    // stability by texel snapping (a large depth bias detaches at low sun).
+    static constexpr float kShadowSlopeScale = 0.001f;
+    VkImage m_ShadowImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_ShadowMemory = VK_NULL_HANDLE;
+    VkImageView m_ShadowView = VK_NULL_HANDLE;
+    VkSampler m_ShadowSampler = VK_NULL_HANDLE;
+    VkRenderPass m_ShadowRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer m_ShadowFramebuffer = VK_NULL_HANDLE;
+    VkPipelineLayout m_ShadowPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_ShadowPipeline = VK_NULL_HANDLE;
+    bool m_ShadowsEnabled = true; // global shadow-map switch (per-light/caster flags gate the rest)
+    bool m_ShadowEnabledFrame = false;
+    // Tracks the shadow image layout across frames: the render pass moves it
+    // to SHADER_READ_ONLY when it runs; otherwise recordShadowPass issues a
+    // one-time barrier so main-pass binding 2 is always sampling-valid.
+    VkImageLayout m_ShadowImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    glm::mat4 m_ShadowViewProj{1.0f};
+
     // Bones palette (dynamic SSBO) used by vertex shaders (set=1,binding=0).
     static constexpr uint32_t MAX_BONES = 256;
     static constexpr uint32_t MAX_SKINNED_INSTANCES = 256;
@@ -314,6 +480,38 @@ private:
     std::array<void*, MAX_FRAMES_IN_FLIGHT> m_BonePaletteMapped{};
     VkDeviceSize m_BonePaletteStrideBytes = 0;
     uint32_t m_BonePaletteNextSlot = 0;
+
+    // Per-flight instance-transform staging (host-visible). One slot per frame
+    // in flight; written during record, consumed by the GPU draw.
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> m_InstanceBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> m_InstanceMemories{};
+    std::array<void*, MAX_FRAMES_IN_FLIGHT> m_InstanceMapped{};
+
+    // TDD §4.2/§5.2 HLOD1 impostors: view-aligned quads tinted per cell.
+    // Auto-LOD variant cache: (sourceVB, sourceIB) -> [LOD1, LOD2] GPU meshes.
+    struct SimplifiedKey {
+        VkBuffer vertexBuffer = VK_NULL_HANDLE;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
+        bool operator==(const SimplifiedKey& o) const {
+            return vertexBuffer == o.vertexBuffer && indexBuffer == o.indexBuffer;
+        }
+    };
+    struct SimplifiedKeyHash {
+        size_t operator()(const SimplifiedKey& k) const noexcept {
+            const size_t a = static_cast<size_t>(reinterpret_cast<uintptr_t>(k.vertexBuffer));
+            const size_t b = static_cast<size_t>(reinterpret_cast<uintptr_t>(k.indexBuffer));
+            return a * 1315423911u + b * 1566083941u;
+        }
+    };
+    std::unordered_map<SimplifiedKey, std::array<StaticMeshBuffers, 2>, SimplifiedKeyHash> m_SimplifiedVariants;
+    bool m_AutoLODEnabled = true;
+    uint32_t m_FrameSimplifiedDraws = 0;
+    uint32_t m_LastSimplifiedDraws = 0;
+    std::vector<ImpostorDraw> m_ImpostorDraws;
+    VkBuffer m_ImpostorQuadVB = VK_NULL_HANDLE;
+    VkDeviceMemory m_ImpostorQuadVBMem = VK_NULL_HANDLE;
+    VkBuffer m_ImpostorQuadIB = VK_NULL_HANDLE;
+    VkDeviceMemory m_ImpostorQuadIBMem = VK_NULL_HANDLE;
 
     uint32_t m_BoundTextureCount = 1;
 

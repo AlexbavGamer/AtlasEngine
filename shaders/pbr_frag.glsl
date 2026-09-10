@@ -2,8 +2,7 @@
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
-    mat4 view;
-    mat4 proj;
+    mat4 viewProj;
     vec4 baseColor;
     vec4 emissiveFactor;
     float metallic;
@@ -31,17 +30,26 @@ struct Light {
     vec3 position;
     float intensity;
     vec3 color;
-    float padding;
+    float pad0;
+    vec3 direction;
+    int type; // 0 = point, 1 = directional (spot falls back to point)
 };
 
 layout(set = 0, binding = 0) uniform LightBuffer {
     Light lights[MAX_LIGHTS];
     int lightCount;
+    float pad1;
+    float pad2;
+    float pad3;
     vec3 cameraPos;
     float padding;
+    mat4 shadowViewProj;
+    // x: shadow enabled (0/1), y: depth bias, z: shadow map size, w: reserved
+    vec4 shadowParams;
 } lightData;
 
 layout(set = 0, binding = 1) uniform sampler2D textureSamplers[MAX_TEXTURES];
+layout(set = 0, binding = 2) uniform sampler2DShadow shadowMap;
 
 const float PI = 3.14159265359;
 
@@ -94,6 +102,40 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 
     float invMax = inversesqrt(max(dot(T, T), dot(B, B)));
     return mat3(T * invMax, B * invMax, N);
+}
+
+// PCF shadow lookup for the directional light in slot 0 (comparison sampler).
+// Returns 1.0 outside the shadow frustum.
+// NOTE: the C++ shadowViewProj is a raw view*proj (NDC in [-1,1]); the
+// *0.5+0.5 scale-bias to sampler UV space happens here (same matrix wrote
+// the depth, so the mapping is self-consistent including the Y-flip).
+// 5x5 manual PCF (soft edges) + slope-scaled bias: grazing surfaces need
+// more bias (acne), facing surfaces nearly none.
+// shadowParams = (enabled, baseBias, mapSize, slopeScale). N is the
+// (possibly normal-mapped, double-side-flipped) surface normal.
+float sampleShadow(vec3 worldPos, vec3 N, float NdotL) {
+    // Receiver-side normal offset: sample slightly off the surface along N.
+    // This kills self-acne without the detachment of a large depth bias
+    // (a fixed NDC bias detaches meters at low sun = peter-panning).
+    // Fixed world-space offset (frustum-independent): the depth slope part
+    // is covered by the slope-scaled bias below.
+    vec3 anchor = worldPos + N * 0.05;
+    vec4 sc = lightData.shadowViewProj * vec4(anchor, 1.0);
+    vec3 proj = sc.xyz / max(sc.w, 0.0001);
+    vec2 uv = proj.xy * 0.5 + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
+        return 1.0;
+    }
+    float ref = proj.z - lightData.shadowParams.y
+        - (1.0 - clamp(NdotL, 0.0, 1.0)) * lightData.shadowParams.w;
+    vec2 texel = vec2(1.0) / max(lightData.shadowParams.z, 1.0);
+    float sum = 0.0;
+    for (int x = -2; x <= 2; ++x) {
+        for (int y = -2; y <= 2; ++y) {
+            sum += texture(shadowMap, vec3(uv + vec2(float(x), float(y)) * texel, ref));
+        }
+    }
+    return sum / 25.0;
 }
 
 void main() {
@@ -168,15 +210,30 @@ void main() {
 
     vec3 Lo = vec3(0.0);
 
+    // Shadow visibility for the slot-0 directional light (1.0 = no shadow).
+    // Sampled with the facing ratio so the bias follows the slope (acne fix).
+    float shadow = 1.0;
+    if (lightData.shadowParams.x > 0.5 && lightData.lightCount > 0 && lightData.lights[0].type == 1) {
+        vec3 L0 = normalize(-lightData.lights[0].direction);
+        shadow = sampleShadow(fragWorldPos, N, max(dot(N, L0), 0.0));
+    }
+
     for (int i = 0; i < lightData.lightCount; i++) {
         Light light = lightData.lights[i];
 
-        vec3 L = normalize(light.position - fragWorldPos);
+        vec3 L;
+        vec3 radiance;
+        if (light.type == 1) {
+            // Directional: parallel rays, no distance falloff.
+            L = normalize(-light.direction);
+            radiance = light.color * light.intensity;
+        } else {
+            L = normalize(light.position - fragWorldPos);
+            float distance = length(light.position - fragWorldPos);
+            float attenuation = 1.0 / (distance * distance);
+            radiance = light.color * light.intensity * attenuation;
+        }
         vec3 H = normalize(V + L);
-
-        float distance = length(light.position - fragWorldPos);
-        float attenuation = 1.0 / (distance * distance);
-        vec3 radiance = light.color * light.intensity * attenuation;
 
         float NDF = DistributionGGX(N, H, roughness);
         float G = GeometrySmith(N, V, L, roughness);
@@ -191,7 +248,8 @@ void main() {
         vec3 specular = numerator / denominator;
 
         float NdotL = max(dot(N, L), 0.0);
-        Lo += (kD * albedoColor.rgb / PI + specular) * radiance * NdotL;
+        float visibility = (i == 0) ? shadow : 1.0;
+        Lo += (kD * albedoColor.rgb / PI + specular) * radiance * NdotL * visibility;
     }
 
     vec3 ambient = vec3(0.03) * albedoColor.rgb;

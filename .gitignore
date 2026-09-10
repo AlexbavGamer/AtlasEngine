@@ -1,5 +1,6 @@
 # Build
 build/
+bin/
 deps/build/
 deps/src/
 out/
@@ -20,6 +21,7 @@ MyProject/
 # Cache
 .cache/
 .clangd/
+.ruff_cache/
 
 # Compiled
 *.o

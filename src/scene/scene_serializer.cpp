@@ -16,7 +16,7 @@ constexpr const char* kMagicText = "ATLAS_SCENE_V1";
 
 // Binary format magic/version
 constexpr uint8_t kMagicBin[] = {'A','T','L','A','S','_','S','C','N','_','B','I','N'};
-constexpr uint32_t kBinVersion = 1;
+constexpr uint32_t kBinVersion = 2;
 
 std::string escapeString(const std::string& value) {
     std::ostringstream oss;
@@ -233,6 +233,11 @@ enum EntityBinFlags : uint32_t {
     kHasPrimitive = 1u << 11,
     kHasMaterial = 1u << 12,
     kHasScripts = 1u << 13,
+    kHasMeshCollider = 1u << 14,
+    // Sun/Sky task: procedural sun + sky (new in otherwise-v1 binary format;
+    // old files simply lack these flags and load with component defaults).
+    kHasSun = 1u << 15,
+    kHasSky = 1u << 16,
 };
 
 bool writeScriptFieldBin(std::ostream& os, const SerializedScriptField& field) {
@@ -352,6 +357,9 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
         if (registry.all_of<ECS::CapsuleColliderComponent>(entity)) flags |= kHasCapsuleCollider;
         if (registry.all_of<ECS::MaterialComponent>(entity)) flags |= kHasMaterial;
         if (registry.all_of<ECS::ScriptComponent>(entity)) flags |= kHasScripts;
+        if (registry.all_of<ECS::MeshColliderComponent>(entity)) flags |= kHasMeshCollider;
+        if (registry.all_of<ECS::SunComponent>(entity)) flags |= kHasSun;
+        if (registry.all_of<ECS::SkyComponent>(entity)) flags |= kHasSky;
 
         std::string primitiveType;
         if (registry.all_of<::Mesh>(entity)) {
@@ -454,6 +462,32 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
             if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
         }
 
+        if (flags & kHasMeshCollider) {
+            const auto& c = registry.get<ECS::MeshColliderComponent>(entity);
+            if (!writeVec3(out, c.offset)) return false;
+            if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
+            if (!writeU8(out, c.convex ? 1 : 0)) return false;
+        }
+
+        if (flags & kHasSun) {
+            const auto& s = registry.get<ECS::SunComponent>(entity);
+            if (!writeF32(out, s.azimuthDeg) || !writeF32(out, s.elevationDeg)) return false;
+            if (!writeVec3(out, s.color)) return false;
+            if (!writeF32(out, s.intensity)) return false;
+            if (!writeU8(out, s.castShadows ? 1 : 0)) return false;
+            if (!writeF32(out, s.shadowRange)) return false;
+        }
+
+        if (flags & kHasSky) {
+            const auto& s = registry.get<ECS::SkyComponent>(entity);
+            if (!writeU8(out, s.enabled ? 1 : 0)) return false;
+            if (!writeVec3(out, s.horizonColor)) return false;
+            if (!writeVec3(out, s.zenithColor)) return false;
+            if (!writeVec3(out, s.groundColor)) return false;
+            if (!writeVec3(out, s.sunColor)) return false;
+            if (!writeF32(out, s.sunDiskSizeDeg) || !writeF32(out, s.sunGlow)) return false;
+        }
+
         if (flags & kHasPrimitive) {
             if (!writeString(out, primitiveType)) return false;
         }
@@ -507,7 +541,7 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
 
 bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
     uint32_t version = 0;
-    if (!readU32(in, version) || version != kBinVersion) {
+    if (!readU32(in, version) || version < 1 || version > kBinVersion) {
         return false;
     }
 
@@ -616,6 +650,43 @@ bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
             if (!readVec3(in, e.capsuleCollider.offset)) return false;
             if (!readU8(in, isTrigger)) return false;
             e.capsuleCollider.isTrigger = (isTrigger != 0);
+        }
+
+        if (flags & kHasMeshCollider) {
+            e.hasMeshCollider = true;
+            uint8_t isTrigger = 0;
+            uint8_t convex = 0;
+            if (!readVec3(in, e.meshCollider.offset)) return false;
+            if (!readU8(in, isTrigger)) return false;
+            if (!readU8(in, convex)) return false;
+            e.meshCollider.isTrigger = (isTrigger != 0);
+            e.meshCollider.convex = (convex != 0);
+        }
+
+        if (flags & kHasSun) {
+            e.hasSun = true;
+            uint8_t castShadows = 1;
+            if (!readF32(in, e.sunAzimuthDeg) || !readF32(in, e.sunElevationDeg)) return false;
+            if (!readVec3(in, e.sunColor)) return false;
+            if (!readF32(in, e.sunIntensity)) return false;
+            if (!readU8(in, castShadows)) return false;
+            e.sunCastShadows = (castShadows != 0);
+            // v2 added the shadow range; v1 files keep the default.
+            if (version >= 2) {
+                if (!readF32(in, e.sunShadowRange)) return false;
+            }
+        }
+
+        if (flags & kHasSky) {
+            e.hasSky = true;
+            uint8_t enabled = 1;
+            if (!readU8(in, enabled)) return false;
+            if (!readVec3(in, e.skyHorizon)) return false;
+            if (!readVec3(in, e.skyZenith)) return false;
+            if (!readVec3(in, e.skyGround)) return false;
+            if (!readVec3(in, e.skySunColor)) return false;
+            if (!readF32(in, e.skySunDiskSizeDeg) || !readF32(in, e.skySunGlow)) return false;
+            e.skyEnabled = (enabled != 0);
         }
 
         if (flags & kHasPrimitive) {
@@ -796,6 +867,15 @@ bool loadFromText(std::istream& in, SerializedScene& outScene) {
                >> current->capsuleCollider.offset.x >> current->capsuleCollider.offset.y >> current->capsuleCollider.offset.z
                >> isTrigger;
             current->capsuleCollider.isTrigger = (isTrigger != 0);
+        } else if (token == "mesh_collider") {
+            if (!current) return false;
+            current->hasMeshCollider = true;
+            int isTrigger = 0;
+            int convex = 0;
+            in >> current->meshCollider.offset.x >> current->meshCollider.offset.y >> current->meshCollider.offset.z
+               >> isTrigger >> convex;
+            current->meshCollider.isTrigger = (isTrigger != 0);
+            current->meshCollider.convex = (convex != 0);
         } else if (token == "primitive") {
             if (!current || !readQuoted(in, current->primitiveType)) return false;
         } else if (token == "material") {
@@ -878,6 +958,23 @@ bool SceneSerializer::saveToFile(Scene& scene, const std::string& path) {
     }
 
     return saveToBinary(scene, out);
+}
+
+bool SceneSerializer::loadFromMemory(const uint8_t* data, size_t size, SerializedScene& outScene) {
+    if (size > 0 && !data) return false;
+    const char* bytes = data ? reinterpret_cast<const char*>(data) : "";
+    // Same dispatch as loadFromFile: binary magic first, else legacy text.
+    if (size >= sizeof(kMagicBin) && std::memcmp(bytes, kMagicBin, sizeof(kMagicBin)) == 0) {
+        std::string rest(bytes + sizeof(kMagicBin), size - sizeof(kMagicBin));
+        std::istringstream in(std::move(rest), std::ios::binary);
+        return loadFromBinary(in, outScene);
+    }
+    std::istringstream in(std::string(bytes, size));
+    return loadFromText(in, outScene);
+}
+
+bool SceneSerializer::loadFromMemory(const std::vector<uint8_t>& data, SerializedScene& outScene) {
+    return loadFromMemory(data.data(), data.size(), outScene);
 }
 
 bool SceneSerializer::loadFromFile(const std::string& path, SerializedScene& outScene) {

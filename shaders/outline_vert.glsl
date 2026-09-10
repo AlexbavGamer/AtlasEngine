@@ -6,7 +6,11 @@ layout(push_constant) uniform OutlinePC {
     mat4 proj;
     vec4 color;
     float width;
-    vec3 _pad;
+    // NOTE: three scalars (not vec3) so std430 layout matches the C++
+    // OutlinePushConstants struct exactly (224 bytes, no hidden padding).
+    float _pad0;
+    float _pad1;
+    float _pad2;
 } pc;
 
 layout(set = 1, binding = 0) readonly buffer BonesBuffer {

@@ -62,6 +62,8 @@ public:
     bool wasGameViewportFocused() const { return m_GameViewportFocusedPrevFrame; }
     void setOnCreatePrimitive(std::function<void(const std::string&, Entity)> callback) { onCreatePrimitive = std::move(callback); }
     void setOnCreateGameCamera(std::function<void(Entity)> callback) { onCreateGameCamera = std::move(callback); }
+    void setOnCreateSun(std::function<void(Entity)> callback) { onCreateSun = std::move(callback); }
+    void setOnCreateSky(std::function<void(Entity)> callback) { onCreateSky = std::move(callback); }
 
     TransformMode getTransformMode() const { return m_TransformMode; }
     bool isGizmoUsing() const { return m_GizmoUsing; }
@@ -69,6 +71,7 @@ public:
 
     // Debug panels (owned/controlled by EditorApp)
     bool m_ShowWorldStreamingWindow = false;
+    bool m_ShowHLODViewerWindow = false;
 
     void updateProfiler(float deltaTime);
     void renderProfilerWindow();
@@ -146,6 +149,9 @@ private:
         bool hasMaterial = false;
         Atlas::ECS::MaterialComponent material;
 
+        bool hasLOD = false;
+        Atlas::LODComponent lod;
+
         bool hasRigidBody = false;
         Atlas::ECS::RigidBodyComponent rigidBody;
 
@@ -160,6 +166,13 @@ private:
 
         bool hasLight = false;
         Atlas::ECS::LightComponent light;
+
+        // Sun/sky are plain data (no GPU handles, unlike Mesh): value-copied as-is.
+        bool hasSun = false;
+        Atlas::ECS::SunComponent sun;
+
+        bool hasSky = false;
+        Atlas::ECS::SkyComponent sky;
 
         bool hasScript = false;
         Atlas::ECS::ScriptComponent script;
@@ -239,6 +252,8 @@ private:
     std::function<void()> onReleaseGameFocus;
     std::function<void(const std::string&, Entity)> onCreatePrimitive;
     std::function<void(Entity)> onCreateGameCamera;
+    std::function<void(Entity)> onCreateSun;
+    std::function<void(Entity)> onCreateSky;
 
     GLFWwindow* window = nullptr;
 
@@ -376,6 +391,9 @@ private:
 
     struct SoftDeleteCommand final : UndoCommand {
         std::vector<Entity> entities;
+        // Direction of the redo step (undo applies the opposite). Delete and
+        // deactivate use hideOnRedo=true; re-activate uses hideOnRedo=false.
+        bool hideOnRedo = true;
 
         void setHidden(Atlas::Scene* scene, bool hidden) {
             if (!scene) return;
@@ -392,8 +410,8 @@ private:
             }
         }
 
-        void undo(Atlas::Scene* scene) override { setHidden(scene, false); }
-        void redo(Atlas::Scene* scene) override { setHidden(scene, true); }
+        void undo(Atlas::Scene* scene) override { setHidden(scene, !hideOnRedo); }
+        void redo(Atlas::Scene* scene) override { setHidden(scene, hideOnRedo); }
     };
 
     struct MaterialScalarState {
@@ -460,6 +478,21 @@ private:
     bool m_PropTransformEditing = false;
     Entity m_PropTransformEntity = entt::null;
     TransformState m_PropTransformBefore;
+    // Bulk (multi-selection) transform editing via Properties
+    bool m_PropTransformMultiEditing = false;
+    std::vector<Entity> m_PropTransformMultiEntities;
+    std::vector<TransformState> m_PropTransformBeforeMulti;
+
+    // Inspector (Properties panel) filter text.
+    char m_InspectorFilter[128] = {};
+    // Hierarchy / Content Explorer / Console filters.
+    char m_HierarchyFilter[128] = {};
+    char m_ContentFilter[128] = {};
+    char m_ConsoleFilter[128] = {};
+    bool m_ConsoleShowInfo = true;
+    bool m_ConsoleShowWarn = true;
+    bool m_ConsoleShowError = true;
+    bool m_ConsoleAutoScroll = true;
 
     uint32_t m_PropNameEditEntityId = 0;
     bool m_PropNameEditing = false;

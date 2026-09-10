@@ -1,9 +1,11 @@
 #version 450
 
+// Push block MUST match Atlas::PushConstants in src/renderer/renderer.h
+// exactly (same order, same types, std430 layout). The C++ side pins this
+// with offsetof static_asserts — update both sides together.
 layout(push_constant) uniform PushConstants {
     mat4 model;
-    mat4 view;
-    mat4 proj;
+    mat4 viewProj;
     vec4 baseColor;
     vec4 emissiveFactor;
     float metallic;
@@ -44,7 +46,7 @@ void main() {
     vec4 localPos = skin * vec4(inPosition, 1.0);
     vec4 worldPos = pc.model * localPos;
 
-    gl_Position = pc.proj * pc.view * worldPos;
+    gl_Position = pc.viewProj * worldPos;
     fragColor = pc.baseColor.rgb * inColor;
     fragTexCoord = inTexCoord;
     fragNormal = mat3(transpose(inverse(pc.model))) * (mat3(skin) * inNormal);

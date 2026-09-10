@@ -1,4 +1,6 @@
 #include "editor_app.h"
+#include "world_streaming_layer.h"
+#include "hlod_viewer_layer.h"
 
 #include <filesystem>
 #include <iostream>
@@ -16,6 +18,7 @@
 #include <imgui.h>
 
 #include "../assets/asset_manager.h"
+#include "../assets/pack/pack_builder.h"
 #include "../core/profiler.h"
 #include "../core/threading/async_loader.h"
 #include "../export/package_manifest.h"
@@ -33,6 +36,9 @@
 #include "../utils/primitive_helpers.h"
 #include "../ecs/ecs.h"
 #include "../world/world_partition.h"
+#include "../world/culling.h"
+#include "../world/hlod.h"
+#include "../world/lod.h"
 #include "../utils/frustum.h"
 
 #ifdef _WIN32
@@ -40,7 +46,6 @@
 #endif
 
 namespace Atlas {
-using namespace ecs;
 
 namespace {
 std::filesystem::path getCurrentExecutablePath() {
@@ -77,18 +82,26 @@ void EditorApp::decodeCellKey(uint64_t key, int& outX, int& outZ) {
     outZ = static_cast<int>(static_cast<uint32_t>(key & 0xFFFFFFFFu));
 }
 
-EditorApp::EditorApp() {
+EditorApp::EditorApp()
+try {
+    m_InitStep = "window";
     m_Window = std::make_unique<Window>(1280, 720, "Atlas Engine");
+    m_InitStep = "renderer";
     m_Renderer = std::make_unique<Renderer>(m_Window.get());
     m_Renderer->init();
 
+    m_InitStep = "assets/scene/world";
     m_AssetManager = std::make_unique<AssetManager>();
     m_AssetManager->setRenderer(m_Renderer.get());
 
     m_Scene = std::make_unique<Scene>();
     m_Scene->getRegistry().on_destroy<::Mesh>().connect<&EditorApp::onMeshDestroyed>(this);
     m_WorldPartition = std::make_unique<WorldPartition>(m_Scene.get());
+    m_CullingPipeline = std::make_unique<CullingPipeline>(m_CullingConfig);
+    m_HLODSystem = std::make_unique<HLODSystem>(m_HLODConfig);
+    m_CityScene = m_Scene.get();
 
+    m_InitStep = "imgui/viewport";
     m_ImGuiManager = std::make_unique<::ImGuiManager>();
     m_ImGuiManager->init(
         m_Renderer->getInstance(),
@@ -103,6 +116,7 @@ EditorApp::EditorApp() {
     m_Viewport.setRenderer(m_Renderer.get());
     m_Viewport.refreshTexture();
 
+    m_InitStep = "ui/project";
     m_UIManager = std::make_unique<::UIManager>(m_Scene.get());
     m_UIManager->setWindow(m_Window->getGLFWWindow());
     m_UIManager->setRenderer(m_Renderer.get());
@@ -111,6 +125,7 @@ EditorApp::EditorApp() {
     m_ProjectManager = std::make_unique<::ProjectManager>();
     m_UIManager->setProjectManager(m_ProjectManager.get());
 
+    m_InitStep = "physics/scripting";
     m_PhysicsSystem = std::make_unique<Atlas::Physics::PhysicsSystem>();
     m_PhysicsSystem->initialize();
 
@@ -118,6 +133,7 @@ EditorApp::EditorApp() {
     m_ScriptEngine->setWindow(m_Window->getGLFWWindow());
     m_ScriptEngine->initialize();
 
+    m_InitStep = "editor camera";
     auto cameraEntity = m_Scene->createEntity("Editor Camera");
     m_Scene->getRegistry().emplace<EditorCamera>(cameraEntity);
     auto& camera = m_Scene->getRegistry().get<EditorCamera>(cameraEntity);
@@ -143,6 +159,8 @@ EditorApp::EditorApp() {
     });
     m_UIManager->setOnCreatePrimitive([this](const std::string& primitiveType, Entity parent) { createPrimitiveEntity(primitiveType, parent); });
     m_UIManager->setOnCreateGameCamera([this](Entity parent) { createGameCameraEntity(parent); });
+    m_UIManager->setOnCreateSun([this](Entity parent) { createSunEntity(parent); });
+    m_UIManager->setOnCreateSky([this](Entity parent) { createSkyEntity(parent); });
 
     AsyncLoader::getInstance().init();
 
@@ -154,6 +172,13 @@ EditorApp::EditorApp() {
     m_Window->setFileDropCallback([this](const std::vector<std::string>& paths) {
         onExternalFileDrop(paths);
     });
+    // Walnut-style tool/debug layers (render on top of the editor UI).
+    m_LayerStack.pushLayer<WorldStreamingLayer>(this);
+    m_LayerStack.pushOverlay<HLODViewerLayer>(this);
+} catch (const std::exception& e) {
+    throw std::runtime_error(std::string("EditorApp startup failed at step '") + m_InitStep + "': " + e.what());
+} catch (...) {
+    throw std::runtime_error(std::string("EditorApp startup failed at step '") + m_InitStep + "' (unknown, non-std exception)");
 }
 
 EditorApp::~EditorApp() {
@@ -379,6 +404,31 @@ bool EditorApp::loadSceneFromAssetPath(const std::string& assetRelativePath) {
             if (src.hasCapsuleCollider) {
                 registry.emplace_or_replace<ECS::CapsuleColliderComponent>(entity, src.capsuleCollider);
             }
+            if (src.hasMeshCollider) {
+                registry.emplace_or_replace<ECS::MeshColliderComponent>(entity, src.meshCollider);
+            }
+            // Sun/Sky task: procedural sun + sky backdrop (data-only).
+            if (src.hasSun) {
+                ECS::SunComponent sun;
+                sun.azimuthDeg = src.sunAzimuthDeg;
+                sun.elevationDeg = src.sunElevationDeg;
+                sun.color = src.sunColor;
+                sun.intensity = src.sunIntensity;
+                sun.castShadows = src.sunCastShadows;
+                sun.shadowRange = src.sunShadowRange;
+                registry.emplace_or_replace<ECS::SunComponent>(entity, sun);
+            }
+            if (src.hasSky) {
+                ECS::SkyComponent sky;
+                sky.enabled = src.skyEnabled;
+                sky.horizonColor = src.skyHorizon;
+                sky.zenithColor = src.skyZenith;
+                sky.groundColor = src.skyGround;
+                sky.sunColor = src.skySunColor;
+                sky.sunDiskSizeDeg = src.skySunDiskSizeDeg;
+                sky.sunGlow = src.skySunGlow;
+                registry.emplace_or_replace<ECS::SkyComponent>(entity, sky);
+            }
             if (src.hasMaterial) {
                 ECS::MaterialComponent material;
                 material.baseColor = src.material.baseColor;
@@ -416,6 +466,11 @@ bool EditorApp::loadSceneFromAssetPath(const std::string& assetRelativePath) {
                     scriptComponent.scripts.push_back(std::move(entry));
                 }
                 registry.emplace_or_replace<ECS::ScriptComponent>(entity, std::move(scriptComponent));
+            }
+            // TDD §5: every mesh entity carries LOD state (fresh state on load;
+            // variants gracefully fall back to the full mesh when absent).
+            if (registry.all_of<::Mesh>(entity) && !registry.all_of<Atlas::LODComponent>(entity)) {
+                registry.emplace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
             }
         }
 
@@ -546,6 +601,7 @@ bool EditorApp::exportGamePackage() {
         inc += " -I" + q(engineRoot + "/deps/src/vma/include");
         inc += " -I" + q(engineRoot + "/deps/src/assimp/include");
         inc += " -I" + q(engineRoot + "/deps/src/lua");
+        inc += " -I" + q(engineRoot + "/deps/src/assimp/contrib/zlib");
         inc += " -I" + q(engineRoot + "/deps/src/glfw/include");
         inc += " -I" + q(engineRoot + "/deps/src/tracy/public");
         inc += " -I" + q(std::string(getenv("VULKAN_SDK")) + "/Include");
@@ -582,6 +638,24 @@ bool EditorApp::exportGamePackage() {
         return false;
     }
 
+    // Build the asset pack next to the loose tree (P1: the game boots from
+    // the pack when present; the loose dir stays as fallback/dev override).
+    std::string pakFile;
+    {
+        Atlas::Pack::PackOptions packOpts;
+        Atlas::Pack::PackStats packStats;
+        std::string packErr;
+        if (Atlas::Pack::PackBuilder::build((packageRoot / "assets").string(),
+                                            (packageRoot / "game.pak").string(), packOpts, packStats,
+                                            packErr)) {
+            std::cout << "[Export] Packed " << packStats.fileCount << " assets into game.pak" << std::endl;
+            pakFile = "game.pak";
+        } else {
+            std::cerr << "[Export] WARNING: asset pack failed (" << packErr << "); shipping loose files"
+                      << std::endl;
+        }
+    }
+
     // Copy the MinGW runtime DLLs next to the exported executable so the game
     // runs on machines that don't have the MinGW toolchain in PATH.
     {
@@ -616,6 +690,7 @@ bool EditorApp::exportGamePackage() {
     manifest.assetsRoot = "assets";
     manifest.useEmbeddedShaders = true;
     manifest.shadersPath = "shaders";
+    manifest.pakFile = pakFile;
     if (!Atlas::Export::savePackageManifest(manifest, (packageRoot / "package.manifest").string())) {
         std::cerr << "[Export] Failed to write package manifest" << std::endl;
         return false;
@@ -673,12 +748,30 @@ bool EditorApp::exportGamePackageLinux() {
         return false;
     }
 
+    // Build the asset pack next to the loose tree (same as Windows export).
+    std::string pakFile;
+    {
+        Atlas::Pack::PackOptions packOpts;
+        Atlas::Pack::PackStats packStats;
+        std::string packErr;
+        if (Atlas::Pack::PackBuilder::build((packageRoot / "assets").string(),
+                                            (packageRoot / "game.pak").string(), packOpts, packStats,
+                                            packErr)) {
+            std::cout << "[Export] Packed " << packStats.fileCount << " assets into game.pak" << std::endl;
+            pakFile = "game.pak";
+        } else {
+            std::cerr << "[Export] WARNING: asset pack failed (" << packErr << "); shipping loose files"
+                      << std::endl;
+        }
+    }
+
     // Write the package manifest.
     Atlas::Export::PackageManifest manifest;
     manifest.startupScene = "assets/" + (m_CurrentSceneAssetPath.empty() ? std::string("scenes/main.scene") : m_CurrentSceneAssetPath);
     manifest.assetsRoot = "assets";
     manifest.useEmbeddedShaders = true;
     manifest.shadersPath = "shaders";
+    manifest.pakFile = pakFile;
     if (!Atlas::Export::savePackageManifest(manifest, (packageRoot / "package.manifest").string())) {
         std::cerr << "[Export] Failed to write package manifest" << std::endl;
         return false;
@@ -759,6 +852,8 @@ void EditorApp::cloneSceneToRuntime() {
     copyIfPresent(Atlas::ECS::BoxColliderComponent{});
     copyIfPresent(Atlas::ECS::SphereColliderComponent{});
     copyIfPresent(Atlas::ECS::CapsuleColliderComponent{});
+    copyIfPresent(Atlas::ECS::MeshColliderComponent{});
+    copyIfPresent(Atlas::LODComponent{});
     copyIfPresent(Atlas::ECS::SkeletonComponent{});
     copyIfPresent(Atlas::ECS::AnimationPlayerComponent{});
     copyIfPresent(Atlas::ECS::BonePoseOverrideComponent{});
@@ -979,14 +1074,20 @@ Entity EditorApp::createGameCameraEntity(Entity parent) {
     auto& transform = registry.get<Transform>(entity);
     transform.position = (parent != entt::null && registry.valid(parent)) ? glm::vec3(0.0f) : spawnPos;
 
+    // Orient the Transform so -Z looks along the editor view direction.
+    // NOTE: do NOT go through quatLookAtRH+eulerAngles here: eulerAngles
+    // extracts YXZ order but Transform::getModelMatrix composes XYZ, so a
+    // pitched+yawed view came out rotated (game camera looked elsewhere).
+    // Exact XYZ-order solution for R = Rx(p)*Ry(y) applied to (0,0,-1):
     glm::vec3 forward = spawnTarget - spawnPos;
     if (glm::length(forward) < 1e-5f) {
         forward = glm::vec3(0.0f, 0.0f, -1.0f);
     } else {
         forward = glm::normalize(forward);
     }
-    glm::quat rot = glm::quatLookAtRH(forward, spawnUp);
-    transform.rotation = glm::degrees(glm::eulerAngles(rot));
+    const float yaw = std::atan2(-forward.x, std::hypot(forward.y, forward.z));
+    const float pitch = std::atan2(forward.y, -forward.z);
+    transform.rotation = glm::degrees(glm::vec3(pitch, yaw, 0.0f));
 
     Camera camera;
     camera.position = spawnPos;
@@ -1042,9 +1143,16 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         hasBounds = true;
     }
 
-    // Create GPU buffers
+    // Create GPU buffers. createdMeshBuffers tracks whether THIS call minted a
+    // fresh set (vs. reusing shared buffers) for handle registration below.
+    bool createdMeshBuffers = false;
     if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
         ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(), PrimitiveHelpers::findMemoryType);
+        createdMeshBuffers = true;
+        // Auto-LOD variants while CPU data is alive (per-primitive buffers;
+        // shared-geometry batching still applies via identical buffer keys).
+        Atlas::cacheImportLODs(m_Renderer.get(), meshData, reinterpret_cast<uint64_t>(meshData.vertexBuffer),
+                                 reinterpret_cast<uint64_t>(meshData.indexBuffer), false);
         meshData.freeCPUMemory();
     }
 
@@ -1062,10 +1170,19 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
 
     auto& mesh = registry.emplace<::Mesh>(entity);
     mesh.meshPath = "primitive://" + entityName;
-    mesh.vertexBuffer = meshData.vertexBuffer;
-    mesh.indexBuffer = meshData.indexBuffer;
-    mesh.vertexMemory = meshData.vertexMemory;
-    mesh.indexMemory = meshData.indexMemory;
+    // Phase 3b: ::Mesh holds no Vk* fields (ecs.h is Vulkan-free). GPU
+    // handles transfer straight from MeshData into the registry binding.
+    if (createdMeshBuffers) {
+        mesh.renderMeshId = m_Renderer->getMeshRegistry().allocateMesh();
+        Atlas::MeshBinding binding{};
+        binding.vertexBuffer = reinterpret_cast<uint64_t>(meshData.vertexBuffer);
+        binding.indexBuffer = reinterpret_cast<uint64_t>(meshData.indexBuffer);
+        binding.vertexMemory = reinterpret_cast<uint64_t>(meshData.vertexMemory);
+        binding.indexMemory = reinterpret_cast<uint64_t>(meshData.indexMemory);
+        binding.vertexCount = meshData.vertexCount;
+        binding.indexCount = meshData.indexCount;
+        m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
+    }
     mesh.vertexCount = meshData.vertexCount;
     mesh.indexCount = meshData.indexCount;
     mesh.hasBounds = hasBounds;
@@ -1102,6 +1219,104 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
         material.metallic = 0.05f;
     }
     registry.emplace_or_replace<ECS::MaterialComponent>(entity, material);
+    // TDD §5: LOD state from birth (see applyMeshToEntity).
+    registry.emplace_or_replace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
+
+    if (m_UIManager) {
+        m_UIManager->setSelectedEntity(entity);
+    }
+
+    return entity;
+}
+
+Entity EditorApp::createLightEntity(ECS::LightComponent::Type type, Entity parent) {
+    if (!m_Scene) {
+        return entt::null;
+    }
+
+    auto entity = m_Scene->createEntity("Light");
+    auto& registry = m_Scene->getRegistry();
+
+    if (parent != entt::null && registry.valid(parent)) {
+        m_Scene->setParent(entity, parent);
+    }
+
+    // Add Transform component
+    if (registry.all_of<Transform>(entity)) {
+        auto& transform = registry.get<Transform>(entity);
+        transform.position = (parent != entt::null && registry.valid(parent)) ? glm::vec3(0.0f) : getDefaultSpawnPosition();
+    }
+
+    // Add LightComponent
+    ECS::LightComponent light;
+    light.type = type;
+    light.color = glm::vec3(1.0f, 1.0f, 1.0f);
+    light.intensity = (type == ECS::LightComponent::Type::Directional) ? 50.0f : 5.0f;
+    light.castShadows = (type == ECS::LightComponent::Type::Directional);
+    light.direction = (type == ECS::LightComponent::Type::Directional) ? glm::vec3(0.0f, -1.0f, 0.0f) : glm::vec3(0.0f, -1.0f, 0.0f);
+    
+    if (type == ECS::LightComponent::Type::Directional) {
+        light.castShadows = true;
+    }
+    
+    registry.emplace_or_replace<ECS::LightComponent>(entity, light);
+
+    // Add a name based on type
+    switch (type) {
+        case ECS::LightComponent::Type::Directional: registry.emplace<Atlas::ECS::TagComponent>(entity, "Directional Light"); break;
+        case ECS::LightComponent::Type::Point: registry.emplace<Atlas::ECS::TagComponent>(entity, "Point Light"); break;
+        case ECS::LightComponent::Type::Spot: registry.emplace<Atlas::ECS::TagComponent>(entity, "Spot Light"); break;
+    }
+
+    if (m_UIManager) {
+        m_UIManager->setSelectedEntity(entity);
+    }
+
+    return entity;
+}
+
+// Sun/Sky task: procedural sun (slot-0 directional + shadow caster) and
+// procedural sky backdrop. Data-only components; the renderer resolves the
+// first of each per frame.
+Entity EditorApp::createSunEntity(Entity parent) {
+    if (!m_Scene) {
+        return entt::null;
+    }
+
+    auto entity = m_Scene->createEntity("Sun");
+    auto& registry = m_Scene->getRegistry();
+
+    if (parent != entt::null && registry.valid(parent)) {
+        m_Scene->setParent(entity, parent);
+    }
+
+    ECS::SunComponent sun;
+    sun.setTimeOfDay(10.0f); // pleasant late-morning default
+    sun.color = glm::vec3(1.0f, 0.96f, 0.90f);
+    sun.intensity = 3.0f;
+    sun.castShadows = true;
+    registry.emplace_or_replace<ECS::SunComponent>(entity, sun);
+
+    if (m_UIManager) {
+        m_UIManager->setSelectedEntity(entity);
+    }
+
+    return entity;
+}
+
+Entity EditorApp::createSkyEntity(Entity parent) {
+    if (!m_Scene) {
+        return entt::null;
+    }
+
+    auto entity = m_Scene->createEntity("Sky");
+    auto& registry = m_Scene->getRegistry();
+
+    if (parent != entt::null && registry.valid(parent)) {
+        m_Scene->setParent(entity, parent);
+    }
+
+    registry.emplace_or_replace<ECS::SkyComponent>(entity, ECS::SkyComponent{});
 
     if (m_UIManager) {
         m_UIManager->setSelectedEntity(entity);
@@ -1254,15 +1469,21 @@ void EditorApp::onMeshDestroyed(entt::registry& registry, entt::entity entity) {
         return;
     }
 
-    VkBuffer vb = mesh.vertexBuffer;
-    VkDeviceMemory vm = mesh.vertexMemory;
-    VkBuffer ib = mesh.indexBuffer;
-    VkDeviceMemory im = mesh.indexMemory;
+    // Phase 3b: GPU handles live only in the registry. Resolve the binding
+    // for the deferred vkDestroy, then release the handle — same ownership
+    // guard (ownsGpuResources checked on entry) as before.
+    Atlas::MeshBinding binding{};
+    const bool hasBinding =
+        m_Renderer->getMeshRegistry().getMeshData(mesh.renderMeshId, binding);
+    VkBuffer vb = hasBinding ? reinterpret_cast<VkBuffer>(binding.vertexBuffer) : VK_NULL_HANDLE;
+    VkDeviceMemory vm = hasBinding ? reinterpret_cast<VkDeviceMemory>(binding.vertexMemory) : VK_NULL_HANDLE;
+    VkBuffer ib = hasBinding ? reinterpret_cast<VkBuffer>(binding.indexBuffer) : VK_NULL_HANDLE;
+    VkDeviceMemory im = hasBinding ? reinterpret_cast<VkDeviceMemory>(binding.indexMemory) : VK_NULL_HANDLE;
 
-    mesh.vertexBuffer = VK_NULL_HANDLE;
-    mesh.vertexMemory = VK_NULL_HANDLE;
-    mesh.indexBuffer = VK_NULL_HANDLE;
-    mesh.indexMemory = VK_NULL_HANDLE;
+    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
+        m_Renderer->getMeshRegistry().freeMesh(mesh.renderMeshId);
+        mesh.renderMeshId = Atlas::kInvalidMeshHandle;
+    }
 
     m_Renderer->defer([device, vb, vm, ib, im]() {
         if (vb) vkDestroyBuffer(device, vb, nullptr);
@@ -1354,6 +1575,14 @@ void EditorApp::enqueueImportRequest(const ImportRequest& req) {
             return;
         }
 
+        // Discover PBR texture sets next to the model (MTL-less OBJ fallback).
+        m_ActiveImportTextureSets = Atlas::discoverPbrTextureSets(m_ActiveImportFullPath);
+        {
+            int best = Atlas::bestPbrSetForModel(m_ActiveImportTextureSets, m_ActiveImportModelName);
+            m_ActiveImportOptions.textureSet =
+                (best >= 0) ? m_ActiveImportTextureSets[static_cast<size_t>(best)].name : std::string{};
+        }
+
         m_ShowImportOptionsPopup = true;
     }
 }
@@ -1375,7 +1604,44 @@ void EditorApp::renderImportOptionsPopup() {
         ImGui::SeparatorText("Options");
 
         ImGui::DragFloat("Uniform Scale", &m_ActiveImportOptions.uniformScale, 0.01f, 0.001f, 1000.0f, "%.3f");
+        ImGui::DragFloat3("Rotation (deg)", &m_ActiveImportOptions.rotationEulerDeg.x, 1.0f, -360.0f, 360.0f, "%.1f");
         ImGui::Checkbox("Import Textures", &m_ActiveImportOptions.loadTextures);
+        ImGui::BeginDisabled(!m_ActiveImportOptions.loadTextures);
+        {
+            int texSetIdx = 0; // 0 = None
+            for (size_t i = 0; i < m_ActiveImportTextureSets.size(); ++i) {
+                if (m_ActiveImportTextureSets[i].name == m_ActiveImportOptions.textureSet) {
+                    texSetIdx = static_cast<int>(i) + 1;
+                    break;
+                }
+            }
+            const std::string preview =
+                (texSetIdx > 0) ? m_ActiveImportTextureSets[static_cast<size_t>(texSetIdx) - 1].name : "None";
+            if (ImGui::BeginCombo("Texture Set (PBR)", preview.c_str())) {
+                const bool noneSel = (texSetIdx == 0);
+                if (ImGui::Selectable("None", noneSel)) {
+                    m_ActiveImportOptions.textureSet.clear();
+                }
+                if (noneSel) ImGui::SetItemDefaultFocus();
+                for (size_t i = 0; i < m_ActiveImportTextureSets.size(); ++i) {
+                    const bool sel = (texSetIdx == static_cast<int>(i) + 1);
+                    if (ImGui::Selectable(m_ActiveImportTextureSets[i].name.c_str(), sel)) {
+                        m_ActiveImportOptions.textureSet = m_ActiveImportTextureSets[i].name;
+                    }
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (texSetIdx > 0) {
+                const auto& s = m_ActiveImportTextureSets[static_cast<size_t>(texSetIdx) - 1];
+                if (s.combined.empty() && !s.metallic.empty() && !s.roughness.empty()) {
+                    ImGui::TextDisabled("metallic + roughness will be combined on import");
+                }
+            } else if (m_ActiveImportTextureSets.empty()) {
+                ImGui::TextDisabled("No PBR texture sets found next to the model");
+            }
+        }
+        ImGui::EndDisabled();
         ImGui::Checkbox("Import Animations", &m_ActiveImportOptions.importAnimations);
 
         ImGui::BeginDisabled(!m_ActiveImportOptions.importAnimations);
@@ -1416,6 +1682,12 @@ void EditorApp::renderImportOptionsPopup() {
                 }
 
                 if (resolveModelImportPath(m_ProjectManager.get(), m_ActiveImport.assetPath, m_ActiveImportFullPath, m_ActiveImportModelName)) {
+                    m_ActiveImportTextureSets = Atlas::discoverPbrTextureSets(m_ActiveImportFullPath);
+                    {
+                        int best = Atlas::bestPbrSetForModel(m_ActiveImportTextureSets, m_ActiveImportModelName);
+                        m_ActiveImportOptions.textureSet =
+                            (best >= 0) ? m_ActiveImportTextureSets[static_cast<size_t>(best)].name : std::string{};
+                    }
                     m_ShowImportOptionsPopup = true;
                 } else {
                     m_ActiveImport = ImportRequest{};
@@ -1805,6 +2077,129 @@ void EditorApp::updateWorldStreaming() {
     }
 }
 
+// TDD §10 runtime flow: partition streaming -> hierarchical culling ->
+// LOD selection -> HLOD cross-fade, on the active scene (edit or play).
+void EditorApp::updateCityRendering(Scene* scene, const glm::vec3& camPos, const glm::mat4& view,
+                                    const glm::mat4& viewProj, const glm::mat4& proj, float viewportHeight, float deltaTime) {
+    if (!scene || !m_WorldPartition || !m_CullingPipeline || !m_HLODSystem) {
+        return;
+    }
+
+    // Retarget systems when the active scene changed (edit <-> play).
+    if (m_CityScene != scene) {
+        m_CityScene = scene;
+        m_WorldPartition->setScene(scene);
+        m_WorldPartition->markDirty();
+        m_HLODSystem->clear();
+    }
+
+    // 1. Streaming + in-partition frustum culling (sets base visibility).
+    m_WorldPartition->update(camPos, viewProj);
+
+    // 2. Hierarchical culling: cells first, then objects
+    //    (frustum + distance + screen-size; occlusion when enabled).
+    //    Occluders come from the previous frame's LOD screen sizes (temporal).
+    m_OcclusionCuller.setConfig(m_OcclusionConfig);
+    m_OcclusionCuller.beginFrame(viewProj, static_cast<uint32_t>(viewportHeight), static_cast<uint32_t>(viewportHeight));
+    if (m_OcclusionConfig.enable) {
+        struct OccluderCandidate { float screenSize; glm::vec3 bmin; glm::vec3 bmax; };
+        std::vector<OccluderCandidate> candidates;
+        candidates.reserve(256);
+        auto& occRegistry = scene->getRegistry();
+        for (auto e : occRegistry.view<LODComponent, ::Mesh>()) {
+            const auto& lod = occRegistry.get<LODComponent>(e);
+            if (lod.screenSize < m_OcclusionConfig.minOccluderScreenSize) {
+                continue;
+            }
+            const auto& mesh = occRegistry.get<::Mesh>(e);
+            if (!mesh.hasBounds || !scene->hasTransform(e)) {
+                continue;
+            }
+            glm::mat4 world = scene->getCachedWorldTransform(e);
+            glm::vec3 centerLocal = (mesh.boundsMin + mesh.boundsMax) * 0.5f;
+            glm::vec3 extents = (mesh.boundsMax - mesh.boundsMin) * 0.5f;
+            glm::vec3 wCenter = glm::vec3(world * glm::vec4(centerLocal, 1.0f));
+            // Conservative world AABB: extent scaled by max basis length.
+            float maxBasis = 1.0f;
+            maxBasis = std::max(maxBasis, glm::length(glm::vec3(world[0])));
+            maxBasis = std::max(maxBasis, glm::length(glm::vec3(world[1])));
+            maxBasis = std::max(maxBasis, glm::length(glm::vec3(world[2])));
+            glm::vec3 wExt = extents * maxBasis;
+            candidates.push_back({lod.screenSize, wCenter - wExt, wCenter + wExt});
+        }
+        const uint32_t maxOcc = m_OcclusionConfig.maxOccluders > 0 ? m_OcclusionConfig.maxOccluders : 64;
+        if (candidates.size() > maxOcc) {
+            std::nth_element(candidates.begin(), candidates.begin() + maxOcc, candidates.end(),
+                [](const OccluderCandidate& a, const OccluderCandidate& b) { return a.screenSize > b.screenSize; });
+            candidates.resize(maxOcc);
+        }
+        for (const auto& c : candidates) {
+            m_OcclusionCuller.addOccluder(c.bmin, c.bmax);
+        }
+        m_CullingPipeline->setOccluder(&m_OcclusionCuller);
+    } else {
+        m_CullingPipeline->setOccluder(nullptr);
+    }
+    m_CullingPipeline->setConfig(m_CullingConfig);
+    m_CullingConfig.enableOcclusion = m_OcclusionConfig.enable;
+    m_CullingPipeline->setWorldConfig(m_WorldPartition->config());
+    Frustum frustum = Frustum::fromViewProj(viewProj);
+    m_LastCullingStats = m_CullingPipeline->cullWorldPartition(*m_WorldPartition, frustum, viewProj, camPos, viewportHeight);
+
+    // NOTE: LOD selection runs separately every frame (see run()) so it works
+    // even with chunk-file streaming, which owns visibility itself.
+
+    // 4. HLOD cross-fade + lazy generation of HLOD0/HLOD1 actors.
+    m_HLODSystem->setConfig(m_HLODConfig);
+    m_HLODSystem->update(scene, camPos, *m_WorldPartition, deltaTime, m_Renderer.get(), nullptr);
+
+    // 5. HLOD1 impostors: billboard quads for visible far actors (§4.2/§5.2).
+    if (m_Renderer) {
+        std::vector<Atlas::ImpostorDraw> impostors;
+        const auto& cache = m_HLODSystem->getCache();
+        impostors.reserve(cache.size());
+        const glm::vec3 up0(0.0f, 1.0f, 0.0f);
+        for (const auto& [coord, actors] : cache) {
+            (void)coord;
+            for (const auto& actor : actors) {
+                if (actor.level != Atlas::ECS::HLODLevel::HLOD1 || !actor.isVisible || actor.transitionAlpha < 0.5f) {
+                    continue;
+                }
+                // Frustum-test the actor bounds.
+                if (!frustum.testSphere(actor.center, actor.radius)) {
+                    continue;
+                }
+                glm::vec3 ext = (actor.boundsMax - actor.boundsMin) * 0.5f;
+                const float sx = std::max({ext.x * 2.0f, ext.z * 2.0f, 1.0f});
+                const float sy = std::max(ext.y * 2.0f, 1.0f);
+                glm::vec3 toCam = actor.center - camPos;
+                const float dist = glm::length(toCam);
+                if (dist < 1e-3f) {
+                    continue;
+                }
+                toCam /= dist;
+                glm::vec3 right = glm::cross(up0, toCam);
+                if (glm::length(right) < 1e-4f) {
+                    right = glm::vec3(1.0f, 0.0f, 0.0f);
+                } else {
+                    right = glm::normalize(right);
+                }
+                glm::vec3 up = glm::normalize(glm::cross(toCam, right));
+                glm::mat4 basis(1.0f);
+                basis[0] = glm::vec4(right * sx, 0.0f);
+                basis[1] = glm::vec4(up * sy, 0.0f);
+                basis[2] = glm::vec4(toCam, 0.0f);
+                basis[3] = glm::vec4(actor.center, 1.0f);
+                Atlas::ImpostorDraw draw;
+                draw.model = basis;
+                draw.color = actor.avgColor;
+                impostors.push_back(draw);
+            }
+        }
+        m_Renderer->setImpostorDraws(std::move(impostors));
+    }
+}
+
 void EditorApp::run() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -1829,6 +2224,8 @@ void EditorApp::run() {
             bool allow = uiAllow || m_CameraController->isCapturing();
             m_CameraController->update(deltaTime, allow);
         }
+
+        m_LayerStack.update(deltaTime);
 
         m_ImGuiManager->newFrame();
         ImGuizmo::BeginFrame();
@@ -1878,34 +2275,7 @@ void EditorApp::run() {
 
         m_UIManager->render(m_Viewport.getSceneTextureId(), m_Viewport.getGameTextureId(), m_GameModePlaying, m_GameModePaused);
 
-        // World streaming controls (debug)
-        if(m_UIManager->m_ShowWorldStreamingWindow) {
-            ImGui::Begin("World Streaming", &m_UIManager->m_ShowWorldStreamingWindow);
-            ImGui::Checkbox("Enabled", &m_WorldStreamingEnabled);
-            ImGui::DragFloat("Cell Size", &m_WorldCellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
-            ImGui::SliderInt("Load Radius (cells)", &m_WorldLoadRadius, 0, 16);
-            ImGui::Text("Active: %zu", m_WorldActiveCells.size());
-            ImGui::Text("Loading: %zu", m_WorldLoadingCells.size());
-            ImGui::DragFloat("Fail retry (sec)", &m_WorldFailRetrySeconds, 0.1f, 0.0f, 30.0f, "%.1f");
-            ImGui::Text("Failed: %zu", m_WorldFailedCells.size());
-            if (ImGui::Button("Clear Failed")) {
-                m_WorldFailedCells.clear();
-            }
-
-            if (m_WorldPartition) {
-                auto& cfg = m_WorldPartition->config();
-                ImGui::SeparatorText("Partition Culling");
-                ImGui::Checkbox("Enabled##partition", &cfg.enabled);
-                ImGui::Checkbox("Frustum Culling##partition", &cfg.useFrustumCulling);
-                ImGui::DragFloat("Cell Size##partition", &cfg.cellSize, 1.0f, 1.0f, 8192.0f, "%.1f");
-                ImGui::SliderInt("Load Radius##partition", &cfg.loadRadiusCells, 0, 16);
-                if (ImGui::Button("Rebuild##partition")) {
-                    m_WorldPartition->markDirty();
-                }
-            }
-
-            ImGui::End();
-        }
+        m_LayerStack.renderUI();
 
         renderImportOptionsPopup();
         processPendingModels();
@@ -1939,38 +2309,146 @@ void EditorApp::run() {
             m_WorldPartition->markDirty();
         }
 
-        // Optional: WorldPartition culling (disabled while chunk streaming is enabled).
-        if (!m_GameModePlaying && m_WorldPartition && !m_WorldStreamingEnabled && m_WorldPartition->config().enabled) {
-            glm::vec3 camPos(0.0f);
-            glm::mat4 view(1.0f);
-            glm::mat4 proj(1.0f);
+        // TDD §10 city pipeline (disabled while chunk-file streaming is enabled).
+        // Runs on the active scene in both edit and play modes.
+        if (m_WorldPartition && !m_WorldStreamingEnabled && m_WorldPartition->config().enabled) {
+            Scene* cityScene = m_GameModePlaying ? m_RuntimeScene.get() : m_Scene.get();
+            if (cityScene) {
+                glm::vec3 camPos(0.0f);
+                glm::mat4 view(1.0f);
+                glm::mat4 proj(1.0f);
+                bool haveCamera = false;
 
-            auto& registry = m_Scene->getRegistry();
-            auto editorCamView = registry.view<EditorCamera>();
-            if (editorCamView.begin() != editorCamView.end()) {
-                auto camEnt = *editorCamView.begin();
-                auto& cam = registry.get<EditorCamera>(camEnt);
-                camPos = cam.position;
+                auto& registry = cityScene->getRegistry();
+                // Prefer primary game camera, then any game camera, then editor camera.
+                {
+                    auto gameView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+                    entt::entity picked = entt::null;
+                    for (auto e : gameView) {
+                        if (picked == entt::null) picked = e;
+                        if (gameView.get<Atlas::ECS::GameCameraComponent>(e).primary) { picked = e; break; }
+                    }
+                    if (picked != entt::null) {
+                        auto& cam = registry.get<Camera>(picked);
+                        VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                        if (extent.width > 0 && extent.height > 0) {
+                            cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        }
+                        camPos = cam.position;
+                        view = cam.getViewMatrix();
+                        proj = cam.getProjectionMatrix();
+                        proj[1][1] = -proj[1][1];
+                        haveCamera = true;
+                    }
+                }
+                if (!haveCamera) {
+                    auto editorCamView = registry.view<EditorCamera>();
+                    if (editorCamView.begin() != editorCamView.end()) {
+                        auto camEnt = *editorCamView.begin();
+                        auto& cam = registry.get<EditorCamera>(camEnt);
+                        camPos = cam.position;
 
-                VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
-                if (extent.width > 0 && extent.height > 0) {
-                    cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                        if (extent.width > 0 && extent.height > 0) {
+                            cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        }
+
+                        view = cam.getViewMatrix();
+                        proj = cam.getProjectionMatrix();
+                        proj[1][1] = -proj[1][1];
+                        haveCamera = true;
+                    } else if (m_CameraController) {
+                        view = m_CameraController->getViewMatrix();
+                        proj = m_CameraController->getProjMatrix();
+                        proj[1][1] = -proj[1][1];
+
+                        // Derive camera world position from the view matrix.
+                        glm::mat4 invView = glm::inverse(view);
+                        camPos = glm::vec3(invView[3]);
+                        haveCamera = true;
+                    }
                 }
 
-                view = cam.getViewMatrix();
-                proj = cam.getProjectionMatrix();
-                proj[1][1] = -proj[1][1];
-            } else if (m_CameraController) {
-                view = m_CameraController->getViewMatrix();
-                proj = m_CameraController->getProjMatrix();
-                proj[1][1] = -proj[1][1];
-
-                // Derive camera world position from the view matrix.
-                glm::mat4 invView = glm::inverse(view);
-                camPos = glm::vec3(invView[3]);
+                if (haveCamera) {
+                    VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                    float viewportHeight = extent.height > 0 ? static_cast<float>(extent.height) : 720.0f;
+                    updateCityRendering(cityScene, camPos, view, proj * view, proj, viewportHeight, deltaTime);
+                }
+                // LOD selection runs every frame regardless of streaming mode
+                // (level assignment always; hiding only when the partition
+                // pipeline owns visibility, otherwise chunk streaming does).
+                // This must run AFTER culling so hide-only never gets undone.
             }
+        }
 
-            m_WorldPartition->update(camPos, proj * view);
+        // LOD selection runs every frame regardless of streaming mode
+        // (level assignment always; hiding only when the partition
+        // pipeline owns visibility, otherwise chunk streaming does).
+        // This must run AFTER culling so hide-only never gets undone.
+        if (m_WorldPartition && m_WorldPartition->config().enabled) {
+            Scene* cityScene = m_GameModePlaying ? m_RuntimeScene.get() : m_Scene.get();
+            if (cityScene) {
+                glm::vec3 camPos(0.0f);
+                glm::mat4 view(1.0f);
+                glm::mat4 proj(1.0f);
+                bool haveCamera = false;
+
+                auto& registry = cityScene->getRegistry();
+                auto gameView = registry.view<Camera, Atlas::ECS::GameCameraComponent>();
+                entt::entity picked = entt::null;
+                for (auto e : gameView) {
+                    if (picked == entt::null) picked = e;
+                    if (gameView.get<Atlas::ECS::GameCameraComponent>(e).primary) { picked = e; break; }
+                }
+                if (picked != entt::null) {
+                    auto& cam = registry.get<Camera>(picked);
+                    VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                    if (extent.width > 0 && extent.height > 0) {
+                        cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                    }
+                    camPos = cam.position;
+                    view = cam.getViewMatrix();
+                    proj = cam.getProjectionMatrix();
+                    proj[1][1] = -proj[1][1];
+                    haveCamera = true;
+                }
+                if (!haveCamera) {
+                    auto editorCamView = registry.view<EditorCamera>();
+                    if (editorCamView.begin() != editorCamView.end()) {
+                        auto camEnt = *editorCamView.begin();
+                        auto& cam = registry.get<EditorCamera>(camEnt);
+                        camPos = cam.position;
+                        VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                        if (extent.width > 0 && extent.height > 0) {
+                            cam.aspectRatio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+                        }
+                        view = cam.getViewMatrix();
+                        proj = cam.getProjectionMatrix();
+                        proj[1][1] = -proj[1][1];
+                        haveCamera = true;
+                    } else if (m_CameraController) {
+                        view = m_CameraController->getViewMatrix();
+                        proj = m_CameraController->getProjMatrix();
+                        proj[1][1] = -proj[1][1];
+                        glm::mat4 invView = glm::inverse(view);
+                        camPos = glm::vec3(invView[3]);
+                        haveCamera = true;
+                    }
+                }
+
+                if (haveCamera) {
+                    VkExtent2D extent = m_Renderer ? m_Renderer->getSwapChainExtent() : VkExtent2D{1280, 720};
+                    float viewportHeight = extent.height > 0 ? static_cast<float>(extent.height) : 720.0f;
+                    const bool partitionActive = !m_WorldStreamingEnabled && m_WorldPartition->config().enabled;
+                    m_LastLODStats = updateLODSystem(cityScene, camPos, proj, viewportHeight,
+                                                      m_WorldPartition->config(), m_LODConfig,
+                                                      partitionActive);
+                    // Drop stale impostor billboards when their producer is off.
+                    if (!partitionActive && m_Renderer && m_Renderer->getImpostorDrawCount() > 0) {
+                        m_Renderer->setImpostorDraws({});
+                    }
+                }
+            }
         }
 
         if (m_UIManager && m_Renderer) {
@@ -2102,11 +2580,15 @@ void EditorApp::processPendingModels() {
             m_Scene->getRegistry().get<Transform>(rootEntity).position = item.rootPosition;
         }
 
-        // Import options: root scale.
+        // Import options: root scale + rotation.
         if (m_Scene->getRegistry().all_of<Transform>(rootEntity)) {
+            auto& tr = m_Scene->getRegistry().get<Transform>(rootEntity);
             float s = item.importOptions.uniformScale;
             if (s <= 0.0f) s = 1.0f;
-            m_Scene->getRegistry().get<Transform>(rootEntity).scale *= glm::vec3(s);
+            tr.scale *= glm::vec3(s);
+            tr.rotation.x += item.importOptions.rotationEulerDeg.x;
+            tr.rotation.y += item.importOptions.rotationEulerDeg.y;
+            tr.rotation.z += item.importOptions.rotationEulerDeg.z;
         }
 
         // Skeletal animation: attach skeleton + clips + player to the root.
@@ -2235,7 +2717,9 @@ void EditorApp::processPendingModels() {
         };
 
         auto applyMeshToEntity = [&](entt::entity entity, MeshData& meshData) {
-            if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
+            const bool createdMeshBuffers =
+                (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE);
+            if (createdMeshBuffers) {
                 ModelLoader::createBuffers(meshData, m_Renderer->getDevice(), m_Renderer->getPhysicalDevice(),
                     [](uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDeviceMemoryProperties* memProperties) -> uint32_t {
                         for (uint32_t i = 0; i < memProperties->memoryTypeCount; ++i) {
@@ -2249,10 +2733,19 @@ void EditorApp::processPendingModels() {
 
             auto& mesh = m_Scene->getRegistry().emplace<::Mesh>(entity);
             mesh.meshPath = item.basePath + "#" + meshData.name;
-            mesh.vertexBuffer = meshData.vertexBuffer;
-            mesh.indexBuffer = meshData.indexBuffer;
-            mesh.vertexMemory = meshData.vertexMemory;
-            mesh.indexMemory = meshData.indexMemory;
+            // Phase 3b: ::Mesh holds no Vk* fields. GPU handles transfer
+            // straight from MeshData into the registry binding.
+            if (createdMeshBuffers) {
+                mesh.renderMeshId = m_Renderer->getMeshRegistry().allocateMesh();
+                Atlas::MeshBinding binding{};
+                binding.vertexBuffer = reinterpret_cast<uint64_t>(meshData.vertexBuffer);
+                binding.indexBuffer = reinterpret_cast<uint64_t>(meshData.indexBuffer);
+                binding.vertexMemory = reinterpret_cast<uint64_t>(meshData.vertexMemory);
+                binding.indexMemory = reinterpret_cast<uint64_t>(meshData.indexMemory);
+                binding.vertexCount = meshData.vertexCount;
+                binding.indexCount = meshData.indexCount;
+                m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
+            }
             mesh.vertexCount = meshData.vertexCount;
             mesh.indexCount = meshData.indexCount;
 
@@ -2276,6 +2769,14 @@ void EditorApp::processPendingModels() {
             meshData.ownerDevice = VK_NULL_HANDLE;
 
             ECS::MaterialComponent material;
+            // PBR fallback for MTL-less imports (bare OBJs + textures/ sets).
+            // Fills only paths assimp left empty; assimp/MTL results always win.
+            if (item.importOptions.loadTextures && !item.importOptions.textureSet.empty()) {
+                Atlas::fillEmptyPbrTexturePaths(item.basePath, item.importOptions.textureSet,
+                    meshData.baseColorTexturePath, meshData.normalTexturePath,
+                    meshData.metallicRoughnessTexturePath, meshData.aoTexturePath,
+                    meshData.emissiveTexturePath);
+            }
             material.baseColor = meshData.baseColor;
             material.metallic = meshData.metallic;
             material.roughness = meshData.roughness;
@@ -2299,6 +2800,21 @@ void EditorApp::processPendingModels() {
                 material.useEmissiveTexture, material.emissiveTextureIndex, material.emissiveTextureId, material.emissiveTexturePath);
 
             m_Scene->getRegistry().emplace<ECS::MaterialComponent>(entity, material);
+            // TDD §5: every imported mesh carries LOD state from birth
+            // (screenSizeBias stays editable in Properties for hero objects).
+            m_Scene->getRegistry().emplace_or_replace<Atlas::LODComponent>(entity, Atlas::LODComponent{});
+            // Auto-LOD variants while CPU data is alive (skipped for skinned).
+            // NOTE: each submesh caches its own variants (keyed by its buffers).
+            // Phase 3b: buffer keys resolve via the registry (::Mesh holds
+            // no Vk* fields anymore).
+            if (const auto* meshPtr = m_Scene->getRegistry().try_get<::Mesh>(entity)) {
+                Atlas::MeshBinding lodBinding{};
+                if (m_Renderer->getMeshRegistry().getMeshData(meshPtr->renderMeshId, lodBinding)) {
+                    Atlas::cacheImportLODs(m_Renderer.get(), meshData, lodBinding.vertexBuffer,
+                        lodBinding.indexBuffer,
+                        m_Scene->getRegistry().all_of<ECS::SkinnedMeshComponent>(entity));
+                }
+            }
             meshData.freeCPUMemory();
         };
 

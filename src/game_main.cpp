@@ -4,9 +4,9 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -23,6 +23,8 @@
 #include "scene/scene.h"
 #include "scene/scene_serializer.h"
 #include "assets/asset_manager.h"
+#include "assets/vfs/filesystem.h"
+#include "assets/vfs/pack_reader.h"
 #include "export/package_manifest.h"
 #include "physics/physics_system.h"
 #include "platform/window.h"
@@ -81,7 +83,9 @@ entt::entity createPrimitiveEntity(Atlas::Scene& scene, Atlas::Renderer& rendere
         return entt::null;
     }
 
-    if (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE) {
+    const bool createdMeshBuffers =
+        (meshData.vertexBuffer == VK_NULL_HANDLE || meshData.indexBuffer == VK_NULL_HANDLE);
+    if (createdMeshBuffers) {
         ModelLoader::createBuffers(meshData, renderer.getDevice(), renderer.getPhysicalDevice(),
                                    Atlas::PrimitiveHelpers::findMemoryType);
         meshData.freeCPUMemory();
@@ -106,10 +110,19 @@ entt::entity createPrimitiveEntity(Atlas::Scene& scene, Atlas::Renderer& rendere
 
     auto& mesh = registry.emplace<Mesh>(entity);
     mesh.meshPath = "primitive://" + type;
-    mesh.vertexBuffer = meshData.vertexBuffer;
-    mesh.indexBuffer = meshData.indexBuffer;
-    mesh.vertexMemory = meshData.vertexMemory;
-    mesh.indexMemory = meshData.indexMemory;
+    // Phase 3b: ::Mesh holds no Vk* fields (ecs.h is Vulkan-free). GPU
+    // handles transfer straight from MeshData into the registry binding.
+    if (createdMeshBuffers) {
+        mesh.renderMeshId = renderer.getMeshRegistry().allocateMesh();
+        Atlas::MeshBinding binding{};
+        binding.vertexBuffer = reinterpret_cast<uint64_t>(meshData.vertexBuffer);
+        binding.indexBuffer = reinterpret_cast<uint64_t>(meshData.indexBuffer);
+        binding.vertexMemory = reinterpret_cast<uint64_t>(meshData.vertexMemory);
+        binding.indexMemory = reinterpret_cast<uint64_t>(meshData.indexMemory);
+        binding.vertexCount = meshData.vertexCount;
+        binding.indexCount = meshData.indexCount;
+        renderer.getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
+    }
     mesh.vertexCount = meshData.vertexCount;
     mesh.indexCount = meshData.indexCount;
     mesh.hasBounds = hasBounds;
@@ -184,6 +197,29 @@ std::unordered_map<uint32_t, entt::entity> applyGameScene(
         }
         if (src.hasCapsuleCollider) {
             registry.emplace_or_replace<Atlas::ECS::CapsuleColliderComponent>(entity, src.capsuleCollider);
+        }
+        // Sun/Sky task: procedural sun + sky backdrop (data-only; the
+        // renderer resolves the first of each per frame).
+        if (src.hasSun) {
+            Atlas::ECS::SunComponent sun;
+            sun.azimuthDeg = src.sunAzimuthDeg;
+            sun.elevationDeg = src.sunElevationDeg;
+            sun.color = src.sunColor;
+            sun.intensity = src.sunIntensity;
+            sun.castShadows = src.sunCastShadows;
+            sun.shadowRange = src.sunShadowRange;
+            registry.emplace_or_replace<Atlas::ECS::SunComponent>(entity, sun);
+        }
+        if (src.hasSky) {
+            Atlas::ECS::SkyComponent sky;
+            sky.enabled = src.skyEnabled;
+            sky.horizonColor = src.skyHorizon;
+            sky.zenithColor = src.skyZenith;
+            sky.groundColor = src.skyGround;
+            sky.sunColor = src.skySunColor;
+            sky.sunDiskSizeDeg = src.skySunDiskSizeDeg;
+            sky.sunGlow = src.skySunGlow;
+            registry.emplace_or_replace<Atlas::ECS::SkyComponent>(entity, sky);
         }
         if (src.hasMaterial) {
             Atlas::ECS::MaterialComponent mat;
@@ -311,6 +347,24 @@ int main(int argc, char** argv) {
         const std::string assetsRoot = (std::filesystem::path(packageRoot) / manifest.assetsRoot).lexically_normal().string();
         const std::string scenePath = (std::filesystem::path(packageRoot) / manifest.startupScene).lexically_normal().string();
 
+        // Mount the asset pack first (if the manifest names one), then the
+        // loose package dir as fallback/dev override. With no pack, every
+        // read below degrades to direct disk access (unchanged behavior).
+        auto& vfs = Atlas::VFS::FileSystem::instance();
+        if (!manifest.pakFile.empty()) {
+            const std::string pakPath =
+                (std::filesystem::path(packageRoot) / manifest.pakFile).lexically_normal().string();
+            std::string packErr;
+            auto pack = Atlas::VFS::PackReader::open(pakPath, packErr);
+            if (pack) {
+                vfs.mountPack(std::move(pack), 0);
+            } else {
+                std::cerr << "[Game] WARNING: cannot mount pack '" << pakPath << "' (" << packErr
+                          << "); using loose files" << std::endl;
+            }
+        }
+        vfs.mountLoose(packageRoot, -1);
+
         Atlas::Window window(kWindowWidth, kWindowHeight, kWindowTitle);
         Atlas::Renderer renderer(&window);
         renderer.init();
@@ -334,7 +388,17 @@ int main(int argc, char** argv) {
         scriptEngine.setInputEnabled(true);
 
         Atlas::SerializedScene serializedScene;
-        if (!Atlas::SceneSerializer::loadFromFile(scenePath, serializedScene)) {
+        // manifest.startupScene is already a virtual path ("assets/...");
+        // resolve through the VFS (pack first, loose dir second) and parse
+        // from memory. Legacy direct path kept as a last-resort fallback.
+        std::vector<uint8_t> sceneBytes;
+        bool sceneOk = false;
+        if (Atlas::VFS::FileSystem::instance().readAll(manifest.startupScene, sceneBytes)) {
+            sceneOk = Atlas::SceneSerializer::loadFromMemory(sceneBytes, serializedScene);
+        } else {
+            sceneOk = Atlas::SceneSerializer::loadFromFile(scenePath, serializedScene);
+        }
+        if (!sceneOk) {
             std::cerr << "[Game] Failed to load scene: " << scenePath << std::endl;
             return EXIT_FAILURE;
         }

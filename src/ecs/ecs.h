@@ -1,15 +1,18 @@
 #pragma once
 
 #include <entt/entt.hpp>
-#include <vulkan/vulkan_core.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <string>
 #include <memory>
+#include <cstring>
 #include <cstdint>
-#include <imgui.h>
 #include <tuple>
 #include <type_traits>
+#include <vector>
+#include "../renderer/render_resources.h"
+#include "../world/lod.h"
+#include "reflection.h"
 
 using Registry = entt::registry;
 using Entity = entt::entity;
@@ -42,10 +45,19 @@ struct Mesh {
     std::string meshPath;
     uint32_t vertexCount = 0;
     uint32_t indexCount = 0;
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-    VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+
+    // GPU resources live in the renderer-side RenderResourceManager and are
+    // referenced by this opaque handle (0 = none). Phase 3b complete:
+    // the deprecated VkBuffer/VkDeviceMemory fields are gone, so this
+    // header is Vulkan-free. Draw/batching paths resolve via
+    // RenderResourceManager::getMeshData().
+    Atlas::MeshHandle renderMeshId = Atlas::kInvalidMeshHandle;
+
+    // True when the renderer has published GPU data for this mesh.
+    // NOTE: liveness (not freed) is checked renderer-side via
+    // RenderResourceManager::getMeshData(); this is only the "has backing"
+    // gate for world systems that cannot touch GPU objects.
+    bool hasGpuBacking() const { return renderMeshId != Atlas::kInvalidMeshHandle; }
 
     // Ownership of GPU buffers/memory. Cloned/runtime scenes should not free shared handles.
     bool ownsGpuResources = true;
@@ -65,6 +77,13 @@ struct Renderable {
     bool visible = true;
     uint32_t materialID = 0;
 };
+
+COMPONENT_FIELDS(Renderable,
+    COMPONENT_FIELD(Renderable, visible, "Visible")
+        .tooltip("Toggle rendering for this entity"),
+    COMPONENT_FIELD(Renderable, materialID, "Material ID")
+        .tooltip("Index into the renderer material palette")
+        .read_only(true))
 
 struct CameraBase {
     glm::vec3 position{0.0f, 0.0f, 5.0f};
@@ -89,43 +108,8 @@ struct EditorCamera : CameraBase {};
 
 using World = entt::registry;
 
-#define COMPONENT_FIELDS(TYPE, ...) \
-    static constexpr auto getFields() { \
-        return std::make_tuple(__VA_ARGS__); \
-    } \
-    static constexpr const char* getName() { return #TYPE; }
+// NOTE: inspector UI (renderComponentProperties & friends) moved to
+// ecs/inspector_ui.h so this header stays ImGui-free. Only editor UI code
+// should include that header.
 
-namespace ecs {
-
-template<typename T>
-void renderComponentProperties(T& component, uint32_t entityId) {
-    if constexpr (std::is_same_v<T, Transform>) {
-        ImGui::DragFloat3("Position##T", &component.position.x, 0.1f);
-        ImGui::DragFloat3("Rotation##T", &component.rotation.x, 1.0f);
-        ImGui::DragFloat3("Scale##T", &component.scale.x, 0.1f);
-    } else if constexpr (std::is_same_v<T, Renderable>) {
-        ImGui::Checkbox("Visible##R", &component.visible);
-        ImGui::DragScalar("Material ID##R", ImGuiDataType_U32, &component.materialID);
-    } else if constexpr (std::is_same_v<T, Mesh>) {
-        ImGui::Text("Mesh Path: %s", component.meshPath.c_str());
-        ImGui::Text("Vertices: %u", component.vertexCount);
-        ImGui::Text("Indices: %u", component.indexCount);
-        if (component.hasBounds) {
-            ImGui::Text("Bounds Min: %.2f %.2f %.2f", component.boundsMin.x, component.boundsMin.y, component.boundsMin.z);
-            ImGui::Text("Bounds Max: %.2f %.2f %.2f", component.boundsMax.x, component.boundsMax.y, component.boundsMax.z);
-        } else {
-            ImGui::Text("Bounds: (none)");
-        }
-    } else if constexpr (std::is_same_v<T, Camera> || std::is_same_v<T, EditorCamera>) {
-        ImGui::DragFloat3("Position##C", &component.position.x, 0.1f);
-        ImGui::DragFloat3("Target##C", &component.target.x, 0.1f);
-        ImGui::DragFloat("FOV##C", &component.fov, 1.0f, 1.0f, 180.0f);
-        ImGui::DragFloat("Near##C", &component.nearPlane, 0.1f);
-        ImGui::DragFloat("Far##C", &component.farPlane, 1.0f);
-
-        if (component.nearPlane < 0.001f) component.nearPlane = 0.001f;
-        if (component.farPlane < component.nearPlane + 0.001f) component.farPlane = component.nearPlane + 0.001f;
-    }
-}
-
-}
+// (Inspector UI lives in ecs/inspector_ui.h — see NOTE above.)

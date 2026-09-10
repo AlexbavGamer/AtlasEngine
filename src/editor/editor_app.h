@@ -6,22 +6,32 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <filesystem>
 #include <deque>
 
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
 
 #include "editor_viewport.h"
+#include "editor.h"
+#include "layer_stack.h"
 #include "../imgui/imgui_manager.h"
 #include "../project/project_manager.h"
 #include "../ui/ui_manager.h"
 #include "../utils/camera_controller.h"
-#include "../utils/model_loader.h"
+#include "../utils/mesh_data.h"
+#include "../utils/pbr_texture_sets.h"
 
-namespace Atlas { class WorldPartition; }
-namespace Atlas::Physics { class PhysicsSystem; }
-namespace Atlas::Scripting { class ScriptEngine; }
+namespace Atlas {
+class WorldPartition;
+namespace Physics { class PhysicsSystem; }
+namespace Scripting { class ScriptEngine; }
+} // namespace Atlas
+
+#include "../world/culling.h"
+#include "../world/lod.h"
+#include "../world/hlod.h"
+#include "../world/occlusion.h"
+#include "../world/city_generator.h"
 
 namespace Atlas {
 class Window;
@@ -31,6 +41,9 @@ class Scene;
 
 class EditorApp {
 public:
+    friend class WorldStreamingLayer;
+    friend class HLODViewerLayer;
+
     EditorApp();
     ~EditorApp();
 
@@ -39,9 +52,12 @@ public:
 private:
     struct ImportOptions {
         float uniformScale = 1.0f;
+        glm::vec3 rotationEulerDeg{0.0f};
         bool importAnimations = true;
         bool startPlaying = true;
         bool loadTextures = true;
+        // PBR texture-set override (name from discoverPbrTextureSets, empty = none).
+        std::string textureSet;
     };
 
     struct PendingModel {
@@ -74,6 +90,9 @@ private:
     void cloneSceneToRuntime();
     Entity createPrimitiveEntity(const std::string& primitiveType, Entity parent = entt::null);
     Entity createGameCameraEntity(Entity parent = entt::null);
+    Entity createLightEntity(ECS::LightComponent::Type type = ECS::LightComponent::Type::Directional, Entity parent = entt::null);
+    Entity createSunEntity(Entity parent = entt::null);
+    Entity createSkyEntity(Entity parent = entt::null);
     void resetEditorScene(bool createEditorCamera = true);
     void ensureEditorCamera();
     void rebindEditorCameraController();
@@ -86,6 +105,8 @@ private:
     bool loadSceneFromAssetPath(const std::string& assetRelativePath);
 
     std::string m_CurrentSceneAssetPath = "scenes/main.scene";
+    // Current startup phase; reported in fatal-error context on failure.
+    std::string m_InitStep = "begin";
 
     struct ImportRequest {
         std::string assetPath;
@@ -101,6 +122,9 @@ private:
     void renderImportOptionsPopup();
 
     void updateWorldStreaming();
+    // TDD §10 runtime flow: partition -> culling -> LOD -> HLOD on the active scene.
+    void updateCityRendering(Scene* scene, const glm::vec3& camPos, const glm::mat4& view,
+                             const glm::mat4& viewProj, const glm::mat4& proj, float viewportHeight, float deltaTime);
     void onMeshDestroyed(entt::registry& registry, entt::entity entity);
 
     void onExternalFileDrop(const std::vector<std::string>& paths);
@@ -125,6 +149,23 @@ private:
     EditorViewport m_Viewport;
 
     std::unique_ptr<WorldPartition> m_WorldPartition;
+
+    // TDD large-city pipeline systems (retargeted to the active scene).
+    std::unique_ptr<Atlas::CullingPipeline> m_CullingPipeline;
+    std::unique_ptr<Atlas::HLODSystem> m_HLODSystem;
+    Atlas::CullingConfig m_CullingConfig;
+    Atlas::LODConfig m_LODConfig;
+    Atlas::HLODConfig m_HLODConfig;
+    Atlas::CullingStats m_LastCullingStats;
+    Atlas::LODStats m_LastLODStats;
+    Scene* m_CityScene = nullptr;
+    // TDD §7 software occlusion (occluders from previous frame's LOD data).
+    Atlas::OcclusionCuller m_OcclusionCuller;
+    Atlas::OcclusionConfig m_OcclusionConfig;
+
+    // TDD §12 procedural test city (shared mesh/materials, instanceable).
+    Atlas::CityGenResult m_TestCity;
+    int m_TestCityBlocks = 8;
 
     std::unordered_map<std::string, uint32_t> m_TextureSlots;
     std::vector<PendingModel> m_PendingModels;
@@ -153,6 +194,12 @@ private:
     std::string m_ActiveImportModelName;
     ImportOptions m_ActiveImportOptions;
     ImportOptions m_LastImportOptions;
+    // PBR sets discovered next to the active import (popup chooser).
+    std::vector<Atlas::PbrTextureSet> m_ActiveImportTextureSets;
+
+    // Walnut-style layer stack (tool/debug layers render on top of the editor UI).
+    // Declared last so layers detach before engine systems are torn down.
+    LayerStack<EditorLayer> m_LayerStack;
 };
 
 }

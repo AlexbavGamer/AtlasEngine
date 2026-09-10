@@ -9,8 +9,8 @@
 #include <glm/gtc/constants.hpp>
 #include <vulkan/vulkan.h>
 
-#include "../ecs/vertex.h"
-#include "../utils/model_loader.h"
+#include "../renderer/vertex.h"
+#include "../utils/mesh_data.h"
 
 namespace Atlas::PrimitiveHelpers {
 
@@ -37,7 +37,7 @@ inline MeshData createPlane(float size = 1.0f) {
         Vertex{{ h, 0.0f,  h}, {0.85f, 0.85f, 0.85f}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
         Vertex{{-h, 0.0f,  h}, {0.85f, 0.85f, 0.85f}, {0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
     };
-    mesh.indices = {0, 1, 2, 2, 3, 0};
+    mesh.indices = {0, 2, 1, 0, 3, 2}; // CCW from +Y (matches the up normals)
     mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
     mesh.indexCount = static_cast<uint32_t>(mesh.indices.size());
     return mesh;
