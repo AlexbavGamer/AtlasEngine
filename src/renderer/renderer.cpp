@@ -2339,7 +2339,7 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
         proj[3][2] = proj[3][2] * 0.5f + 0.5f;
         m_ShadowViewProj = proj * view;
         m_LightBufferData.shadowViewProj = m_ShadowViewProj;
-        m_LightBufferData.shadowParams = glm::vec4(1.0f, kShadowDepthBias, static_cast<float>(kShadowMapSize), 0.0f);
+        m_LightBufferData.shadowParams = glm::vec4(1.0f, kShadowDepthBias, static_cast<float>(kShadowMapSize), kShadowSlopeScale);
         m_ShadowEnabledFrame = true;
     }
 

@@ -104,19 +104,31 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
     return mat3(T * invMax, B * invMax, N);
 }
 
-// PCF shadow lookup for the directional light in slot 0 (comparison sampler,
-// hardware 2x2 filtering). Returns 1.0 outside the shadow frustum.
+// PCF shadow lookup for the directional light in slot 0 (comparison sampler).
+// Returns 1.0 outside the shadow frustum.
 // NOTE: the C++ shadowViewProj is a raw view*proj (NDC in [-1,1]); the
 // *0.5+0.5 scale-bias to sampler UV space happens here (same matrix wrote
 // the depth, so the mapping is self-consistent including the Y-flip).
-float sampleShadow(vec3 worldPos) {
+// 3x3 manual PCF (softer than the HW 2x2) + slope-scaled bias: grazing
+// surfaces need more bias (acne), facing surfaces nearly none (no
+// peter-panning). shadowParams = (enabled, baseBias, mapSize, slopeScale).
+float sampleShadow(vec3 worldPos, float NdotL) {
     vec4 sc = lightData.shadowViewProj * vec4(worldPos, 1.0);
     vec3 proj = sc.xyz / max(sc.w, 0.0001);
     vec2 uv = proj.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
         return 1.0;
     }
-    return texture(shadowMap, vec3(uv, proj.z - lightData.shadowParams.y));
+    float ref = proj.z - lightData.shadowParams.y
+        - (1.0 - clamp(NdotL, 0.0, 1.0)) * lightData.shadowParams.w;
+    vec2 texel = vec2(1.0) / max(lightData.shadowParams.z, 1.0);
+    float sum = 0.0;
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            sum += texture(shadowMap, vec3(uv + vec2(float(x), float(y)) * texel, ref));
+        }
+    }
+    return sum / 9.0;
 }
 
 void main() {
@@ -192,9 +204,11 @@ void main() {
     vec3 Lo = vec3(0.0);
 
     // Shadow visibility for the slot-0 directional light (1.0 = no shadow).
+    // Sampled with the facing ratio so the bias follows the slope (acne fix).
     float shadow = 1.0;
-    if (lightData.shadowParams.x > 0.5) {
-        shadow = sampleShadow(fragWorldPos);
+    if (lightData.shadowParams.x > 0.5 && lightData.lightCount > 0 && lightData.lights[0].type == 1) {
+        vec3 L0 = normalize(-lightData.lights[0].direction);
+        shadow = sampleShadow(fragWorldPos, max(dot(N, L0), 0.0));
     }
 
     for (int i = 0; i < lightData.lightCount; i++) {

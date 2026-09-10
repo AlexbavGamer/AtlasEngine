@@ -447,6 +447,9 @@ private:
     static constexpr uint32_t kShadowMapSize = 2048;
     static constexpr float kShadowOrthoExtent = 80.0f;
     static constexpr float kShadowDepthBias = 0.0015f;
+    // Slope-scaled bias (NDC units, added as (1-NdotL)*scale): kills acne on
+    // grazing surfaces without detaching facing ones (see sampleShadow).
+    static constexpr float kShadowSlopeScale = 0.01f;
     VkImage m_ShadowImage = VK_NULL_HANDLE;
     VkDeviceMemory m_ShadowMemory = VK_NULL_HANDLE;
     VkImageView m_ShadowView = VK_NULL_HANDLE;
