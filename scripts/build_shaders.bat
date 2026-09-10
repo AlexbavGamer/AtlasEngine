@@ -38,17 +38,21 @@ for %%f in ("%ROOT%\shaders\*_frag.glsl") do (
     )
 )
 
-rem Compile vertex shaders
+rem Compile vertex shaders.
+rem Per-stage output (%%n_vert.spv) is what the renderer + embedded registry
+rem consume; %%n.spv is kept as a copy for bare-name consumers (shadow.spv,
+rem used by the shadow pipeline -- the only vert-only set).
 for %%n in (!SHADER_NAMES!) do (
     if exist "%ROOT%\shaders\%%n_vert.glsl" (
-        "%GLSLC%" -fshader-stage=vert "%ROOT%\shaders\%%n_vert.glsl" -o "%SHADER_DIR%\%%n.spv" || goto :fail
+        "%GLSLC%" -fshader-stage=vert "%ROOT%\shaders\%%n_vert.glsl" -o "%SHADER_DIR%\%%n_vert.spv" || goto :fail
+        copy /y "%SHADER_DIR%\%%n_vert.spv" "%SHADER_DIR%\%%n.spv" >nul || goto :fail
     )
 )
 
-rem Compile fragment shaders
+rem Compile fragment shaders (per-stage only -- must NOT overwrite %%n.spv).
 for %%n in (!SHADER_NAMES!) do (
     if exist "%ROOT%\shaders\%%n_frag.glsl" (
-        "%GLSLC%" -fshader-stage=frag "%ROOT%\shaders\%%n_frag.glsl" -o "%SHADER_DIR%\%%n.spv" || goto :fail
+        "%GLSLC%" -fshader-stage=frag "%ROOT%\shaders\%%n_frag.glsl" -o "%SHADER_DIR%\%%n_frag.spv" || goto :fail
     )
 )
 

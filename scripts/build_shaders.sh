@@ -30,14 +30,18 @@ for f in "${ROOT}/shaders"/*_frag.glsl; do
     echo "[build_shaders.sh] Found fragment shader: $basename"
 done
 
-# Compile vertex shaders
+# Compile vertex shaders.
+# Per-stage output (<name>_vert.spv) is what the renderer + embedded registry
+# consume; <name>.spv is kept as a copy for bare-name consumers (shadow.spv,
+# used by the shadow pipeline -- the only vert-only set).
 for name in "${shaders_vert[@]}"; do
-    "${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/${name}_vert.glsl" -o "${SHADER_DIR}/${name}.spv"
+    "${GLSLC}" -fshader-stage=vert "${ROOT}/shaders/${name}_vert.glsl" -o "${SHADER_DIR}/${name}_vert.spv"
+    cp "${SHADER_DIR}/${name}_vert.spv" "${SHADER_DIR}/${name}.spv"
 done
 
-# Compile fragment shaders
+# Compile fragment shaders (per-stage only -- must NOT overwrite <name>.spv).
 for name in "${shaders_frag[@]}"; do
-    "${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/${name}_frag.glsl" -o "${SHADER_DIR}/${name}.spv"
+    "${GLSLC}" -fshader-stage=frag "${ROOT}/shaders/${name}_frag.glsl" -o "${SHADER_DIR}/${name}_frag.spv"
 done
 
 # Combine all shader names for reference
