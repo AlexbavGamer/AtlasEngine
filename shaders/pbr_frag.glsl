@@ -110,10 +110,17 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 // *0.5+0.5 scale-bias to sampler UV space happens here (same matrix wrote
 // the depth, so the mapping is self-consistent including the Y-flip).
 // 3x3 manual PCF (softer than the HW 2x2) + slope-scaled bias: grazing
-// surfaces need more bias (acne), facing surfaces nearly none (no
-// peter-panning). shadowParams = (enabled, baseBias, mapSize, slopeScale).
-float sampleShadow(vec3 worldPos, float NdotL) {
-    vec4 sc = lightData.shadowViewProj * vec4(worldPos, 1.0);
+// surfaces need more bias (acne), facing surfaces nearly none.
+// shadowParams = (enabled, baseBias, mapSize, slopeScale). N is the
+// (possibly normal-mapped, double-side-flipped) surface normal.
+float sampleShadow(vec3 worldPos, vec3 N, float NdotL) {
+    // Receiver-side normal offset: sample slightly off the surface along N.
+    // This kills self-acne without the detachment of a large depth bias
+    // (a fixed NDC bias detaches meters at low sun = peter-panning).
+    // Frustum width is fixed (2*kShadowOrthoExtent = 160m, keep in sync).
+    float texelWorld = 160.0 / max(lightData.shadowParams.z, 1.0);
+    vec3 anchor = worldPos + N * (texelWorld * 1.5);
+    vec4 sc = lightData.shadowViewProj * vec4(anchor, 1.0);
     vec3 proj = sc.xyz / max(sc.w, 0.0001);
     vec2 uv = proj.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
@@ -208,7 +215,7 @@ void main() {
     float shadow = 1.0;
     if (lightData.shadowParams.x > 0.5 && lightData.lightCount > 0 && lightData.lights[0].type == 1) {
         vec3 L0 = normalize(-lightData.lights[0].direction);
-        shadow = sampleShadow(fragWorldPos, max(dot(N, L0), 0.0));
+        shadow = sampleShadow(fragWorldPos, N, max(dot(N, L0), 0.0));
     }
 
     for (int i = 0; i < lightData.lightCount; i++) {

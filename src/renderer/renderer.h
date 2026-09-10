@@ -447,9 +447,10 @@ private:
     static constexpr uint32_t kShadowMapSize = 2048;
     static constexpr float kShadowOrthoExtent = 80.0f;
     static constexpr float kShadowDepthBias = 0.0015f;
-    // Slope-scaled bias (NDC units, added as (1-NdotL)*scale): kills acne on
-    // grazing surfaces without detaching facing ones (see sampleShadow).
-    static constexpr float kShadowSlopeScale = 0.01f;
+    // Slope-scaled bias (NDC units, added as (1-NdotL)*scale). Kept small:
+    // acne is handled mainly by the receiver normal offset in sampleShadow,
+    // a large depth bias detaches shadows at low sun (peter-panning).
+    static constexpr float kShadowSlopeScale = 0.002f;
     VkImage m_ShadowImage = VK_NULL_HANDLE;
     VkDeviceMemory m_ShadowMemory = VK_NULL_HANDLE;
     VkImageView m_ShadowView = VK_NULL_HANDLE;
