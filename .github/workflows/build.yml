@@ -37,11 +37,9 @@ jobs:
     name: Linux premake build
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
       - name: Cache dependency sources
         uses: actions/cache@v4
         with:
@@ -49,25 +47,13 @@ jobs:
           key: >-
             ${{ runner.os }}-deps-${{
             hashFiles('premake5.lua', 'scripts/fetch_deps.sh') }}
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            ninja-build \
-            pkg-config \
-            build-essential \
-            python3 \
-            libvulkan-dev \
-            glslc \
-            xorg-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            wayland-protocols \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev
-
+            ninja-build pkg-config build-essential python3 libvulkan-dev glslc \
+            xorg-dev libwayland-dev libxkbcommon-dev wayland-protocols \
+            libegl1-mesa-dev libgl1-mesa-dev libglu1-mesa-dev
       - name: Install premake5
         run: |
           VER="${PREMAKE_VERSION}"
@@ -77,27 +63,26 @@ jobs:
           chmod +x premake5
           sudo mv premake5 /usr/local/bin/
           premake5 --version
-
       - name: Fetch dependencies
         run: |
           chmod +x ./scripts/fetch_deps.sh
           chmod +x ./scripts/build_shaders.sh
           ./scripts/fetch_deps.sh
-
+      - name: Configure Linux Vulkan for Premake
+        run: |
+          sed -i 's/"vulkan-1"/"vulkan"/g' premake5.lua
+          grep -n 'vulkan' premake5.lua | head -20
       - name: Build shaders
         run: ./scripts/build_shaders.sh
-
       - name: Generate + build
         run: |
           premake5 ninja
-          ninja -C build
-            AtlasEngine_${{ inputs.build_config }}
+          ninja -C build \
+            AtlasEngine_${{ inputs.build_config }} \
             AtlasTests_${{ inputs.build_config }}
-
       - name: Run unit tests
         if: ${{ inputs.run_tests }}
         run: ./bin/${{ inputs.build_config }}/AtlasTests
-
       - name: Stage Linux artifact
         run: |
           mkdir -p dist/linux
@@ -114,11 +99,9 @@ jobs:
     if: ${{ inputs.run_tests }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
       - name: Build + run under sanitizers
         run: |
           g++ -std=c++17 -g -fno-omit-frame-pointer \
@@ -129,7 +112,6 @@ jobs:
             src/export/package_manifest.cpp src/renderer/render_resources.cpp \
             -o /tmp/AtlasTests_asan
           /tmp/AtlasTests_asan
-
       - name: Build + run with libstdc++ debug mode
         run: |
           g++ -std=c++17 -g -D_GLIBCXX_DEBUG -D_GLIBCXX_DEBUG_PEDANTIC \
@@ -144,11 +126,9 @@ jobs:
     name: Windows premake build
     runs-on: windows-2022
     timeout-minutes: 90
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
       - name: Cache dependency sources
         uses: actions/cache@v4
         with:
@@ -156,7 +136,6 @@ jobs:
           key: >-
             ${{ runner.os }}-deps-${{
             hashFiles('premake5.lua', 'scripts/fetch_deps.sh') }}
-
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
@@ -164,14 +143,9 @@ jobs:
           $sdkRoot = Get-ChildItem 'C:\VulkanSDK' -Directory |
             Sort-Object Name -Descending |
             Select-Object -First 1 -ExpandProperty FullName
-          if (-not $sdkRoot) {
-            throw 'Vulkan SDK installation failed.'
-          }
-          "VULKAN_SDK=$sdkRoot" | Out-File `
-            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "$sdkRoot\Bin" | Out-File `
-            -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
+          if (-not $sdkRoot) { throw 'Vulkan SDK installation failed.' }
+          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$sdkRoot\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install MinGW + Ninja + premake5
         shell: pwsh
         run: |
@@ -180,46 +154,36 @@ jobs:
           $fileVer = $ver -replace '^v', ''
           $base = $env:PREMAKE_URL
           $zip = "$env:RUNNER_TEMP\premake.zip"
-          Invoke-WebRequest -Uri "$base/$ver/premake-$fileVer-windows.zip" `
-            -OutFile $zip
-          Expand-Archive $zip `
-            -DestinationPath "$env:RUNNER_TEMP\premake"
-          "$env:RUNNER_TEMP\premake" | Out-File `
-            -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          # No RefreshEnv.cmd here: it only affects the current shell
-          # and fails under pwsh. Later steps run in new processes,
-          # which already see the machine PATH updated by choco.
-          # Belt and braces: also expose the mingw bin dir explicitly.
+          Invoke-WebRequest -Uri "$base/$ver/premake-$fileVer-windows.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\premake"
+          "$env:RUNNER_TEMP\premake" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $mingwBin = 'C:\ProgramData\mingw64\mingw64\bin'
-          if (Test-Path $mingwBin) {
-            $mingwBin | Out-File `
-              -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-
+          if (Test-Path $mingwBin) { $mingwBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
       - name: Fetch dependencies
         shell: bash
         run: ./scripts/fetch_deps.sh
-
       - name: Generate + build
         shell: bash
         run: |
           export PATH="$VULKAN_SDK/Bin:$PATH"
+          # MinGW/COFF has a section-count limit. Several AtlasEngine source
+          # files exceed it, so pass the large-object assembler flag to every
+          # C/C++ compilation in this Windows CI job.
+          export CFLAGS="${CFLAGS:-} -Wa,-mbig-obj"
+          export CXXFLAGS="${CXXFLAGS:-} -Wa,-mbig-obj"
           premake5 ninja
-          ninja -C build
-            AtlasEngine_${{ inputs.build_config }}
+          ninja -C build \
+            AtlasEngine_${{ inputs.build_config }} \
             AtlasTests_${{ inputs.build_config }}
-
       - name: Run unit tests
         if: ${{ inputs.run_tests }}
         shell: bash
         run: ./bin/${{ inputs.build_config }}/AtlasTests.exe
-
       - name: Stage Windows artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/windows | Out-Null
           Copy-Item bin/${{ inputs.build_config }}/AtlasEngine.exe dist/windows/
-
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
