@@ -2329,9 +2329,20 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
         // Fixed ortho frustum around the main-camera target (v1; extent from
         // the sun slider, see ARCHITECTURE.md).
         const float e = shadowExtent;
-        const glm::vec3 center = cameraTarget;
-        const glm::vec3 lightPos = center - shadowDir * (e * 1.5f);
+        glm::vec3 center = cameraTarget;
         const glm::vec3 up = (std::abs(shadowDir.y) > 0.99f) ? glm::vec3(0.0f, 0.0f, -1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+        // Texel snapping: lock shadow-map texels to the world so orbiting the
+        // camera doesn't make shadows swim/crawl relative to their casters.
+        // Only the frustum origin shifts (< 1 texel); orientation is untouched.
+        {
+            const glm::mat4 unsnapped = glm::lookAt(center - shadowDir * (e * 1.5f), center, up);
+            const float texel = (2.0f * e) / static_cast<float>(kShadowMapSize);
+            glm::vec4 cLS = unsnapped * glm::vec4(center, 1.0f);
+            cLS.x = std::floor(cLS.x / texel) * texel;
+            cLS.y = std::floor(cLS.y / texel) * texel;
+            center = glm::vec3(glm::inverse(unsnapped) * cLS);
+        }
+        const glm::vec3 lightPos = center - shadowDir * (e * 1.5f);
         const glm::mat4 view = glm::lookAt(lightPos, center, up);
         glm::mat4 proj = glm::ortho(-e, e, -e, e, 1.0f, e * 4.0f);
         proj[1][1] *= -1.0f; // Vulkan Y-flip, same convention as the main passes
