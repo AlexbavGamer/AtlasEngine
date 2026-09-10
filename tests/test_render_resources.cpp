@@ -69,6 +69,51 @@ ATLAS_TEST(RenderResources, RecycleKeepsCapacityStable) {
     EXPECT_EQ(mgr.liveMeshCount(), 64u);
 }
 
+ATLAS_TEST(RenderResources, MeshBindingPublishResolve) {
+    Atlas::RenderResourceManager mgr;
+    Atlas::MeshHandle h = mgr.allocateMesh();
+    // Live but unpublished → resolve fails (caller uses legacy fallback).
+    Atlas::MeshBinding out{};
+    EXPECT_TRUE(!mgr.getMeshData(h, out));
+    Atlas::MeshBinding binding{};
+    binding.vertexBuffer = 0x1234u;
+    binding.indexBuffer = 0x5678u;
+    binding.vertexMemory = 0x9ABCu;
+    binding.indexMemory = 0xDEF0u;
+    binding.vertexCount = 100u;
+    binding.indexCount = 300u;
+    EXPECT_TRUE(mgr.setMeshData(h, binding));
+    EXPECT_TRUE(mgr.getMeshData(h, out));
+    EXPECT_EQ(out.vertexBuffer, 0x1234u);
+    EXPECT_EQ(out.indexBuffer, 0x5678u);
+    EXPECT_EQ(out.vertexCount, 100u);
+    EXPECT_EQ(out.indexCount, 300u);
+    // Stale/foreign handles never publish.
+    EXPECT_TRUE(!mgr.setMeshData(Atlas::kInvalidMeshHandle, binding));
+    EXPECT_TRUE(!mgr.setMeshData(0xFFFFFFFFu, binding));
+    mgr.freeMesh(h);
+    // Dead slot → resolve fails and re-publish is rejected.
+    EXPECT_TRUE(!mgr.getMeshData(h, out));
+    EXPECT_TRUE(!mgr.setMeshData(h, binding));
+}
+
+ATLAS_TEST(RenderResources, MeshBindingStaleHandleIsolation) {
+    Atlas::RenderResourceManager mgr;
+    Atlas::MeshHandle stale = mgr.allocateMesh();
+    Atlas::MeshBinding binding{};
+    binding.vertexBuffer = 0xAAAAu;
+    binding.indexCount = 42u;
+    EXPECT_TRUE(mgr.setMeshData(stale, binding));
+    mgr.freeMesh(stale);
+    Atlas::MeshHandle fresh = mgr.allocateMesh(); // may recycle the slot
+    // Stale handle must not overwrite the recycled slot's (empty) binding.
+    EXPECT_TRUE(!mgr.setMeshData(stale, binding));
+    Atlas::MeshBinding out{};
+    EXPECT_TRUE(!mgr.getMeshData(stale, out));
+    EXPECT_TRUE(!mgr.getMeshData(fresh, out)); // fresh unpublished
+    mgr.freeMesh(fresh);
+}
+
 ATLAS_TEST(RenderResources, ConcurrentAllocateFree) {
     Atlas::RenderResourceManager mgr;
     constexpr int kThreads = 8;

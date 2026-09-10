@@ -56,6 +56,10 @@ void RenderResourceManager::freeMesh(MeshHandle handle) {
         return;
     }
     slot.alive = false;
+    // Drop the GPU binding so a stale resolve can never observe freed
+    // Vk handles through a dead slot, even before the slot is recycled.
+    slot.hasData = false;
+    slot.binding = MeshBinding{};
     // Bump generation so outstanding stale handles stay dead. 8-bit wrap is
     // acceptable: an ABA collision needs 256 free/alloc cycles of the same
     // slot while a 257-cycle-old handle is still in flight.
@@ -76,6 +80,43 @@ bool RenderResourceManager::isMeshAlive(MeshHandle handle) const {
     }
     const MeshSlot& slot = m_slots[index];
     return slot.alive && slot.generation == generation;
+}
+
+bool RenderResourceManager::setMeshData(MeshHandle handle, const MeshBinding& binding) {
+    uint32_t index = 0;
+    uint32_t generation = 0;
+    if (!splitHandle(handle, index, generation)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (index >= m_slots.size()) {
+        return false;
+    }
+    MeshSlot& slot = m_slots[index];
+    if (!slot.alive || slot.generation != generation) {
+        return false;
+    }
+    slot.binding = binding;
+    slot.hasData = true;
+    return true;
+}
+
+bool RenderResourceManager::getMeshData(MeshHandle handle, MeshBinding& out) const {
+    uint32_t index = 0;
+    uint32_t generation = 0;
+    if (!splitHandle(handle, index, generation)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (index >= m_slots.size()) {
+        return false;
+    }
+    const MeshSlot& slot = m_slots[index];
+    if (!slot.alive || slot.generation != generation || !slot.hasData) {
+        return false;
+    }
+    out = slot.binding;
+    return true;
 }
 
 uint32_t RenderResourceManager::liveMeshCount() const {

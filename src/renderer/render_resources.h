@@ -11,9 +11,9 @@
 // unit-testable in AtlasTests without a GPU.
 // Phase 2: store VkBuffer/VkDeviceMemory + descriptors per slot and consume
 //          Mesh::renderMeshId in renderer.cpp; then deprecate Mesh's Vk*.
-// Phase 3: make renderer draw/batching read the registry instead of
-//          Mesh::Vk*, then delete the deprecated fields (+ serializer
-//          migration). (MeshComponent unification done: dead duplicate
+// Phase 3 (in progress): renderer draw paths resolve buffers through the
+//          registry (MeshBinding below); Mesh::Vk* are a legacy fallback for
+//          handle 0 only. (MeshComponent unification done: dead duplicate
 //          deleted; vertex.h moved to renderer/; city_generator.h Vulkan-free.)
 
 #include <cstdint>
@@ -26,6 +26,19 @@ namespace Atlas {
 // low 24 bits = slot index + 1 (supports up to ~16M live slots).
 using MeshHandle = uint32_t;
 inline constexpr MeshHandle kInvalidMeshHandle = 0;
+
+// GPU binding for one mesh slot. Deliberately Vulkan-free: the renderer
+// bit-casts VkBuffer/VkDeviceMemory (both are 64-bit handles/pointers) to
+// uint64_t on publish and back on resolve, so this header stays includable
+// from AtlasTests without a GPU. Zero value = null handle.
+struct MeshBinding {
+    uint64_t vertexBuffer = 0;
+    uint64_t indexBuffer = 0;
+    uint64_t vertexMemory = 0;
+    uint64_t indexMemory = 0;
+    uint32_t vertexCount = 0;
+    uint32_t indexCount = 0;
+};
 
 class RenderResourceManager {
 public:
@@ -43,6 +56,17 @@ public:
     // True iff the handle refers to a currently live slot. Thread-safe.
     bool isMeshAlive(MeshHandle handle) const;
 
+    // Publish the GPU binding for a live slot. Returns false for
+    // stale/foreign handles (never touches a recycled slot). Thread-safe.
+    // Called once per upload, right after allocateMesh().
+    bool setMeshData(MeshHandle handle, const MeshBinding& binding);
+
+    // Resolve the GPU binding for a live slot that has published data.
+    // Returns false for dead handles AND for live-but-unpublished slots
+    // (allocation without upload yet) — callers must fall back to the
+    // legacy Mesh::Vk* path or skip the draw. Thread-safe.
+    bool getMeshData(MeshHandle handle, MeshBinding& out) const;
+
     uint32_t liveMeshCount() const;
     uint32_t meshCapacity() const;
 
@@ -50,6 +74,8 @@ private:
     struct MeshSlot {
         uint32_t generation = 0;
         bool alive = false;
+        bool hasData = false;
+        MeshBinding binding{};
     };
 
     static MeshHandle makeHandle(uint32_t index, uint32_t generation);

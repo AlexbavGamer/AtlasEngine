@@ -49,11 +49,32 @@ void setDebugName(VkDevice device, VkObjectType type, uint64_t handle, const cha
 }
 }
 
-// Phase 2 liveness gate (ECS<->Vulkan decoupling): a Mesh carrying a registry
-// handle must be alive in the RenderResourceManager to be drawn. Handle 0 =
-// legacy/unregistered (old scenes, pending uploads) → existing null-checks apply.
-static bool isMeshHandleLive(const Atlas::RenderResourceManager& registry, const Mesh& mesh) {
-    return mesh.renderMeshId == Atlas::kInvalidMeshHandle || registry.isMeshAlive(mesh.renderMeshId);
+// Phase 3a: resolve the buffers actually bound for a draw via the registry.
+// Handle != 0 → registry is the source of truth (dead/unpublished → skip).
+// Handle 0 → legacy fallback to Mesh::Vk* (old scenes, pending uploads).
+// Returns false when the entity must be skipped.
+static bool resolveMeshDrawBuffers(const Atlas::RenderResourceManager& registry, const Mesh& mesh,
+                                   VkBuffer& outVB, VkBuffer& outIB, uint32_t& outIndexCount) {
+    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
+        Atlas::MeshBinding binding{};
+        if (!registry.getMeshData(mesh.renderMeshId, binding)) {
+            return false;
+        }
+        if (binding.vertexBuffer == 0 || binding.indexBuffer == 0 || binding.indexCount == 0) {
+            return false;
+        }
+        outVB = reinterpret_cast<VkBuffer>(binding.vertexBuffer);
+        outIB = reinterpret_cast<VkBuffer>(binding.indexBuffer);
+        outIndexCount = binding.indexCount;
+        return true;
+    }
+    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) {
+        return false;
+    }
+    outVB = mesh.vertexBuffer;
+    outIB = mesh.indexBuffer;
+    outIndexCount = mesh.indexCount;
+    return true;
 }
 
 namespace Atlas {
@@ -2331,19 +2352,23 @@ void Renderer::recordShadowPass(VkCommandBuffer commandBuffer, Scene* scene) {
     for (auto entity : meshView) {
         if (registry.all_of<ECS::EditorHiddenComponent>(entity)) continue;
         auto& mesh = registry.get<Mesh>(entity);
-        if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0) continue;
-        if (!isMeshHandleLive(m_meshRegistry, mesh)) continue;
+        // Phase 3a: buffers come from the registry (legacy Mesh::Vk* only
+        // when renderMeshId == 0).
+        VkBuffer drawVB = VK_NULL_HANDLE;
+        VkBuffer drawIB = VK_NULL_HANDLE;
+        uint32_t drawIndexCount = 0;
+        if (!resolveMeshDrawBuffers(m_meshRegistry, mesh, drawVB, drawIB, drawIndexCount)) continue;
         glm::mat4 model(1.0f);
         if (scene->hasTransform(entity)) model = scene->getCachedWorldTransform(entity);
         ShadowPushConstants pc{};
         pc.model = model;
         pc.viewProj = m_ShadowViewProj;
         vkCmdPushConstants(commandBuffer, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-        VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
+        VkBuffer vertexBuffers[] = {drawVB};
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-        vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+        vkCmdBindIndexBuffer(commandBuffer, drawIB, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(commandBuffer, drawIndexCount, 1, 0, 0, 0);
     }
     vkCmdEndRenderPass(commandBuffer);
     // The pass finalLayout transitioned the image; track it.
@@ -3597,7 +3622,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 }
 
                 auto& mesh = registry.get<Mesh>(entity);
-                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0 || !isMeshHandleLive(m_meshRegistry, mesh)) {
+                // Phase 3a: buffers come from the registry (legacy Mesh::Vk*
+                // only when renderMeshId == 0).
+                VkBuffer pickVB = VK_NULL_HANDLE;
+                VkBuffer pickIB = VK_NULL_HANDLE;
+                uint32_t pickIndexCount = 0;
+                if (!resolveMeshDrawBuffers(m_meshRegistry, mesh, pickVB, pickIB, pickIndexCount)) {
                     continue;
                 }
 
@@ -3649,11 +3679,11 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
                 vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PickingPipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
 
-                VkBuffer vertexBuffers[] = {mesh.vertexBuffer};
+                VkBuffer vertexBuffers[] = {pickVB};
                 VkDeviceSize offsets[] = {0};
                 vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexed(commandBuffer, mesh.indexCount, 1, 0, 0, 0);
+                vkCmdBindIndexBuffer(commandBuffer, pickIB, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(commandBuffer, pickIndexCount, 1, 0, 0, 0);
             }
         }
 
@@ -3768,8 +3798,15 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     }
 
                     auto& mesh = registry.get<Mesh>(entity);
-                    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE || mesh.indexCount == 0 || !isMeshHandleLive(m_meshRegistry, mesh)) {
-                        continue;
+                    // Phase 3a: skip decision reads the registry (legacy
+                    // Mesh::Vk* only when renderMeshId == 0).
+                    {
+                        VkBuffer filterVB = VK_NULL_HANDLE;
+                        VkBuffer filterIB = VK_NULL_HANDLE;
+                        uint32_t filterIndexCount = 0;
+                        if (!resolveMeshDrawBuffers(m_meshRegistry, mesh, filterVB, filterIB, filterIndexCount)) {
+                            continue;
+                        }
                     }
 
                     if (registry.all_of<Renderable>(entity)) {
@@ -3820,11 +3857,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                 // Auto-LOD (§5): swap dense meshes for their simplified GPU
                 // variant when the LOD system selected LOD1/LOD2 and a variant
                 // was generated at import. Falls back to the full mesh.
-                auto resolveSimplified = [&](entt::entity entity, const Mesh& mesh,
-                                              VkBuffer& outVB, VkBuffer& outIB, uint32_t& outIndexCount) -> bool {
-                    outVB = mesh.vertexBuffer;
-                    outIB = mesh.indexBuffer;
-                    outIndexCount = mesh.indexCount;
+                auto resolveSimplified = [&](entt::entity entity, VkBuffer baseVB, VkBuffer baseIB,
+                                              uint32_t baseIndexCount, VkBuffer& outVB, VkBuffer& outIB,
+                                              uint32_t& outIndexCount) -> bool {
+                    outVB = baseVB;
+                    outIB = baseIB;
+                    outIndexCount = baseIndexCount;
                     const Atlas::LODComponent* lod = registry.try_get<Atlas::LODComponent>(entity);
                     if (!lod) return false;
                     int level = 0;
@@ -3832,7 +3870,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     else if (lod->currentLevel() == Atlas::LODLevel::LOD2) level = 2;
                     else return false;
                     StaticMeshBuffers variant;
-                    if (!findSimplifiedVariant(mesh.vertexBuffer, mesh.indexBuffer, level, &variant)) return false;
+                    if (!findSimplifiedVariant(baseVB, baseIB, level, &variant)) return false;
                     outVB = variant.vertexBuffer;
                     outIB = variant.indexBuffer;
                     outIndexCount = variant.indexCount;
@@ -3841,10 +3879,18 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                 auto drawEntity = [&](entt::entity entity) {
                     auto& mesh = registry.get<Mesh>(entity);
-                    VkBuffer drawVB = mesh.vertexBuffer;
-                    VkBuffer drawIB = mesh.indexBuffer;
-                    uint32_t drawIndexCount = mesh.indexCount;
-                    const bool drewSimplified = resolveSimplified(entity, mesh, drawVB, drawIB, drawIndexCount);
+                    // Phase 3a: draw buffers come from the registry; a dead
+                    // or unpublished handle skips the draw (legacy fallback
+                    // only when renderMeshId == 0).
+                    VkBuffer baseVB = VK_NULL_HANDLE;
+                    VkBuffer baseIB = VK_NULL_HANDLE;
+                    uint32_t baseIndexCount = 0;
+                    if (!resolveMeshDrawBuffers(m_meshRegistry, mesh, baseVB, baseIB, baseIndexCount)) return;
+                    VkBuffer drawVB = baseVB;
+                    VkBuffer drawIB = baseIB;
+                    uint32_t drawIndexCount = baseIndexCount;
+                    const bool drewSimplified = resolveSimplified(entity, baseVB, baseIB, baseIndexCount,
+                                                                  drawVB, drawIB, drawIndexCount);
                     glm::mat4 model = glm::mat4(1.0f);
                     glm::vec4 baseColor = glm::vec4(1.0f);
                     glm::vec4 emissiveFactor = glm::vec4(0.0f);
@@ -3956,9 +4002,13 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                 auto readInstanceKey = [&](entt::entity entity, const Mesh& mesh, InstanceBatchKey& outKey,
                                            uint32_t& outIndexCount, bool& outSimplified) -> bool {
-                    // Phase 2: stale registry handle → single path (drawEntity
-                    // re-checks); legacy handle 0 flows through as before.
-                    if (!isMeshHandleLive(m_meshRegistry, mesh)) return false;
+                    // Phase 3a: batch key groups by the buffers actually
+                    // drawn (registry first, legacy fallback only when
+                    // renderMeshId == 0); dead/unpublished → per-entity path.
+                    VkBuffer baseVB = VK_NULL_HANDLE;
+                    VkBuffer baseIB = VK_NULL_HANDLE;
+                    uint32_t baseIndexCount = 0;
+                    if (!resolveMeshDrawBuffers(m_meshRegistry, mesh, baseVB, baseIB, baseIndexCount)) return false;
                     // Skinned meshes need per-entity bone palettes: not instanceable.
                     if (registry.all_of<ECS::SkeletonComponent>(entity) ||
                         registry.all_of<ECS::SkinnedMeshComponent>(entity)) {
@@ -3966,10 +4016,11 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     }
                     // Resolve auto-LOD variant first so batches group by the
                     // buffers actually drawn (variants batch among themselves).
-                    VkBuffer vb = mesh.vertexBuffer;
-                    VkBuffer ib = mesh.indexBuffer;
-                    outIndexCount = mesh.indexCount;
-                    outSimplified = resolveSimplified(entity, mesh, vb, ib, outIndexCount);
+                    VkBuffer vb = baseVB;
+                    VkBuffer ib = baseIB;
+                    outIndexCount = baseIndexCount;
+                    outSimplified = resolveSimplified(entity, baseVB, baseIB, baseIndexCount,
+                                                       vb, ib, outIndexCount);
                     outKey.vertexBuffer = vb;
                     outKey.indexBuffer = ib;
                     InstanceMatKey m;
@@ -4155,7 +4206,12 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                         entt::entity selected = static_cast<entt::entity>(selId);
                         if (!registry.valid(selected) || !registry.all_of<Mesh>(selected)) continue;
                         auto& selMesh = registry.get<Mesh>(selected);
-                        if (selMesh.vertexBuffer == VK_NULL_HANDLE || selMesh.indexBuffer == VK_NULL_HANDLE || selMesh.indexCount == 0 || !isMeshHandleLive(m_meshRegistry, selMesh)) continue;
+                        // Phase 3a: buffers come from the registry (legacy
+                        // Mesh::Vk* only when renderMeshId == 0).
+                        VkBuffer selVB = VK_NULL_HANDLE;
+                        VkBuffer selIB = VK_NULL_HANDLE;
+                        uint32_t selIndexCount = 0;
+                        if (!resolveMeshDrawBuffers(m_meshRegistry, selMesh, selVB, selIB, selIndexCount)) continue;
 
                         glm::mat4 selModel = glm::mat4(1.0f);
                         if (scene && scene->hasTransform(selected)) {
@@ -4174,11 +4230,11 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                         VkDescriptorSet sets[] = {m_DescriptorSet, m_BonesDescriptorSets[m_CurrentFrame]};
                         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_OutlinePipelineLayout, 0, 2, sets, 1, &boneOffsetBytes);
 
-                        VkBuffer vertexBuffers[] = {selMesh.vertexBuffer};
+                        VkBuffer vertexBuffers[] = {selVB};
                         VkDeviceSize offsets[] = {0};
                         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-                        vkCmdBindIndexBuffer(commandBuffer, selMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                        vkCmdDrawIndexed(commandBuffer, selMesh.indexCount, 1, 0, 0, 0);
+                        vkCmdBindIndexBuffer(commandBuffer, selIB, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(commandBuffer, selIndexCount, 1, 0, 0, 0);
                     }
                 }
             }

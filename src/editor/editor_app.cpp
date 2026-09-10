@@ -1113,6 +1113,18 @@ Entity EditorApp::createPrimitiveEntity(const std::string& primitiveType, Entity
     mesh.hasBounds = hasBounds;
     mesh.boundsMin = boundsMin;
     mesh.boundsMax = boundsMax;
+    // Phase 3a: publish the GPU binding so renderer draws resolve via the
+    // registry (Mesh::Vk* stays as legacy fallback for handle 0 only).
+    if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
+        Atlas::MeshBinding binding{};
+        binding.vertexBuffer = reinterpret_cast<uint64_t>(mesh.vertexBuffer);
+        binding.indexBuffer = reinterpret_cast<uint64_t>(mesh.indexBuffer);
+        binding.vertexMemory = reinterpret_cast<uint64_t>(mesh.vertexMemory);
+        binding.indexMemory = reinterpret_cast<uint64_t>(mesh.indexMemory);
+        binding.vertexCount = mesh.vertexCount;
+        binding.indexCount = mesh.indexCount;
+        m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
+    }
 
     meshData.vertexBuffer = VK_NULL_HANDLE;
     meshData.indexBuffer = VK_NULL_HANDLE;
@@ -2617,6 +2629,18 @@ void EditorApp::processPendingModels() {
             }
             mesh.vertexCount = meshData.vertexCount;
             mesh.indexCount = meshData.indexCount;
+            // Phase 3a: publish the GPU binding so renderer draws resolve
+            // via the registry (Mesh::Vk* stays as legacy fallback).
+            if (mesh.renderMeshId != Atlas::kInvalidMeshHandle) {
+                Atlas::MeshBinding binding{};
+                binding.vertexBuffer = reinterpret_cast<uint64_t>(mesh.vertexBuffer);
+                binding.indexBuffer = reinterpret_cast<uint64_t>(mesh.indexBuffer);
+                binding.vertexMemory = reinterpret_cast<uint64_t>(mesh.vertexMemory);
+                binding.indexMemory = reinterpret_cast<uint64_t>(mesh.indexMemory);
+                binding.vertexCount = mesh.vertexCount;
+                binding.indexCount = mesh.indexCount;
+                m_Renderer->getMeshRegistry().setMeshData(mesh.renderMeshId, binding);
+            }
 
             // Compute local bounds while CPU vertices still exist.
             if (!meshData.vertices.empty()) {

@@ -62,6 +62,18 @@ CityGenResult generateProceduralCity(Scene* scene, Renderer* renderer, const Cit
     const Atlas::MeshHandle sharedMeshHandle = (boxData.vertexBuffer != VK_NULL_HANDLE)
         ? renderer->getMeshRegistry().allocateMesh()
         : Atlas::kInvalidMeshHandle;
+    // Phase 3a: publish the shared GPU binding once so renderer draws
+    // resolve via the registry (Mesh::Vk* stays as legacy fallback).
+    if (sharedMeshHandle != Atlas::kInvalidMeshHandle) {
+        Atlas::MeshBinding sharedBinding{};
+        sharedBinding.vertexBuffer = reinterpret_cast<uint64_t>(boxData.vertexBuffer);
+        sharedBinding.indexBuffer = reinterpret_cast<uint64_t>(boxData.indexBuffer);
+        sharedBinding.vertexMemory = reinterpret_cast<uint64_t>(boxData.vertexMemory);
+        sharedBinding.indexMemory = reinterpret_cast<uint64_t>(boxData.indexMemory);
+        sharedBinding.vertexCount = boxData.vertexCount;
+        sharedBinding.indexCount = boxData.indexCount;
+        renderer->getMeshRegistry().setMeshData(sharedMeshHandle, sharedBinding);
+    }
     const glm::vec3 boxMin(-0.5f), boxMax(0.5f);
 
     auto& registry = scene->getRegistry();

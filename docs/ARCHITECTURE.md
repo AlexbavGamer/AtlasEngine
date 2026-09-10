@@ -33,14 +33,21 @@ Rules:
   - allocate: the 4 ownership-transfer sites (editor primitive creation,
     editor model import, `game_main` primitive, city generator — the latter
     shares ONE handle across all boxes, freed by the first/owning entity);
+  - publish: each site calls `setMeshData(handle, MeshBinding)` right after
+    `allocateMesh()` (Phase 3a) — the registry holds the bit-cast `Vk*`
+    binding + vertex/index counts and stays Vulkan-free (`uint64_t`);
   - free: `EditorApp::onMeshDestroyed` (central `on_destroy` hook, under the
     same `ownsGpuResources` guard as the deferred `vkDestroy` — mirror rule);
-  - draw: picking/main/outline/instancing paths skip meshes whose handle is
-    registered-but-dead; handle 0 = legacy/unregistered → drawn as before.
+    `freeMesh` also clears the slot binding so dead slots never resolve;
+  - draw (Phase 3a, done): ALL renderer paths (shadow, picking, main +
+    instancing batch keys, outline, auto-LOD resolve) bind buffers via
+    `resolveMeshDrawBuffers()` → `getMeshData()`; `Mesh::Vk*` is only the
+    legacy fallback when `renderMeshId == 0`. `isMeshHandleLive` deleted.
   - the standalone game never destroys meshes (no hook) → handles live until
     exit, mirroring the pre-existing Vk-buffer behavior.
-  Remaining (Phase 3): make renderer draw/batching read the registry instead
-  of `Mesh::Vk*`, then delete the deprecated fields.
+  Remaining (Phase 3b): delete the deprecated `Mesh::Vk*` fields (+ serializer
+  migration); handle 0 legacy path goes with them. Covered by
+  `tests/test_render_resources.cpp` (publish/resolve, stale isolation).
 - `src/ecs/components/components.h ::MeshComponent` was deleted (dead duplicate
   of `::Mesh` — never instantiated; only `SkinnedMeshComponent` remains).
   The header no longer includes `<vulkan/vulkan.h>`.
