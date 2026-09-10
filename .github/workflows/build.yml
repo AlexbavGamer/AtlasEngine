@@ -5,10 +5,25 @@ name: Build
 # Dependencies are fetched by scripts/fetch_deps.sh
 # into deps/src (cached).
 
+# Manual-only pipeline: automatic builds on push/PR are disabled (they
+# burned CI minutes on every WIP commit). Run it from the Actions tab via
+# "Run workflow" when a green check is actually needed.
 "on":
-  push:
-  pull_request:
   workflow_dispatch:
+    inputs:
+      build_config:
+        description: "Build configuration"
+        required: false
+        default: "Release"
+        type: choice
+        options:
+          - Release
+          - Debug
+      run_tests:
+        description: "Run AtlasTests after building"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -75,15 +90,18 @@ jobs:
       - name: Generate + build
         run: |
           premake5 ninja
-          ninja -C build AtlasEngine_Release AtlasTests_Release
+          ninja -C build
+            AtlasEngine_${{ inputs.build_config }}
+            AtlasTests_${{ inputs.build_config }}
 
       - name: Run unit tests
-        run: ./bin/Release/AtlasTests
+        if: ${{ inputs.run_tests }}
+        run: ./bin/${{ inputs.build_config }}/AtlasTests
 
       - name: Stage Linux artifact
         run: |
           mkdir -p dist/linux
-          cp bin/Release/AtlasEngine dist/linux/
+          cp bin/${{ inputs.build_config }}/AtlasEngine dist/linux/
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
@@ -93,6 +111,7 @@ jobs:
 
   sanitizers:
     name: Unit tests (ASan + UBSan)
+    if: ${{ inputs.run_tests }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
@@ -186,17 +205,20 @@ jobs:
         run: |
           export PATH="$VULKAN_SDK/Bin:$PATH"
           premake5 ninja
-          ninja -C build AtlasEngine_Release AtlasTests_Release
+          ninja -C build
+            AtlasEngine_${{ inputs.build_config }}
+            AtlasTests_${{ inputs.build_config }}
 
       - name: Run unit tests
+        if: ${{ inputs.run_tests }}
         shell: bash
-        run: ./bin/Release/AtlasTests.exe
+        run: ./bin/${{ inputs.build_config }}/AtlasTests.exe
 
       - name: Stage Windows artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/windows | Out-Null
-          Copy-Item bin/Release/AtlasEngine.exe dist/windows/
+          Copy-Item bin/${{ inputs.build_config }}/AtlasEngine.exe dist/windows/
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
