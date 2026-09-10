@@ -171,8 +171,11 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         // light + shadow caster + sky disk. No Transform needed.
         ImGui::DragFloat("Azimuth##Sun", &component.azimuthDeg, 1.0f, -180.0f, 540.0f, "%.1f deg");
         ImGui::DragFloat("Elevation##Sun", &component.elevationDeg, 0.5f, -12.0f, 90.0f, "%.1f deg");
-        float hour = 12.0f;
-        if (ImGui::DragFloat("Time of day##Sun", &hour, 0.1f, 0.0f, 24.0f, "%.1fh")) {
+        // The slider mirrors the current azimuth (single source of truth =
+        // az/el); dragging it re-drives az/el via setTimeOfDay. Night hours
+        // clamp to the horizon, same as setTimeOfDay.
+        float hour = 6.0f + std::clamp((component.azimuthDeg - 90.0f) / 180.0f, 0.0f, 1.0f) * 12.0f;
+        if (ImGui::SliderFloat("Time of day##Sun", &hour, 0.0f, 24.0f, "%.1fh")) {
             component.setTimeOfDay(hour);
         }
         ImGui::TextDisabled("Time slider drives az/el (6h sunrise, 18h sunset).");
