@@ -38,6 +38,19 @@ fetch entt https://github.com/skypjack/entt.git v3.12.1
 fetch lua https://github.com/lua/lua.git v5.4.8
 fetch tracy https://github.com/wolfpld/tracy.git v0.13.1
 fetch assimp https://github.com/assimp/assimp.git v6.0.4
+
+# Assimp's CMake build normally generates config.h and zconf.h.  AtlasEngine
+# intentionally does not use CMake, so prepare the self-contained headers that
+# are already shipped as templates by Assimp. This keeps dependency setup
+# deterministic while leaving the actual project build entirely to Premake5.
+ASSIMP_DIR="${DEPS_SRC}/assimp"
+if [ -f "${ASSIMP_DIR}/include/assimp/config.h.in" ]; then
+    cp "${ASSIMP_DIR}/include/assimp/config.h.in" "${ASSIMP_DIR}/include/assimp/config.h"
+fi
+if [ -f "${ASSIMP_DIR}/contrib/zlib/zconf.h.included" ]; then
+    cp "${ASSIMP_DIR}/contrib/zlib/zconf.h.included" "${ASSIMP_DIR}/contrib/zlib/zconf.h"
+fi
+
 fetch vma https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git v3.3.0
 fetch stb https://github.com/nothings/stb.git master
 
