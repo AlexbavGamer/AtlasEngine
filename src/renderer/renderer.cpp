@@ -2330,6 +2330,13 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
         const glm::mat4 view = glm::lookAt(lightPos, center, up);
         glm::mat4 proj = glm::ortho(-e, e, -e, e, 1.0f, e * 4.0f);
         proj[1][1] *= -1.0f; // Vulkan Y-flip, same convention as the main passes
+        // Depth: glm::ortho maps to OpenGL [-1,1] (no GLM_FORCE_DEPTH_ZERO_TO_ONE
+        // in this project). Vulkan clips z<0, which emptied the whole map (the
+        // scene sits in the negative half). Remap to [0,1] here. (Main-pass
+        // perspective has the same quirk but survives: its negative range only
+        // covers a sub-near sliver. See ARCHITECTURE.md.)
+        proj[2][2] *= 0.5f;
+        proj[3][2] = proj[3][2] * 0.5f + 0.5f;
         m_ShadowViewProj = proj * view;
         m_LightBufferData.shadowViewProj = m_ShadowViewProj;
         m_LightBufferData.shadowParams = glm::vec4(1.0f, kShadowDepthBias, static_cast<float>(kShadowMapSize), 0.0f);
@@ -2392,8 +2399,7 @@ void Renderer::recordShadowPass(VkCommandBuffer commandBuffer, Scene* scene) {
     for (auto entity : meshView) {
         if (registry.all_of<ECS::EditorHiddenComponent>(entity)) continue;
         auto& mesh = registry.get<Mesh>(entity);
-        // Phase 3a: buffers come from the registry (legacy Mesh::Vk* only
-        // when renderMeshId == 0).
+        // Phase 3b: draw buffers resolve solely via the registry.
         VkBuffer drawVB = VK_NULL_HANDLE;
         VkBuffer drawIB = VK_NULL_HANDLE;
         uint32_t drawIndexCount = 0;

@@ -167,6 +167,7 @@ private:
         bool hasLight = false;
         Atlas::ECS::LightComponent light;
 
+        // Sun/sky are plain data (no GPU handles, unlike Mesh): value-copied as-is.
         bool hasSun = false;
         Atlas::ECS::SunComponent sun;
 

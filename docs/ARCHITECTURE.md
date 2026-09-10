@@ -122,6 +122,12 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
 - v1 limitations: no skinning in the depth pass (bind-pose shadows), no
   alpha-discard in depth (masked materials cast quad shadows), fixed
   frustum (upgrade: fit to view frustum / CSM), spot falls back to point.
+- Depth-range gotcha (no `GLM_FORCE_DEPTH_ZERO_TO_ONE` in this project):
+  `glm::ortho`/`glm::perspective` map depth to OpenGL `[-1,1]`, but Vulkan
+  clips `z<0`. The main pass survives by luck (its negative range covers
+  only a sub-near sliver); the shadow ortho needed an explicit remap to
+  `[0,1]` (`proj[2][2]*=0.5; proj[3][2]*0.5+0.5`) — without it the whole
+  depth map came out empty. Touch this code only with a GPU readback.
 - NOTE: `LightBuffer` layout is std140-sensitive — the `static_assert`s on
   `Light` (48B) / `LightBuffer` (304B) in `renderer.h` must match
   `pbr_frag.glsl` exactly; change both sides together.
