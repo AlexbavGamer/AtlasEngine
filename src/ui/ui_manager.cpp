@@ -380,6 +380,14 @@ void UIManager::copySelectedEntitiesToClipboard() {
             item.hasLight = true;
             item.light = registry.get<Atlas::ECS::LightComponent>(e);
         }
+        if (registry.all_of<Atlas::ECS::SunComponent>(e)) {
+            item.hasSun = true;
+            item.sun = registry.get<Atlas::ECS::SunComponent>(e);
+        }
+        if (registry.all_of<Atlas::ECS::SkyComponent>(e)) {
+            item.hasSky = true;
+            item.sky = registry.get<Atlas::ECS::SkyComponent>(e);
+        }
         if (registry.all_of<Atlas::ECS::ScriptComponent>(e)) {
             item.hasScript = true;
             item.script = registry.get<Atlas::ECS::ScriptComponent>(e);
@@ -490,6 +498,8 @@ void UIManager::pasteEntitiesFromClipboard() {
         if (item.hasSphereCollider) registry.emplace_or_replace<Atlas::ECS::SphereColliderComponent>(e, item.sphereCollider);
         if (item.hasCapsuleCollider) registry.emplace_or_replace<Atlas::ECS::CapsuleColliderComponent>(e, item.capsuleCollider);
         if (item.hasLight) registry.emplace_or_replace<Atlas::ECS::LightComponent>(e, item.light);
+        if (item.hasSun) registry.emplace_or_replace<Atlas::ECS::SunComponent>(e, item.sun);
+        if (item.hasSky) registry.emplace_or_replace<Atlas::ECS::SkyComponent>(e, item.sky);
         if (item.hasScript) registry.emplace_or_replace<Atlas::ECS::ScriptComponent>(e, item.script);
         if (item.hasFollowCamera) registry.emplace_or_replace<Atlas::ECS::FollowCameraComponent>(e, item.followCamera);
         if (item.hasGameCamera) registry.emplace_or_replace<Atlas::ECS::GameCameraComponent>(e, item.gameCamera);
@@ -677,6 +687,21 @@ void UIManager::renderToolbar(bool gameModeActive, bool gameModePaused) {
     ImGui::SameLine(0.0f, 8.0f);
     if (pill("##gamecam", "Game Camera", false, ImVec2(132.0f, 28.0f))) {
         if (onCreateGameCamera) onCreateGameCamera(entt::null);
+    }
+
+    // Sun & Sky (Sun/Sky task): procedural sun + gradient sky backdrop.
+    ImGui::SameLine(0.0f, 8.0f);
+    if (pill("##sunsky", "Sun & Sky", false, ImVec2(110.0f, 28.0f))) {
+        ImGui::OpenPopup("toolbar_sunsky");
+    }
+    if (ImGui::BeginPopup("toolbar_sunsky")) {
+        if (ImGui::MenuItem("Sun") && onCreateSun) {
+            onCreateSun(entt::null);
+        }
+        if (ImGui::MenuItem("Sky") && onCreateSky) {
+            onCreateSky(entt::null);
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::SameLine();
@@ -2489,6 +2514,40 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             renderComponent(m_Scene->getRegistry().get<Atlas::ECS::LightComponent>(selectedEntity), "Light");
         }
 
+        // Sun editor: procedural sun (az/el -> slot-0 directional + shadows + sky disk).
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::SunComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Sun")) {
+            bool removeSun = false;
+            const bool sunOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("sun", "Sun", true, true, &removeSun);
+            if (sunOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::SunComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(sunOpen);
+            if (removeSun) {
+                m_Scene->getRegistry().remove<Atlas::ECS::SunComponent>(selectedEntity);
+            }
+        }
+
+        // Sky editor: procedural gradient + sun disk backdrop.
+        if (m_Scene->getRegistry().all_of<Atlas::ECS::SkyComponent>(selectedEntity) &&
+            ::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Sky")) {
+            bool removeSky = false;
+            const bool skyOpen =
+                ::Atlas::InspectorUI::BeginComponentCard("sky", "Sky", true, true, &removeSky);
+            if (skyOpen) {
+                ecs::renderComponentProperties(
+                    m_Scene->getRegistry().get<Atlas::ECS::SkyComponent>(selectedEntity),
+                    static_cast<uint32_t>(selectedEntity));
+            }
+            ::Atlas::InspectorUI::EndComponentCard(skyOpen);
+            if (removeSky) {
+                m_Scene->getRegistry().remove<Atlas::ECS::SkyComponent>(selectedEntity);
+            }
+        }
+
         // Script inspector (V1)
         if (::Atlas::InspectorUI::PassesFilter(m_InspectorFilter, "Scripts")) {
             bool removeScripts = false;
@@ -3481,6 +3540,14 @@ bool isProtectedCameraEntity = m_Scene->getRegistry().all_of<EditorCamera>(selec
             light.direction = glm::vec3(0.0f, -1.0f, 0.0f);
             light.castShadows = false;
             registry.emplace<Atlas::ECS::LightComponent>(selectedEntity, light);
+        }});
+        addEntries.push_back({"Sun", registry.all_of<Atlas::ECS::SunComponent>(selectedEntity), [&] {
+            Atlas::ECS::SunComponent sun;
+            sun.setTimeOfDay(10.0f);
+            registry.emplace<Atlas::ECS::SunComponent>(selectedEntity, sun);
+        }});
+        addEntries.push_back({"Sky", registry.all_of<Atlas::ECS::SkyComponent>(selectedEntity), [&] {
+            registry.emplace<Atlas::ECS::SkyComponent>(selectedEntity);
         }});
         addEntries.push_back({"Camera",
             registry.all_of<Camera>(selectedEntity) || registry.all_of<EditorCamera>(selectedEntity), [&] {

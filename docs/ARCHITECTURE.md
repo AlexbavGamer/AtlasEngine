@@ -84,7 +84,29 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
   change, `touch` the affected `.cpp` files before `ninja`, or the exe
   silently links stale objects.
 
-## Lighting & shadows (v1)
+## Lighting, sun & sky
+
+- Scene `LightComponent`s are uploaded to the GPU every frame
+  (`Renderer::updateLightsAndShadow`): shadow-casting directional first
+  (slot 0), then others up to 4. No lights → legacy hardcoded default.
+- **Sun** (`ECS::SunComponent`, `components.h`): procedural directional light
+  driven by azimuth/elevation (no Transform needed). The first sun found
+  owns **slot 0** as the scene directional + shadow caster, ahead of ad-hoc
+  lights; its `lightDirection()` matches the frag convention
+  (`L = normalize(-light.direction)`). `setTimeOfDay(h)` maps 6h→18h onto
+  an east→west arc (night clamps to the horizon). Created via the toolbar
+  "Sun & Sky" menu or Add Component > Sun; persisted by the serializer
+  (`kHasSun`).
+- **Sky** (`ECS::SkyComponent`): procedural gradient (horizon/zenith/ground)
+  + sun disk + halo, drawn as a **fullscreen triangle** (`gl_VertexIndex`, no
+  buffers) at the far plane FIRST in the main pass (editor + game views),
+  depth test `LEQUAL`, depth writes off, no descriptor sets — everything via
+  `SkyPushConstants` (pinned by `offsetof` asserts in `renderer.h`, same
+  discipline as `PushConstants` after the pbr_vert layout bug). No enabled
+  sky = legacy clear-color background. The disk tracks the scene sun (or
+  zenith default). `createSkyPipeline()` joins the recreate path alongside
+  the other pipelines. Persisted via `kHasSky`; old scene files load with
+  component defaults.
 
 - Scene `LightComponent`s are uploaded to the GPU every frame
   (`Renderer::updateLightsAndShadow`): shadow-casting directional first

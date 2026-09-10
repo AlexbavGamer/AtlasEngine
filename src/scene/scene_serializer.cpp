@@ -234,6 +234,10 @@ enum EntityBinFlags : uint32_t {
     kHasMaterial = 1u << 12,
     kHasScripts = 1u << 13,
     kHasMeshCollider = 1u << 14,
+    // Sun/Sky task: procedural sun + sky (new in otherwise-v1 binary format;
+    // old files simply lack these flags and load with component defaults).
+    kHasSun = 1u << 15,
+    kHasSky = 1u << 16,
 };
 
 bool writeScriptFieldBin(std::ostream& os, const SerializedScriptField& field) {
@@ -354,6 +358,8 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
         if (registry.all_of<ECS::MaterialComponent>(entity)) flags |= kHasMaterial;
         if (registry.all_of<ECS::ScriptComponent>(entity)) flags |= kHasScripts;
         if (registry.all_of<ECS::MeshColliderComponent>(entity)) flags |= kHasMeshCollider;
+        if (registry.all_of<ECS::SunComponent>(entity)) flags |= kHasSun;
+        if (registry.all_of<ECS::SkyComponent>(entity)) flags |= kHasSky;
 
         std::string primitiveType;
         if (registry.all_of<::Mesh>(entity)) {
@@ -461,6 +467,24 @@ bool saveToBinary(Scene& scene, std::ostream& out) {
             if (!writeVec3(out, c.offset)) return false;
             if (!writeU8(out, c.isTrigger ? 1 : 0)) return false;
             if (!writeU8(out, c.convex ? 1 : 0)) return false;
+        }
+
+        if (flags & kHasSun) {
+            const auto& s = registry.get<ECS::SunComponent>(entity);
+            if (!writeF32(out, s.azimuthDeg) || !writeF32(out, s.elevationDeg)) return false;
+            if (!writeVec3(out, s.color)) return false;
+            if (!writeF32(out, s.intensity)) return false;
+            if (!writeU8(out, s.castShadows ? 1 : 0)) return false;
+        }
+
+        if (flags & kHasSky) {
+            const auto& s = registry.get<ECS::SkyComponent>(entity);
+            if (!writeU8(out, s.enabled ? 1 : 0)) return false;
+            if (!writeVec3(out, s.horizonColor)) return false;
+            if (!writeVec3(out, s.zenithColor)) return false;
+            if (!writeVec3(out, s.groundColor)) return false;
+            if (!writeVec3(out, s.sunColor)) return false;
+            if (!writeF32(out, s.sunDiskSizeDeg) || !writeF32(out, s.sunGlow)) return false;
         }
 
         if (flags & kHasPrimitive) {
@@ -636,6 +660,28 @@ bool loadFromBinary(std::istream& in, SerializedScene& outScene) {
             if (!readU8(in, convex)) return false;
             e.meshCollider.isTrigger = (isTrigger != 0);
             e.meshCollider.convex = (convex != 0);
+        }
+
+        if (flags & kHasSun) {
+            e.hasSun = true;
+            uint8_t castShadows = 1;
+            if (!readF32(in, e.sunAzimuthDeg) || !readF32(in, e.sunElevationDeg)) return false;
+            if (!readVec3(in, e.sunColor)) return false;
+            if (!readF32(in, e.sunIntensity)) return false;
+            if (!readU8(in, castShadows)) return false;
+            e.sunCastShadows = (castShadows != 0);
+        }
+
+        if (flags & kHasSky) {
+            e.hasSky = true;
+            uint8_t enabled = 1;
+            if (!readU8(in, enabled)) return false;
+            if (!readVec3(in, e.skyHorizon)) return false;
+            if (!readVec3(in, e.skyZenith)) return false;
+            if (!readVec3(in, e.skyGround)) return false;
+            if (!readVec3(in, e.skySunColor)) return false;
+            if (!readF32(in, e.skySunDiskSizeDeg) || !readF32(in, e.skySunGlow)) return false;
+            e.skyEnabled = (enabled != 0);
         }
 
         if (flags & kHasPrimitive) {

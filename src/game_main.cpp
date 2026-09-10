@@ -4,9 +4,9 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -195,6 +195,28 @@ std::unordered_map<uint32_t, entt::entity> applyGameScene(
         }
         if (src.hasCapsuleCollider) {
             registry.emplace_or_replace<Atlas::ECS::CapsuleColliderComponent>(entity, src.capsuleCollider);
+        }
+        // Sun/Sky task: procedural sun + sky backdrop (data-only; the
+        // renderer resolves the first of each per frame).
+        if (src.hasSun) {
+            Atlas::ECS::SunComponent sun;
+            sun.azimuthDeg = src.sunAzimuthDeg;
+            sun.elevationDeg = src.sunElevationDeg;
+            sun.color = src.sunColor;
+            sun.intensity = src.sunIntensity;
+            sun.castShadows = src.sunCastShadows;
+            registry.emplace_or_replace<Atlas::ECS::SunComponent>(entity, sun);
+        }
+        if (src.hasSky) {
+            Atlas::ECS::SkyComponent sky;
+            sky.enabled = src.skyEnabled;
+            sky.horizonColor = src.skyHorizon;
+            sky.zenithColor = src.skyZenith;
+            sky.groundColor = src.skyGround;
+            sky.sunColor = src.skySunColor;
+            sky.sunDiskSizeDeg = src.skySunDiskSizeDeg;
+            sky.sunGlow = src.skySunGlow;
+            registry.emplace_or_replace<Atlas::ECS::SkyComponent>(entity, sky);
         }
         if (src.hasMaterial) {
             Atlas::ECS::MaterialComponent mat;

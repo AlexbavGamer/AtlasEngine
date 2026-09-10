@@ -67,6 +67,23 @@ struct ShadowPushConstants {
 };
 static_assert(sizeof(ShadowPushConstants) <= 128, "ShadowPushConstants must stay within 128 bytes");
 
+// Procedural sky (fullscreen triangle at far plane). Layout MUST match the
+// SkyPC block in shaders/sky_vert.glsl + sky_frag.glsl exactly (std430).
+struct SkyPushConstants {
+    glm::mat4 invViewProj;   // 0: inverse of (proj * rotation-only view)
+    glm::vec4 sunDir;        // 64: xyz = toward sun (normalized), w unused
+    glm::vec4 horizonColor;  // 80
+    glm::vec4 zenithColor;   // 96
+    glm::vec4 groundColor;   // 112
+    glm::vec4 sunColorSize;  // 128: rgb + disk size in degrees
+    glm::vec4 params;        // 144: x = glow strength, yzw reserved
+};
+static_assert(sizeof(SkyPushConstants) <= 256, "SkyPushConstants exceeds maxPushConstantsSize (256)");
+static_assert(offsetof(SkyPushConstants, sunDir) == 64, "SkyPushConstants.sunDir offset drifted from GLSL");
+static_assert(offsetof(SkyPushConstants, horizonColor) == 80, "SkyPushConstants.horizonColor drifted from GLSL");
+static_assert(offsetof(SkyPushConstants, sunColorSize) == 128, "SkyPushConstants.sunColorSize drifted from GLSL");
+static_assert(sizeof(SkyPushConstants) == 160, "SkyPushConstants size drifted from GLSL std430 layout (160B)");
+
 struct PickingPushConstants {
     glm::mat4 model;
     glm::mat4 view;
@@ -270,6 +287,7 @@ private:
     void updateLightsAndShadow(Scene* scene);
     void recordShadowPass(VkCommandBuffer commandBuffer, Scene* scene);
     void createOutlinePipeline();
+    void createSkyPipeline();
     void createLightBuffer();
     void createDescriptorSet();
     void createBonesDescriptorSetLayout();
@@ -372,6 +390,11 @@ private:
 
     VkPipelineLayout m_OutlinePipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_OutlinePipeline = VK_NULL_HANDLE;
+
+    // Procedural sky (fullscreen triangle, drawn first in the main pass).
+    // No vertex buffers, no descriptor sets — everything via push constants.
+    VkPipelineLayout m_SkyPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_SkyPipeline = VK_NULL_HANDLE;
 
     VkCommandPool m_CommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_CommandBuffers;

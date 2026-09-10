@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -146,6 +148,50 @@ struct LightComponent {
     float outerCutOff = glm::cos(glm::radians(15.0f));
 
     bool castShadows = false;
+};
+
+// Procedural sun: a single directional light driven by azimuth/elevation
+// (no Transform needed). The renderer uploads the first SunComponent found
+// as the slot-0 directional light + shadow caster, and the sky uses the
+// same direction for its sun disk. Vulkan-free (glm only).
+struct SunComponent {
+    float azimuthDeg = 135.0f;   // compass around Y: 0 = +Z, 90 = +X (east)
+    float elevationDeg = 50.0f;  // above horizon, clamped to [-12, 90]
+    glm::vec3 color = glm::vec3(1.0f, 0.96f, 0.90f);
+    float intensity = 3.0f;
+    bool castShadows = true;
+
+    // Unit vector pointing FROM the scene TOWARD the sun.
+    glm::vec3 sunDirection() const {
+        const float el = glm::radians(std::clamp(elevationDeg, -12.0f, 90.0f));
+        const float az = glm::radians(azimuthDeg);
+        const float ce = std::cos(el);
+        return glm::vec3(ce * std::sin(az), std::sin(el), ce * std::cos(az));
+    }
+    // Travel direction of the light rays (what LightBuffer/shader expect:
+    // frag uses L = normalize(-light.direction)).
+    glm::vec3 lightDirection() const { return -sunDirection(); }
+
+    // Convenience: hour in [0, 24) drives az/el along an east->west arc
+    // (6h = sunrise, 12h = peak, 18h = sunset; night clamps to horizon).
+    void setTimeOfDay(float hour) {
+        const float t = std::clamp((hour - 6.0f) / 12.0f, 0.0f, 1.0f);
+        elevationDeg = std::sin(t * 3.14159265f) * 65.0f;
+        azimuthDeg = 90.0f + t * 180.0f;
+    }
+};
+
+// Procedural sky backdrop (gradient + sun disk + horizon glow), drawn as a
+// fullscreen triangle at the far plane before opaques. First enabled
+// SkyComponent in the scene wins; none = legacy clear-color background.
+struct SkyComponent {
+    bool enabled = true;
+    glm::vec3 horizonColor = glm::vec3(0.62f, 0.72f, 0.83f);
+    glm::vec3 zenithColor = glm::vec3(0.19f, 0.36f, 0.63f);
+    glm::vec3 groundColor = glm::vec3(0.09f, 0.09f, 0.11f);
+    glm::vec3 sunColor = glm::vec3(1.0f, 0.88f, 0.70f);
+    float sunDiskSizeDeg = 2.5f;  // angular radius of the disk
+    float sunGlow = 0.35f;        // halo strength around the disk
 };
 
 

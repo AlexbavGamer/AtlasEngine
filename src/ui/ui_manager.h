@@ -62,6 +62,8 @@ public:
     bool wasGameViewportFocused() const { return m_GameViewportFocusedPrevFrame; }
     void setOnCreatePrimitive(std::function<void(const std::string&, Entity)> callback) { onCreatePrimitive = std::move(callback); }
     void setOnCreateGameCamera(std::function<void(Entity)> callback) { onCreateGameCamera = std::move(callback); }
+    void setOnCreateSun(std::function<void(Entity)> callback) { onCreateSun = std::move(callback); }
+    void setOnCreateSky(std::function<void(Entity)> callback) { onCreateSky = std::move(callback); }
 
     TransformMode getTransformMode() const { return m_TransformMode; }
     bool isGizmoUsing() const { return m_GizmoUsing; }
@@ -165,6 +167,12 @@ private:
         bool hasLight = false;
         Atlas::ECS::LightComponent light;
 
+        bool hasSun = false;
+        Atlas::ECS::SunComponent sun;
+
+        bool hasSky = false;
+        Atlas::ECS::SkyComponent sky;
+
         bool hasScript = false;
         Atlas::ECS::ScriptComponent script;
 
@@ -243,6 +251,8 @@ private:
     std::function<void()> onReleaseGameFocus;
     std::function<void(const std::string&, Entity)> onCreatePrimitive;
     std::function<void(Entity)> onCreateGameCamera;
+    std::function<void(Entity)> onCreateSun;
+    std::function<void(Entity)> onCreateSky;
 
     GLFWwindow* window = nullptr;
 

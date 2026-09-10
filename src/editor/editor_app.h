@@ -91,6 +91,8 @@ private:
     Entity createPrimitiveEntity(const std::string& primitiveType, Entity parent = entt::null);
     Entity createGameCameraEntity(Entity parent = entt::null);
     Entity createLightEntity(ECS::LightComponent::Type type = ECS::LightComponent::Type::Directional, Entity parent = entt::null);
+    Entity createSunEntity(Entity parent = entt::null);
+    Entity createSkyEntity(Entity parent = entt::null);
     void resetEditorScene(bool createEditorCamera = true);
     void ensureEditorCamera();
     void rebindEditorCameraController();

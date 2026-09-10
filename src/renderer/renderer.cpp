@@ -68,6 +68,26 @@ static bool resolveMeshDrawBuffers(const Atlas::RenderResourceManager& registry,
     return true;
 }
 
+// Sun/sky lookup (Sun/Sky task): first component found wins; a sky must be
+// enabled to draw. World-space policy lives in components.h; the renderer
+// only translates to GPU state.
+static const Atlas::ECS::SunComponent* findFirstSun(entt::registry& registry) {
+    auto view = registry.view<Atlas::ECS::SunComponent>();
+    if (view.begin() == view.end()) {
+        return nullptr;
+    }
+    return &view.get<Atlas::ECS::SunComponent>(*view.begin());
+}
+static const Atlas::ECS::SkyComponent* findFirstEnabledSky(entt::registry& registry) {
+    for (auto e : registry.view<Atlas::ECS::SkyComponent>()) {
+        const auto& sky = registry.get<Atlas::ECS::SkyComponent>(e);
+        if (sky.enabled) {
+            return &sky;
+        }
+    }
+    return nullptr;
+}
+
 namespace Atlas {
 
 const std::vector<const char*> Atlas::Renderer::validationLayers = {
@@ -111,6 +131,7 @@ try {
     createPickingPipeline();
     createShadowPipeline();
     createOutlinePipeline();
+    createSkyPipeline();
     m_InitStep = "framebuffers/resources";
     createFramebuffers();
     createOffscreenResources();
@@ -387,6 +408,7 @@ void Renderer::recreateSwapChain() {
     createInstancedPipelines();
     createPickingPipeline();
     createOutlinePipeline();
+    createSkyPipeline();
     createFramebuffers();
     createOffscreenResources();
     createCommandBuffers();
@@ -2218,10 +2240,33 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
     }
     m_LightBufferData.cameraPos = cameraPos;
 
-    // Gather scene lights: shadow-casting directional first (slot 0), rest after.
+    // Sun (Sun/Sky task): the first SunComponent owns slot 0 as the scene
+    // directional light + shadow caster, ahead of ad-hoc LightComponents.
+    // Absent sun + absent lights = legacy hardcoded default below.
     int slot = 0;
     entt::entity casterEntity = entt::null;
     glm::vec3 shadowDir(0.0f, -1.0f, 0.0f);
+    if (scene) {
+        auto& registry = scene->getRegistry();
+        if (const ECS::SunComponent* sun = findFirstSun(registry)) {
+            Light& dst = m_LightBufferData.lights[0];
+            dst.color = sun->color;
+            dst.intensity = sun->intensity;
+            dst.type = 1; // directional
+            dst.direction = sun->lightDirection();
+            dst.position = cameraTarget - dst.direction * 100.0f;
+            shadowDir = dst.direction;
+            if (sun->castShadows) {
+                for (auto e : registry.view<ECS::SunComponent>()) {
+                    casterEntity = e;
+                    break;
+                }
+            }
+            slot = 1;
+        }
+    }
+
+    // Gather scene lights: shadow-casting directional first (slot 0), rest after.
     auto fillLight = [&](entt::registry& registry, entt::entity e, bool directional) {
         auto& src = registry.get<ECS::LightComponent>(e);
         Light& dst = m_LightBufferData.lights[slot];
@@ -2497,6 +2542,137 @@ void Renderer::createOutlinePipeline() {
     }
 
     setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_OutlinePipeline), "OutlinePipeline");
+
+    vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+    vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+}
+
+// Procedural sky: fullscreen triangle (no vertex buffers — positions come
+// from gl_VertexIndex), drawn first at the far plane with depth writes off
+// so opaques overdraw it. No descriptors; everything via SkyPushConstants.
+void Renderer::createSkyPipeline() {
+    auto vertShaderCode = readFile("shaders/sky_vert.spv");
+    auto fragShaderCode = readFile("shaders/sky_frag.spv");
+
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 0;
+    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(m_SwapChainExtent.width);
+    viewport.height = static_cast<float>(m_SwapChainExtent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = m_SwapChainExtent;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(SkyPushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_SkyPipelineLayout) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create sky pipeline layout!");
+    }
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.layout = m_SkyPipelineLayout;
+    pipelineInfo.renderPass = m_OffscreenRenderPass;
+    pipelineInfo.subpass = 0;
+
+    if (vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_SkyPipeline) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
+        throw std::runtime_error("failed to create sky pipeline!");
+    }
+
+    setDebugName(m_Device, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<uint64_t>(m_SkyPipeline), "SkyPipeline");
 
     vkDestroyShaderModule(m_Device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_Device, vertShaderModule, nullptr);
@@ -3283,6 +3459,8 @@ void Renderer::createOffscreenResources() {
 
 
 void Renderer::destroyPipelineResources() {
+    if (m_SkyPipeline) { vkDestroyPipeline(m_Device, m_SkyPipeline, nullptr); m_SkyPipeline = VK_NULL_HANDLE; }
+    if (m_SkyPipelineLayout) { vkDestroyPipelineLayout(m_Device, m_SkyPipelineLayout, nullptr); m_SkyPipelineLayout = VK_NULL_HANDLE; }
     if (m_OutlinePipeline) { vkDestroyPipeline(m_Device, m_OutlinePipeline, nullptr); m_OutlinePipeline = VK_NULL_HANDLE; }
     if (m_OutlinePipelineLayout) { vkDestroyPipelineLayout(m_Device, m_OutlinePipelineLayout, nullptr); m_OutlinePipelineLayout = VK_NULL_HANDLE; }
 
@@ -3775,6 +3953,33 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     entt::entity entity;
                     float distSq;
                 };
+
+                // Procedural sky (Sun/Sky task): fullscreen triangle at the
+                // far plane, drawn first so all geometry overdraws it.
+                // Skipped without an enabled SkyComponent (legacy clear
+                // color). The sun disk tracks the scene Sun, if any.
+                if (m_SkyPipeline != VK_NULL_HANDLE) {
+                    if (const Atlas::ECS::SkyComponent* sky = findFirstEnabledSky(registry)) {
+                        glm::vec3 toSun(0.0f, 1.0f, 0.0f);
+                        if (const Atlas::ECS::SunComponent* sun = findFirstSun(registry)) {
+                            toSun = sun->sunDirection();
+                        }
+                        const glm::mat4 viewRot = glm::mat4(glm::mat3(view));
+                        SkyPushConstants spc{};
+                        spc.invViewProj = glm::inverse(proj * viewRot);
+                        spc.sunDir = glm::vec4(toSun, 0.0f);
+                        spc.horizonColor = glm::vec4(sky->horizonColor, 1.0f);
+                        spc.zenithColor = glm::vec4(sky->zenithColor, 1.0f);
+                        spc.groundColor = glm::vec4(sky->groundColor, 1.0f);
+                        spc.sunColorSize = glm::vec4(sky->sunColor, sky->sunDiskSizeDeg);
+                        spc.params = glm::vec4(sky->sunGlow, 0.0f, 0.0f, 0.0f);
+                        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SkyPipeline);
+                        vkCmdPushConstants(commandBuffer, m_SkyPipelineLayout,
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                            sizeof(SkyPushConstants), &spc);
+                        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+                    }
+                }
 
                 std::vector<entt::entity> opaqueCull;
                 std::vector<entt::entity> opaqueFrontCull;

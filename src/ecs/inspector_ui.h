@@ -166,6 +166,30 @@ void renderComponentProperties(T& component, uint32_t entityId) {
             ImGui::DragFloat("Linear##L", &component.linear, 0.001f, 0.0f, 1.0f);
             ImGui::DragFloat("Quadratic##L", &component.quadratic, 0.001f, 0.0f, 1.0f);
         }
+    } else if constexpr (std::is_same_v<T, Atlas::ECS::SunComponent>) {
+        // Procedural sun: azimuth/elevation drive the slot-0 directional
+        // light + shadow caster + sky disk. No Transform needed.
+        ImGui::DragFloat("Azimuth##Sun", &component.azimuthDeg, 1.0f, -180.0f, 540.0f, "%.1f deg");
+        ImGui::DragFloat("Elevation##Sun", &component.elevationDeg, 0.5f, -12.0f, 90.0f, "%.1f deg");
+        float hour = 12.0f;
+        if (ImGui::DragFloat("Time of day##Sun", &hour, 0.1f, 0.0f, 24.0f, "%.1fh")) {
+            component.setTimeOfDay(hour);
+        }
+        ImGui::TextDisabled("Time slider drives az/el (6h sunrise, 18h sunset).");
+        ImGui::ColorEdit3("Color##Sun", &component.color.x);
+        ImGui::DragFloat("Intensity##Sun", &component.intensity, 0.1f, 0.0f, 100.0f);
+        ImGui::Checkbox("Cast shadows##Sun", &component.castShadows);
+        const glm::vec3 toSun = component.sunDirection();
+        ImGui::TextDisabled("Dir (to sun): %.2f %.2f %.2f", toSun.x, toSun.y, toSun.z);
+    } else if constexpr (std::is_same_v<T, Atlas::ECS::SkyComponent>) {
+        ImGui::Checkbox("Enabled##Sky", &component.enabled);
+        ImGui::ColorEdit3("Horizon##Sky", &component.horizonColor.x);
+        ImGui::ColorEdit3("Zenith##Sky", &component.zenithColor.x);
+        ImGui::ColorEdit3("Ground##Sky", &component.groundColor.x);
+        ImGui::ColorEdit3("Sun color##Sky", &component.sunColor.x);
+        ImGui::DragFloat("Sun disk size##Sky", &component.sunDiskSizeDeg, 0.1f, 0.1f, 30.0f, "%.1f deg");
+        ImGui::DragFloat("Sun glow##Sky", &component.sunGlow, 0.01f, 0.0f, 2.0f, "%.2f");
+        ImGui::TextDisabled("First enabled Sky in the scene wins.");
     } else if constexpr (::ecs::refl::ComponentFields<T>::count > 0) {
         // Automatic UI from COMPONENT_FIELDS via new reflection system.
         ::ecs::refl::renderAutoComponentProperties(component);

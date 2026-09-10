@@ -88,6 +88,24 @@ struct SerializedEntity {
     bool hasMeshCollider = false;
     ECS::MeshColliderComponent meshCollider{};
 
+    // Sun/Sky task: procedural sun + sky backdrop (persisted; LightComponent
+    // itself is still scene-transient).
+    bool hasSun = false;
+    float sunAzimuthDeg = 135.0f;
+    float sunElevationDeg = 50.0f;
+    glm::vec3 sunColor = glm::vec3(1.0f, 0.96f, 0.90f);
+    float sunIntensity = 3.0f;
+    bool sunCastShadows = true;
+
+    bool hasSky = false;
+    bool skyEnabled = true;
+    glm::vec3 skyHorizon = glm::vec3(0.62f, 0.72f, 0.83f);
+    glm::vec3 skyZenith = glm::vec3(0.19f, 0.36f, 0.63f);
+    glm::vec3 skyGround = glm::vec3(0.09f, 0.09f, 0.11f);
+    glm::vec3 skySunColor = glm::vec3(1.0f, 0.88f, 0.70f);
+    float skySunDiskSizeDeg = 2.5f;
+    float skySunGlow = 0.35f;
+
     std::vector<SerializedScriptComponent> scripts;
 
     std::string primitiveType;

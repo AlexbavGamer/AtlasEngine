@@ -158,6 +158,8 @@ try {
     });
     m_UIManager->setOnCreatePrimitive([this](const std::string& primitiveType, Entity parent) { createPrimitiveEntity(primitiveType, parent); });
     m_UIManager->setOnCreateGameCamera([this](Entity parent) { createGameCameraEntity(parent); });
+    m_UIManager->setOnCreateSun([this](Entity parent) { createSunEntity(parent); });
+    m_UIManager->setOnCreateSky([this](Entity parent) { createSkyEntity(parent); });
 
     AsyncLoader::getInstance().init();
 
@@ -403,6 +405,27 @@ bool EditorApp::loadSceneFromAssetPath(const std::string& assetRelativePath) {
             }
             if (src.hasMeshCollider) {
                 registry.emplace_or_replace<ECS::MeshColliderComponent>(entity, src.meshCollider);
+            }
+            // Sun/Sky task: procedural sun + sky backdrop (data-only).
+            if (src.hasSun) {
+                ECS::SunComponent sun;
+                sun.azimuthDeg = src.sunAzimuthDeg;
+                sun.elevationDeg = src.sunElevationDeg;
+                sun.color = src.sunColor;
+                sun.intensity = src.sunIntensity;
+                sun.castShadows = src.sunCastShadows;
+                registry.emplace_or_replace<ECS::SunComponent>(entity, sun);
+            }
+            if (src.hasSky) {
+                ECS::SkyComponent sky;
+                sky.enabled = src.skyEnabled;
+                sky.horizonColor = src.skyHorizon;
+                sky.zenithColor = src.skyZenith;
+                sky.groundColor = src.skyGround;
+                sky.sunColor = src.skySunColor;
+                sky.sunDiskSizeDeg = src.skySunDiskSizeDeg;
+                sky.sunGlow = src.skySunGlow;
+                registry.emplace_or_replace<ECS::SkyComponent>(entity, sky);
             }
             if (src.hasMaterial) {
                 ECS::MaterialComponent material;
@@ -1198,6 +1221,56 @@ Entity EditorApp::createLightEntity(ECS::LightComponent::Type type, Entity paren
         case ECS::LightComponent::Type::Point: registry.emplace<Atlas::ECS::TagComponent>(entity, "Point Light"); break;
         case ECS::LightComponent::Type::Spot: registry.emplace<Atlas::ECS::TagComponent>(entity, "Spot Light"); break;
     }
+
+    if (m_UIManager) {
+        m_UIManager->setSelectedEntity(entity);
+    }
+
+    return entity;
+}
+
+// Sun/Sky task: procedural sun (slot-0 directional + shadow caster) and
+// procedural sky backdrop. Data-only components; the renderer resolves the
+// first of each per frame.
+Entity EditorApp::createSunEntity(Entity parent) {
+    if (!m_Scene) {
+        return entt::null;
+    }
+
+    auto entity = m_Scene->createEntity("Sun");
+    auto& registry = m_Scene->getRegistry();
+
+    if (parent != entt::null && registry.valid(parent)) {
+        m_Scene->setParent(entity, parent);
+    }
+
+    ECS::SunComponent sun;
+    sun.setTimeOfDay(10.0f); // pleasant late-morning default
+    sun.color = glm::vec3(1.0f, 0.96f, 0.90f);
+    sun.intensity = 3.0f;
+    sun.castShadows = true;
+    registry.emplace_or_replace<ECS::SunComponent>(entity, sun);
+
+    if (m_UIManager) {
+        m_UIManager->setSelectedEntity(entity);
+    }
+
+    return entity;
+}
+
+Entity EditorApp::createSkyEntity(Entity parent) {
+    if (!m_Scene) {
+        return entt::null;
+    }
+
+    auto entity = m_Scene->createEntity("Sky");
+    auto& registry = m_Scene->getRegistry();
+
+    if (parent != entt::null && registry.valid(parent)) {
+        m_Scene->setParent(entity, parent);
+    }
+
+    registry.emplace_or_replace<ECS::SkyComponent>(entity, ECS::SkyComponent{});
 
     if (m_UIManager) {
         m_UIManager->setSelectedEntity(entity);
