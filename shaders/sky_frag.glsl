@@ -25,8 +25,13 @@ void main() {
     vec3 col = (h >= 0.0)
         ? mix(pc.horizonColor.rgb, pc.zenithColor.rgb, pow(clamp(h, 0.0, 1.0), 0.6))
         : mix(pc.horizonColor.rgb, pc.groundColor.rgb, pow(clamp(-h, 0.0, 1.0), 0.5));
-
+    // Night cycle: fade the gradient to a deep blue-black as the sun drops
+    // (full day above +0.25, full night below -0.15). Disk/glow below keep
+    // their own gating so sunset lingers at the horizon.
     vec3 toSun = normalize(pc.sunDir.xyz);
+    float dayness = smoothstep(-0.15, 0.25, toSun.y);
+    col *= mix(vec3(0.025, 0.035, 0.07), vec3(1.0), dayness);
+
     float cosAng = dot(dir, toSun);
     float sizeRad = radians(clamp(pc.sunColorSize.a, 0.1, 30.0));
     // edges ordered (inner > outer in cos space is invalid for smoothstep).

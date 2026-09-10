@@ -163,7 +163,7 @@ struct SunComponent {
 
     // Unit vector pointing FROM the scene TOWARD the sun.
     glm::vec3 sunDirection() const {
-        const float el = glm::radians(std::clamp(elevationDeg, -12.0f, 90.0f));
+        const float el = glm::radians(std::clamp(elevationDeg, -90.0f, 90.0f));
         const float az = glm::radians(azimuthDeg);
         const float ce = std::cos(el);
         return glm::vec3(ce * std::sin(az), std::sin(el), ce * std::cos(az));
@@ -172,12 +172,15 @@ struct SunComponent {
     // frag uses L = normalize(-light.direction)).
     glm::vec3 lightDirection() const { return -sunDirection(); }
 
-    // Convenience: hour in [0, 24) drives az/el along an east->west arc
-    // (6h = sunrise, 12h = peak, 18h = sunset; night clamps to horizon).
+    // Convenience: hour in [0, 24) drives az/el along a full daily cycle
+    // (6h = sunrise east, 12h = peak, 18h = sunset west, 0h/24h = nadir,
+    // 65 deg below the horizon). Night hours yield negative elevation —
+    // the renderer fades the light out and darkens the sky.
     void setTimeOfDay(float hour) {
-        const float t = std::clamp((hour - 6.0f) / 12.0f, 0.0f, 1.0f);
-        elevationDeg = std::sin(t * 3.14159265f) * 65.0f;
-        azimuthDeg = 90.0f + t * 180.0f;
+        const float h = std::clamp(hour, 0.0f, 24.0f);
+        const float dayAngle = (h - 6.0f) / 12.0f * 3.14159265f;
+        elevationDeg = std::sin(dayAngle) * 65.0f;
+        azimuthDeg = 90.0f + (h - 6.0f) * 15.0f;
     }
 };
 

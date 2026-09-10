@@ -93,16 +93,20 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
   driven by azimuth/elevation (no Transform needed). The first sun found
   owns **slot 0** as the scene directional + shadow caster, ahead of ad-hoc
   lights; its `lightDirection()` matches the frag convention
-  (`L = normalize(-light.direction)`). `setTimeOfDay(h)` maps 6h→18h onto
-  an east→west arc (night clamps to the horizon). Created via the toolbar
+  (`L = normalize(-light.direction)`). `setTimeOfDay(h)` runs a full 24h
+  cycle (6h sunrise, 12h peak, 18h sunset, 0h/24h nadir 65 deg below the
+  horizon). Below the horizon the renderer fades intensity to 0 and drops
+  the shadow caster (night = ambient only). Created via the toolbar
   "Sun & Sky" menu or Add Component > Sun; persisted by the serializer
   (`kHasSun`).
 - **Sky** (`ECS::SkyComponent`): procedural gradient (horizon/zenith/ground)
-  + sun disk + halo, drawn as a **fullscreen triangle** (`gl_VertexIndex`, no
+  - sun disk + halo, drawn as a **fullscreen triangle** (`gl_VertexIndex`, no
   buffers) at the far plane FIRST in the main pass (editor + game views),
   depth test `LEQUAL`, depth writes off, no descriptor sets — everything via
   `SkyPushConstants` (pinned by `offsetof` asserts in `renderer.h`, same
-  discipline as `PushConstants` after the pbr_vert layout bug). No enabled
+  discipline as `PushConstants` after the pbr_vert layout bug). The gradient
+  fades to deep blue-black with the sun (`dayness` smoothstep) while the
+  disk keeps its own below-horizon fade, so sunset lingers then night falls. No enabled
   sky = legacy clear-color background. The disk tracks the scene sun (or
   zenith default). `createSkyPipeline()` joins the recreate path alongside
   the other pipelines. Persisted via `kHasSky`; old scene files load with

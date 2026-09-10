@@ -2249,14 +2249,18 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
     if (scene) {
         auto& registry = scene->getRegistry();
         if (const ECS::SunComponent* sun = findFirstSun(registry)) {
+            const glm::vec3 toSun = sun->sunDirection();
+            // Night fade: a sun below the horizon contributes no light and
+            // casts no shadow (0 at/below -0.08, full above +0.08).
+            const float nightFade = glm::clamp((toSun.y + 0.08f) / 0.16f, 0.0f, 1.0f);
             Light& dst = m_LightBufferData.lights[0];
             dst.color = sun->color;
-            dst.intensity = sun->intensity;
+            dst.intensity = sun->intensity * nightFade;
             dst.type = 1; // directional
             dst.direction = sun->lightDirection();
             dst.position = cameraTarget - dst.direction * 100.0f;
             shadowDir = dst.direction;
-            if (sun->castShadows) {
+            if (sun->castShadows && toSun.y > 0.0f) {
                 for (auto e : registry.view<ECS::SunComponent>()) {
                     casterEntity = e;
                     break;

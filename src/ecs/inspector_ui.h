@@ -172,9 +172,12 @@ void renderComponentProperties(T& component, uint32_t entityId) {
         ImGui::DragFloat("Azimuth##Sun", &component.azimuthDeg, 1.0f, -180.0f, 540.0f, "%.1f deg");
         ImGui::DragFloat("Elevation##Sun", &component.elevationDeg, 0.5f, -12.0f, 90.0f, "%.1f deg");
         // The slider mirrors the current azimuth (single source of truth =
-        // az/el); dragging it re-drives az/el via setTimeOfDay. Night hours
-        // clamp to the horizon, same as setTimeOfDay.
-        float hour = 6.0f + std::clamp((component.azimuthDeg - 90.0f) / 180.0f, 0.0f, 1.0f) * 12.0f;
+        // az/el); dragging it re-drives az/el via setTimeOfDay. 0h/24h is
+        // midnight (sun 65 deg below the horizon: night).
+        float azNorm = std::fmod(component.azimuthDeg - 90.0f, 360.0f);
+        if (azNorm < 0.0f) azNorm += 360.0f;
+        float hour = 6.0f + azNorm / 15.0f;
+        if (hour >= 24.0f) hour -= 24.0f;
         if (ImGui::SliderFloat("Time of day##Sun", &hour, 0.0f, 24.0f, "%.1fh")) {
             component.setTimeOfDay(hour);
         }
