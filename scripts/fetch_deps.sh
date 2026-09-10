@@ -36,17 +36,31 @@ fetch imguifiledialog https://github.com/aiekick/ImGuiFileDialog.git v0.6.8
 fetch imguizmo https://github.com/CedricGuillemet/ImGuizmo.git master
 fetch entt https://github.com/skypjack/entt.git v3.12.1
 fetch lua https://github.com/lua/lua.git v5.4.8
-fetch tracy https://github.com/wolfpld/tracy.git v0.13.1
+fetch tracy https://github.com/wolfpld/Tracy.git v0.13.1
 fetch assimp https://github.com/assimp/assimp.git v6.0.4
 
-# Assimp's CMake build normally generates config.h and zconf.h.  AtlasEngine
-# intentionally does not use CMake, so prepare the self-contained headers that
-# are already shipped as templates by Assimp. This keeps dependency setup
-# deterministic while leaving the actual project build entirely to Premake5.
+# Assimp's CMake build normally generates config.h and zconf.h. AtlasEngine
+# intentionally does not use CMake, so prepare valid self-contained headers
+# before Premake5 generates the actual build files.
 ASSIMP_DIR="${DEPS_SRC}/assimp"
 if [ -f "${ASSIMP_DIR}/include/assimp/config.h.in" ]; then
-    cp "${ASSIMP_DIR}/include/assimp/config.h.in" "${ASSIMP_DIR}/include/assimp/config.h"
+    # config.h.in contains CMake-only #cmakedefine directives. Convert those
+    # optional feature definitions to valid C/C++ preprocessor directives
+    # instead of copying the template verbatim (which GCC/MinGW rejects).
+    sed -E \
+        -e 's/^[[:space:]]*#cmakedefine01[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*$/#define \\1 0/' \
+        -e 's/^[[:space:]]*#cmakedefine[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)([[:space:]]+.*)?$/#undef \\1/' \
+        "${ASSIMP_DIR}/include/assimp/config.h.in" > "${ASSIMP_DIR}/include/assimp/config.h"
+
+    # Never let a CMake directive leak into the compiler input.
+    if grep -nE '^\s*#cmakedefine' "${ASSIMP_DIR}/include/assimp/config.h"; then
+        echo "[fetch_deps] ERROR: generated Assimp config.h still contains #cmakedefine" >&2
+        exit 1
+    fi
 fi
+
+# zconf.h.included is Assimp's complete standalone zlib configuration header;
+# unlike zconf.h.in, it does not require a CMake/configure generation step.
 if [ -f "${ASSIMP_DIR}/contrib/zlib/zconf.h.included" ]; then
     cp "${ASSIMP_DIR}/contrib/zlib/zconf.h.included" "${ASSIMP_DIR}/contrib/zlib/zconf.h"
 fi
