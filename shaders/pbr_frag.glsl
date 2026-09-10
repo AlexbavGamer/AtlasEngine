@@ -106,13 +106,17 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 
 // PCF shadow lookup for the directional light in slot 0 (comparison sampler,
 // hardware 2x2 filtering). Returns 1.0 outside the shadow frustum.
+// NOTE: the C++ shadowViewProj is a raw view*proj (NDC in [-1,1]); the
+// *0.5+0.5 scale-bias to sampler UV space happens here (same matrix wrote
+// the depth, so the mapping is self-consistent including the Y-flip).
 float sampleShadow(vec3 worldPos) {
     vec4 sc = lightData.shadowViewProj * vec4(worldPos, 1.0);
     vec3 proj = sc.xyz / max(sc.w, 0.0001);
-    if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
+    vec2 uv = proj.xy * 0.5 + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z < 0.0 || proj.z > 1.0) {
         return 1.0;
     }
-    return texture(shadowMap, vec3(proj.xy, proj.z - lightData.shadowParams.y));
+    return texture(shadowMap, vec3(uv, proj.z - lightData.shadowParams.y));
 }
 
 void main() {
