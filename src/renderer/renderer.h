@@ -10,6 +10,7 @@
 #include <string>
 #include <deque>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "../core/base/non_copyable.h"
@@ -88,6 +89,18 @@ struct OutlinePushConstants {
 };
 
 static_assert(sizeof(PushConstants) <= 256, "PushConstants exceeds maxPushConstantsSize (256)");
+// Pin the C++ layout to the GLSL push blocks in pbr_vert/frag.glsl and
+// pbr_instanced_vert.glsl (std430): field order/types must stay identical.
+// A drift here silently shifts every uniform after it (this exact bug hid
+// all geometry: vert read proj/view from the wrong offsets). Update GLSL
+// together with this struct.
+static_assert(offsetof(PushConstants, model) == 0, "PushConstants.model offset drifted from GLSL");
+static_assert(offsetof(PushConstants, viewProj) == 64, "PushConstants.viewProj offset drifted from GLSL");
+static_assert(offsetof(PushConstants, baseColor) == 128, "PushConstants.baseColor offset drifted from GLSL");
+static_assert(offsetof(PushConstants, emissiveFactor) == 144, "PushConstants.emissiveFactor offset drifted from GLSL");
+static_assert(offsetof(PushConstants, metallic) == 160, "PushConstants.metallic offset drifted from GLSL");
+static_assert(offsetof(PushConstants, flags) == 192, "PushConstants.flags offset drifted from GLSL");
+static_assert(sizeof(PushConstants) == 196, "PushConstants size drifted from GLSL std430 layout (196B)");
 static_assert(sizeof(PickingPushConstants) <= 256, "PickingPushConstants exceeds limit");
 static_assert(sizeof(OutlinePushConstants) <= 256, "OutlinePushConstants exceeds limit");
 

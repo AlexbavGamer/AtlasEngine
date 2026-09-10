@@ -3789,13 +3789,13 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
                     }
 
                     auto& mesh = registry.get<Mesh>(entity);
-                    // Phase 3a: skip decision reads the registry (legacy
-                    // Mesh::Vk* only when renderMeshId == 0).
+                    // Phase 3b: skip decision reads the registry (no Mesh::Vk*).
                     {
                         VkBuffer filterVB = VK_NULL_HANDLE;
                         VkBuffer filterIB = VK_NULL_HANDLE;
                         uint32_t filterIndexCount = 0;
-                        if (!resolveMeshDrawBuffers(m_meshRegistry, mesh, filterVB, filterIB, filterIndexCount)) {
+                        if (!resolveMeshDrawBuffers(
+                                m_meshRegistry, mesh, filterVB, filterIB, filterIndexCount)) {
                             continue;
                         }
                     }
@@ -3870,9 +3870,8 @@ void Renderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image
 
                 auto drawEntity = [&](entt::entity entity) {
                     auto& mesh = registry.get<Mesh>(entity);
-                    // Phase 3a: draw buffers come from the registry; a dead
-                    // or unpublished handle skips the draw (legacy fallback
-                    // only when renderMeshId == 0).
+                    // Phase 3b: draw buffers come only from the registry
+                    // (::Mesh holds no Vk* fields; ecs.h is Vulkan-free).
                     VkBuffer baseVB = VK_NULL_HANDLE;
                     VkBuffer baseIB = VK_NULL_HANDLE;
                     uint32_t baseIndexCount = 0;
