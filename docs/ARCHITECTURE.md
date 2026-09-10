@@ -88,7 +88,9 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
 
 - Scene `LightComponent`s are uploaded to the GPU every frame
   (`Renderer::updateLightsAndShadow`): shadow-casting directional first
-  (slot 0), then others up to 4. No lights → legacy hardcoded default.
+  (slot 0), then others up to 4. No sun and no lights means no direct
+  light at all (ambient + emissive only) — illumination comes strictly
+  from components, no legacy fallback light.
 - **Sun** (`ECS::SunComponent`, `components.h`): procedural directional light
   driven by azimuth/elevation (no Transform needed). Caster priority (the
   frag shadows slot 0 only, so slot 0 MUST be the caster): casting sun
@@ -113,9 +115,6 @@ New TODOs must reference an issue: `// TODO(#123): ...`.
   the other pipelines. Persisted via `kHasSky`; old scene files load with
   component defaults.
 
-- Scene `LightComponent`s are uploaded to the GPU every frame
-  (`Renderer::updateLightsAndShadow`): shadow-casting directional first
-  (slot 0), then others up to 4. No lights → legacy hardcoded default.
 - `cameraPos` is uploaded per frame (specular was computed from a stale value).
 - Single 2048 directional shadow map: depth-only pass → comparison sampler
   (HW PCF 2x2) in `pbr_frag`. Fixed 80m ortho frustum around the camera

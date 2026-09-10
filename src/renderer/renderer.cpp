@@ -2242,7 +2242,7 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
 
     // Sun (Sun/Sky task): the first SunComponent owns slot 0 as the scene
     // directional light + shadow caster, ahead of ad-hoc LightComponents.
-    // Absent sun + absent lights = legacy hardcoded default below.
+    // Absent sun + absent lights = no direct light below (ambient only).
     int slot = 0;
     entt::entity casterEntity = entt::null;
     glm::vec3 shadowDir(0.0f, -1.0f, 0.0f);
@@ -2343,13 +2343,11 @@ void Renderer::updateLightsAndShadow(Scene* scene) {
         }
     }
     if (slot == 0) {
-        // Legacy default: preserves the exact look of scenes without lights.
-        m_LightBufferData.lights[0].position = glm::vec3(5.0f, 5.0f, 5.0f);
-        m_LightBufferData.lights[0].color = glm::vec3(1.0f, 1.0f, 1.0f);
-        m_LightBufferData.lights[0].intensity = 50.0f;
-        m_LightBufferData.lights[0].direction = glm::vec3(0.0f, -1.0f, 0.0f);
-        m_LightBufferData.lights[0].type = 0;
-        m_LightBufferData.lightCount = 1;
+        // No sun, no lights: keep the buffer defined but contribute no direct
+        // light (ambient + emissive only). Illumination comes strictly from
+        // components — no phantom light without a caster.
+        m_LightBufferData.lights[0] = Light{};
+        m_LightBufferData.lightCount = 0;
     } else {
         m_LightBufferData.lightCount = slot;
     }
